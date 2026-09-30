@@ -11,5 +11,13 @@ services:
       TZ: Europe/Madrid
       PANEL_USER: ${PANEL_USER:-}
       PANEL_PASSWORD: ${PANEL_PASSWORD:-}
+      # Base de datos: sqlite (archivo en la carpeta de datos), postgres, mysql o mariadb.
+      DB_ENGINE: ${DB_ENGINE:-sqlite}
+      DB_HOST: ${DB_HOST:-}
+      DB_PORT: ${DB_PORT:-}
+      DB_NAME: ${DB_NAME:-flight_watcher}
+      DB_USER: ${DB_USER:-}
+      DB_PASSWORD: ${DB_PASSWORD:-}
     volumes:
-      - ./data:/data      # base de datos SQLite, capturas de diagnóstico
+      # Carpeta del host con la BD SQLite y los archivos de diagnóstico.
+      - ${DATA_PATH:-./data}:/data

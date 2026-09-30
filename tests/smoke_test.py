@@ -12,8 +12,9 @@ from datetime import date, datetime, timedelta
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="fw-test-")
 
 from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import text  # noqa: E402
 
-from app import checker, db, notify  # noqa: E402
+from app import checker, config, db, notify  # noqa: E402
 from app.main import app  # noqa: E402
 from app.providers import PROVIDERS, CalendarProvider, DayPrice  # noqa: E402
 from app.providers.extract import JsonCollector, parse_day, parse_price, walk_json  # noqa: E402
@@ -106,7 +107,7 @@ def main():
         check("30 €" in discord, "precio bajo incluido en el aviso")
         check("Ryanair" not in discord, "Ryanair (45 €) no supera el precio máximo de 40 €")
         with db.connect() as con:
-            routes_saved = {(r[0], r[1], r[2]) for r in con.execute("SELECT provider, origin, destination FROM prices")}
+            routes_saved = {(r[0], r[1], r[2]) for r in con.execute(text("SELECT provider, origin, destination FROM prices"))}
         check(("vueling", "SVQ", "TFN") in routes_saved and ("ryanair", "SVQ", "TFS") in routes_saved
               and not any(o == "TCI" or d == "TCI" for _, o, d in routes_saved),
               "TCI se expande a TFN/TFS y se guarda el aeropuerto real")
@@ -181,8 +182,9 @@ def main():
     check(parse_price("desde 45,50 €") == 45.5 and parse_price("24 45€") == 45.0 and parse_price("sin precio") is None, "parse_price")
 
     # --- la base de datos está consistente
-    con = sqlite3.connect(db.DB_PATH)
-    check(con.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "integridad SQLite")
+    if config.DB_ENGINE == "sqlite":
+        con = sqlite3.connect(config.DB_PATH)
+        check(con.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "integridad SQLite")
     print("\nTodo correcto.")
 
 

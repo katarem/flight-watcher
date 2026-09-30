@@ -1,11 +1,11 @@
 # Flight Watcher — contexto del proyecto
 
-Panel web + bot que vigila precios de vuelos (solo ida) en Vueling y Ryanair, guarda el histórico en SQLite, dibuja gráficas y avisa por Discord y/o Telegram con un enlace directo a cada fecha. Todo el código, comentarios, textos de UI y README están **en español**; mantenlo así.
+Panel web + bot que vigila precios de vuelos (solo ida) en Vueling y Ryanair, guarda el histórico en SQLite/PostgreSQL/MySQL/MariaDB, dibuja gráficas y avisa por Discord y/o Telegram con un enlace directo a cada fecha. Todo el código, comentarios, textos de UI y README están **en español**; mantenlo así.
 
 ## Stack
 
 - Python 3.12, FastAPI + Jinja2 (server-side rendering), Chart.js en `app/static/charts.js`.
-- SQLite (WAL) con SQL a mano, sin ORM. Sin migraciones: el esquema es `CREATE TABLE IF NOT EXISTS` en `app/db.py`.
+- SQLAlchemy **Core** (no ORM) en `app/db.py`: tablas declaradas con `Table`, `metadata.create_all()` al arrancar. Motor por `DB_ENGINE` (`sqlite` por defecto con WAL, `postgres` → psycopg, `mysql`/`mariadb` → pymysql). Sin Alembic: `create_all` no añade columnas; la única migración es el `ALTER TABLE` de `prices.origin/destination` en `db.init()`.
 - APIs JSON públicas vía `requests` (Vueling, Ryanair) y Playwright/Chromium headless solo para proveedores sin API (hoy ninguno registrado; `CalendarProvider` queda como base y lo cubren los tests). El navegador solo se abre si algún proveedor de la ronda lo necesita.
 - APScheduler (`BackgroundScheduler`) dentro del mismo proceso. `requests` para notificar.
 - Docker / docker-compose. **Un único worker de uvicorn**: el planificador vive en el proceso, más workers = comprobaciones duplicadas.
@@ -17,10 +17,10 @@ app/
   main.py        rutas FastAPI: panel, CRUD de vigilancias, detalle, API de gráficas, ajustes, ejecuciones, diagnóstico
   checker.py     ronda de comprobaciones (por vigilancia × proveedor) + reglas de aviso (deal_reason)
   scheduler.py   cron interno; horas/minuto/zona horaria salen de los ajustes en BD
-  db.py          esquema, ajustes por defecto (DEFAULT_SETTINGS), consultas, seed_defaults()
+  db.py          esquema (SQLAlchemy Core), motor/conexión, ajustes por defecto (DEFAULT_SETTINGS), consultas, seed_defaults()
   notify.py      Discord (webhook) y Telegram (bot)
   fmt.py         formateo de fechas/precios para plantillas y avisos
-  config.py      DATA_DIR, DB_PATH, DEBUG_DIR
+  config.py      DATA_DIR, DEBUG_DIR, DB_ENGINE, DB_PATH (SQLite), DB_HOST/PORT/NAME/USER/PASSWORD
   providers/
     base.py      Provider (abstracto), ApiProvider (JSON sin navegador), CalendarProvider (Playwright), DayPrice, ProviderError
     extract.py   parseo de precios para CalendarProvider: respuestas JSON de red (recursivo) + celdas del DOM
@@ -40,7 +40,7 @@ tests/
 4. Los chollos nuevos (`already_alerted` evita repetir salvo que baje más) se envían con `notify.send_deals`. Solo se guardan en `alerts` si llegaron a algún canal; sin canales se reenvían cuando se configuren.
 5. Se purga el histórico (`retention_days`) y los archivos de diagnóstico de más de 7 días.
 
-## Modelo de datos (SQLite, `data/flight_watcher.db`)
+## Modelo de datos (`data/flight_watcher.db` con SQLite, o la BD de `DB_NAME`)
 
 - `settings(key, value)`: clave/valor. `db.get_settings()` mezcla `DEFAULT_SETTINGS` con lo guardado. También hay claves dinámicas `link_<provider>` (plantilla de enlace por proveedor).
 - `watches`: id, name, origin, destination (IATA 3 letras), providers (CSV de claves), max_price, discount_pct, date_from, date_to, enabled.
@@ -55,12 +55,12 @@ python -m tests.smoke_test                             # sin red
 python -m tests.browser_mock_test                      # necesita Chromium (FW_CHROMIUM=/ruta si usas el tuyo)
 ```
 
-Variables de entorno: `PANEL_USER` / `PANEL_PASSWORD` (Basic Auth; vacías = sin auth), `DATA_DIR` (por defecto `./data`), `SEED_DEFAULTS` (`1` por defecto; `0` desactiva las vigilancias iniciales), `FW_CHROMIUM`, `TZ`.
+Variables de entorno: `PANEL_USER` / `PANEL_PASSWORD` (Basic Auth; vacías = sin auth), `DATA_DIR` (por defecto `./data`; en Docker es `/data` y la carpeta del host se elige con `DATA_PATH` en el compose), `DB_ENGINE` / `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD`, `SEED_DEFAULTS` (`1` por defecto; `0` desactiva las vigilancias iniciales), `FW_CHROMIUM`, `TZ`.
 
 ## Convenciones
 
 - Cabecera de módulo con docstring en español; `from __future__ import annotations`; type hints modernos (`dict | None`).
-- Acceso a BD siempre con `with db.connect() as con:` (commit/rollback automáticos); las funciones de `db.py` reciben `con`.
+- Acceso a BD siempre con `with db.connect() as con:` (commit/rollback automáticos); las funciones de `db.py` reciben `con` y devuelven `dict` (nunca objetos de SQLAlchemy), así el resto de la app no sabe qué motor hay. Nada de SQL específico de un motor fuera de `db.py` (el upsert de `settings` elige dialecto ahí).
 - Los `except Exception` amplios llevan `# noqa: BLE001` y solo donde el fallo de un tercero (web, navegador) no debe tumbar la ronda.
 - Añadir una aerolínea: nueva clase en `app/providers/<nombre>.py` (preferir `ApiProvider` con el endpoint JSON que usa la web; `CalendarProvider` solo si no hay otra vía) y añadirla al dict `PROVIDERS` de `providers/__init__.py`. Formularios, gráficas, avisos y plantilla de enlace en Ajustes la recogen solos.
 - Los campos secretos (webhook, token) nunca se devuelven al navegador; el webhook de Discord se valida contra la URL oficial.
@@ -85,3 +85,5 @@ Variables de entorno: `PANEL_USER` / `PANEL_PASSWORD` (Basic Auth; vacías = sin
 - La regla «habitual» usa la mediana de la ruta+web, no la de la misma fecha de vuelo.
 - Solo ida por vigilancia; para ida y vuelta se crean dos vigilancias.
 - Webhook y token se guardan en texto plano en la BD: no exponer el panel sin autenticación.
+- Multi-motor (verificado 2026-09-30 con el smoke test contra postgres:16, mariadb:11 y mysql:8.4): precios en `Double` (en MySQL `Float` es precisión simple), fechas como texto ISO (`String`), tablas `utf8mb4`, `pool_pre_ping` porque MySQL corta conexiones inactivas, y `PRAGMA foreign_keys=ON` en cada conexión SQLite para que funcione el `CASCADE`. Las columnas `key` y `trigger` son palabras reservadas en MySQL: SQLAlchemy las entrecomilla, no escribir SQL crudo con ellas.
+- Para probar contra otro motor: `DB_ENGINE=postgres DB_HOST=127.0.0.1 DB_PORT=… DB_USER=… DB_PASSWORD=… python -m tests.smoke_test` sobre una BD vacía.

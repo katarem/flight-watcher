@@ -1,6 +1,6 @@
 # Flight Watcher
 
-Panel web + bot que vigila los precios de vuelos en **Vueling** y **Ryanair** (y en las aerolíneas que añadas), guarda todo el histórico en SQLite, dibuja gráficas de evolución por web y te avisa por **Discord** y/o **Telegram** con un **enlace directo a cada fecha**.
+Panel web + bot que vigila los precios de vuelos en **Vueling** y **Ryanair** (y en las aerolíneas que añadas), guarda todo el histórico en SQLite (o PostgreSQL / MySQL / MariaDB), dibuja gráficas de evolución por web y te avisa por **Discord** y/o **Telegram** con un **enlace directo a cada fecha**.
 
 Sustituye al script suelto anterior: ya no hay que editar archivos ni tocar el cron. Todo se configura desde el panel.
 
@@ -14,6 +14,20 @@ docker compose up -d --build
 Abre `http://localhost:8000`. En el primer arranque se crean dos vigilancias: **Sevilla → Tenerife** (`SVQ → TCI`) y **Tenerife → Sevilla**, con Vueling y Ryanair y un aviso a partir de 40 €.
 
 `TCI` es el código de ciudad de Tenerife: el bot consulta **Tenerife Norte (TFN)** y **Tenerife Sur (TFS)** y se queda con el precio más bajo de cada día, indicando el aeropuerto (p. ej. `SVQ→TFS`). Puedes usar `TFN` o `TFS` si solo te interesa uno.
+
+### Carpeta de datos y base de datos
+
+Todo se configura en `.env`:
+
+| Variable | Por defecto | Para qué |
+|---|---|---|
+| `DATA_PATH` | `./data` | Carpeta **del host** montada en `/data`: BD SQLite y archivos de diagnóstico |
+| `DB_ENGINE` | `sqlite` | `sqlite`, `postgres`, `mysql` o `mariadb` |
+| `DB_HOST`, `DB_PORT` | `localhost`, 5432 / 3306 | Servidor (se ignoran con SQLite) |
+| `DB_NAME` | `flight_watcher` | La base de datos debe existir; las tablas se crean solas |
+| `DB_USER`, `DB_PASSWORD` | vacíos | Credenciales |
+
+Con MySQL/MariaDB las tablas se crean en `utf8mb4`. Cambiar de motor no migra los datos: el nuevo arranca vacío con las vigilancias iniciales.
 
 Después, en el panel:
 
@@ -110,7 +124,7 @@ app/
   checker.py      ronda de comprobaciones + reglas de aviso
   scheduler.py    planificación (se cambia desde Ajustes)
   notify.py       Discord / Telegram
-  db.py           SQLite
+  db.py           acceso a datos (SQLAlchemy Core: SQLite, PostgreSQL, MySQL, MariaDB)
   providers/      base.py (abstracción), extract.py, vueling.py, ryanair.py
   templates/, static/
 tests/
