@@ -1,6 +1,6 @@
 # Flight Watcher — contexto del proyecto
 
-Panel web + bot que vigila precios de vuelos (solo ida) en Vueling y Ryanair, guarda el histórico en SQLite/PostgreSQL/MySQL/MariaDB, dibuja gráficas y avisa por Discord y/o Telegram con un enlace directo a cada fecha. Todo el código, comentarios, textos de UI y README están **en español**; mantenlo así.
+Panel web + bot que vigila precios de vuelos (solo ida) en Vueling y Ryanair, guarda el histórico en SQLite/PostgreSQL/MySQL/MariaDB, dibuja gráficas y avisa por Discord y/o Telegram con un enlace directo a cada fecha. Todo el código, comentarios, textos de UI y README están **en castellano de España** (tuteo, nunca voseo ni expresiones rioplatenses); mantenlo así, también al hablar con el usuario.
 
 ## Stack
 
