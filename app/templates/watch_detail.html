@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}{{ w.name }}{% endblock %}
+{% block content %}
+<div class="card-head">
+  <div>
+    <h1>{{ w.name }} {% if not w.enabled %}<span class="tag off">pausada</span>{% endif %}</h1>
+    <p class="muted">
+      {{ w.origin }} → {{ w.destination }}
+      · {% if w.max_price %}avisa ≤ {{ w.max_price|price }}{% else %}sin precio máximo{% endif %}
+      · −{{ w.discount_pct|int }} % sobre lo habitual
+      {% if w.date_from or w.date_to %}· {{ w.date_from or '…' }} – {{ w.date_to or '…' }}{% endif %}
+    </p>
+  </div>
+  <div class="actions">
+    <form method="post" action="/watches/{{ w.id }}/run" class="inline"><button class="btn" {% if running %}disabled{% endif %}>▶ Comprobar ahora</button></form>
+    <a class="btn ghost" href="/watches/{{ w.id }}/edit">Editar</a>
+  </div>
+</div>
+
+<div class="provs">
+  {% for p in provs %}
+  <div class="prov card" style="--c: {{ p.color }}">
+    <div class="prov-name">{{ p.label }}</div>
+    {% if p.best %}
+      <div class="big">{{ p.best.price|price }} {% if p.deal %}<span class="tag deal">chollo</span>{% endif %}</div>
+      <div class="muted">{{ p.best.flight_date|fdate }}{% if p.route %} · {{ p.route }}{% endif %}</div>
+      <a href="{{ p.link }}" target="_blank" rel="noopener noreferrer">Abrir esa fecha en {{ p.label }} ↗</a>
+      <div class="muted small">
+        Mediana actual {{ p.median|price }}
+        {% if p.base %}· habitual histórico ≈ {{ p.base|price }}{% endif %}
+        · {{ p.count }} fechas con precio
+      </div>
+      <div class="muted small">Actualizado {{ p.best.checked_at|dt }}</div>
+    {% else %}
+      <div class="muted">Sin datos todavía</div>
+    {% endif %}
+    {% if p.run and not p.run.ok %}<div class="err">⚠ {{ p.run.error }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<section class="card">
+  <h2>Evolución del precio mínimo por web</h2>
+  <p class="hint">El precio más bajo encontrado en cada día de comprobación.</p>
+  <div class="chart-box"><canvas id="chart-min"></canvas></div>
+</section>
+
+<section class="card">
+  <h2>Precio actual por fecha de vuelo</h2>
+  <p class="hint">Última comprobación: qué días salen más baratos en cada web.</p>
+  <div class="chart-box"><canvas id="chart-dates"></canvas></div>
+</section>
+
+<section class="card">
+  <h2>Historial de una fecha concreta</h2>
+  <p class="hint">Cómo ha cambiado el precio de un mismo vuelo con el paso de los días.</p>
+  {% if dates %}
+  <label class="inline-label">Fecha de vuelo
+    <select id="date-select">
+      {% for d in dates %}<option value="{{ d }}" {% if d == default_date %}selected{% endif %}>{{ d|fdate }}</option>{% endfor %}
+    </select>
+  </label>
+  <div class="chart-box"><canvas id="chart-date-history"></canvas></div>
+  {% else %}<p class="muted">Aún no hay datos.</p>{% endif %}
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Mejores precios ahora mismo</h2>
+    <div class="actions">
+      <a class="chip {{ '' if provider_filter else 'on' }}" href="/watches/{{ w.id }}">Todas</a>
+      {% for p in provs %}<a class="chip {{ 'on' if provider_filter == p.key else '' }}" href="/watches/{{ w.id }}?provider={{ p.key }}">{{ p.label }}</a>{% endfor %}
+    </div>
+  </div>
+  {% if rows %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Web</th><th>Fecha</th><th class="num">Precio</th><th>Enlace</th></tr></thead>
+    {% for r in rows %}
+    <tr>
+      <td><span class="dot" style="background: {{ r.color }}"></span> {{ r.label }}</td>
+      <td>{{ r.flight_date|fdate }}{% if r.route %} <span class="muted small">{{ r.route }}</span>{% endif %}</td>
+      <td class="num"><strong>{{ r.price|price }}</strong> {% if r.deal %}<span class="tag deal">chollo</span>{% endif %}</td>
+      <td><a href="{{ r.link }}" target="_blank" rel="noopener noreferrer">Abrir ↗</a></td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<p class="muted">Todavía no hay precios guardados. Pulsa «Comprobar ahora».</p>{% endif %}
+</section>
+
+<div class="grid2">
+  <section class="card">
+    <h2>Historial de comprobaciones</h2>
+    {% if summary %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Cuándo</th><th>Web</th><th class="num">Fechas</th><th class="num">Mínimo</th><th class="num">Media</th></tr></thead>
+      {% for r in summary %}
+      <tr>
+        <td>{{ r.checked_at|dt }}</td>
+        <td>{{ providers[r.provider].label if r.provider in providers else r.provider }}</td>
+        <td class="num">{{ r.n }}</td>
+        <td class="num"><strong>{{ r.mn|price }}</strong></td>
+        <td class="num">{{ r.av|price }}</td>
+      </tr>
+      {% endfor %}
+    </table></div>
+    {% else %}<p class="muted">Sin comprobaciones todavía.</p>{% endif %}
+  </section>
+  <section class="card">
+    <h2>Avisos enviados</h2>
+    {% if alerts %}
+    <div class="table-wrap"><table>
+      {% for a in alerts %}
+      <tr>
+        <td>{{ a.sent_at|dt }}</td>
+        <td>{{ providers[a.provider].label if a.provider in providers else a.provider }}</td>
+        <td><a href="{{ a.link }}" target="_blank" rel="noopener noreferrer">{{ a.flight_date|fdate }} ↗</a></td>
+        <td class="num"><strong>{{ a.price|price }}</strong></td>
+      </tr>
+      {% endfor %}
+    </table></div>
+    {% else %}<p class="muted">Aún no se ha enviado ningún aviso de esta vigilancia.</p>{% endif %}
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="/static/charts.js"></script>
+<script>initCharts({{ w.id }});</script>
+{% endblock %}

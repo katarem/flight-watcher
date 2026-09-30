@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Ejecuciones{% endblock %}
+{% block content %}
+<h1>Ejecuciones</h1>
+<section class="card">
+  {% if runs %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Inicio</th><th>Vigilancia</th><th>Web</th><th>Origen</th><th>Estado</th><th class="num">Fechas</th><th class="num">Chollos</th><th>Detalle</th></tr></thead>
+    {% for r in runs %}
+    <tr>
+      <td>{{ r.started_at|dt }}</td>
+      <td><a href="/watches/{{ r.watch_id }}">{{ r.watch_name }}</a></td>
+      <td>{{ providers[r.provider].label if r.provider in providers else r.provider }}</td>
+      <td>{{ 'automática' if r.trigger == 'cron' else 'manual' }}</td>
+      <td>{% if r.finished_at is none %}⏳ en curso{% elif r.ok %}✅ correcta{% else %}⚠️ con error{% endif %}</td>
+      <td class="num">{{ r.n_prices }}</td>
+      <td class="num">{{ r.n_deals }}</td>
+      <td class="muted">{{ r.error or '' }}</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<p class="muted">Sin ejecuciones todavía.</p>{% endif %}
+</section>
+{% endblock %}

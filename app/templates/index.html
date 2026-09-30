@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Panel</h1>
+
+{% if not cards %}
+  <p class="muted">Aún no hay vigilancias. <a href="/watches/new">Crea la primera</a>.</p>
+{% endif %}
+
+{% for c in cards %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <h2><a href="/watches/{{ c.w.id }}">{{ c.w.name }}</a>
+        {% if not c.w.enabled %}<span class="tag off">pausada</span>{% endif %}</h2>
+      <p class="muted">
+        {{ c.w.origin }} → {{ c.w.destination }}
+        · {% if c.w.max_price %}≤ {{ c.w.max_price|price }}{% else %}sin precio máximo{% endif %}
+        · −{{ c.w.discount_pct|int }} % sobre lo habitual
+        {% if c.w.date_from or c.w.date_to %}· {{ c.w.date_from or '…' }} – {{ c.w.date_to or '…' }}{% endif %}
+      </p>
+    </div>
+    <div class="actions">
+      <form method="post" action="/watches/{{ c.w.id }}/run" class="inline"><button class="btn small" {% if running %}disabled{% endif %}>▶ Comprobar</button></form>
+      <form method="post" action="/watches/{{ c.w.id }}/toggle" class="inline"><button class="btn small ghost">{{ 'Reanudar' if not c.w.enabled else 'Pausar' }}</button></form>
+      <a class="btn small ghost" href="/watches/{{ c.w.id }}/edit">Editar</a>
+    </div>
+  </div>
+  <div class="provs">
+    {% for p in c.providers %}
+    <div class="prov" style="--c: {{ p.color }}">
+      <div class="prov-name">{{ p.label }}</div>
+      {% if p.best %}
+        <div class="big">{{ p.best.price|price }}
+          {% if p.deal %}<span class="tag deal">chollo</span>{% endif %}</div>
+        <div class="muted">{{ p.best.flight_date|fdate }}{% if p.route %} · {{ p.route }}{% endif %}{% if p.base %} · habitual ≈ {{ p.base|price }}{% endif %}</div>
+        <a href="{{ p.link }}" target="_blank" rel="noopener noreferrer">Ver esa fecha en {{ p.label }} ↗</a>
+        <div class="muted small">Actualizado {{ p.best.checked_at|dt }}</div>
+      {% else %}
+        <div class="muted">Sin datos todavía</div>
+      {% endif %}
+      {% if p.run and not p.run.ok %}<div class="err">⚠ {{ p.run.error }}</div>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endfor %}
+
+<div class="grid2">
+  <section class="card">
+    <h2>Últimos avisos</h2>
+    {% if alerts %}
+    <table>
+      {% for a in alerts %}
+      <tr>
+        <td>{{ a.sent_at|dt }}</td>
+        <td>{{ a.watch_name }}</td>
+        <td>{{ providers[a.provider].label if a.provider in providers else a.provider }}</td>
+        <td><a href="{{ a.link }}" target="_blank" rel="noopener noreferrer">{{ a.flight_date|fdate }} ↗</a></td>
+        <td class="num"><strong>{{ a.price|price }}</strong></td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted">Todavía no se ha enviado ningún aviso.</p>{% endif %}
+  </section>
+  <section class="card">
+    <h2>Últimas ejecuciones <a class="small" href="/runs">ver todas</a></h2>
+    {% if runs %}
+    <table>
+      {% for r in runs %}
+      <tr>
+        <td>{{ r.started_at|dt }}</td>
+        <td>{{ r.watch_name }}</td>
+        <td>{{ providers[r.provider].label if r.provider in providers else r.provider }}</td>
+        <td>{% if r.finished_at is none %}⏳{% elif r.ok %}✅ {{ r.n_prices }} fechas{% else %}⚠️{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted">Sin ejecuciones todavía.</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

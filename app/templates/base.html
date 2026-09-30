@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Flight Watcher{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/">✈️ Flight Watcher</a>
+  <nav>
+    <a href="/">Panel</a>
+    <a href="/watches/new">Nueva vigilancia</a>
+    <a href="/runs">Ejecuciones</a>
+    <a href="/settings">Ajustes</a>
+    <a href="/debug">Diagnóstico</a>
+  </nav>
+  <form method="post" action="/run" class="inline">
+    <button class="btn small" {% if running %}disabled{% endif %}>▶ Comprobar todo</button>
+  </form>
+</header>
+<main>
+  {% if running %}
+  <div class="banner">⏳ Comprobando precios… <strong id="running-current"></strong></div>
+  {% endif %}
+  {% if msg %}<div class="flash">{{ msg }}</div>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+<footer>Próxima comprobación automática: {{ next_run|dt }}</footer>
+{% block scripts %}{% endblock %}
+{% if running %}
+<script>
+(async function poll() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    document.getElementById('running-current').textContent = s.current || '';
+    if (s.running) { setTimeout(poll, 3000); return; }
+  } catch (e) { setTimeout(poll, 5000); return; }
+  location.href = location.pathname + location.search.replace(/[?&]msg=[^&]*/, '');
+})();
+</script>
+{% endif %}
+</body>
+</html>

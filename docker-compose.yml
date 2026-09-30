@@ -1,0 +1,15 @@
+services:
+  flight-watcher:
+    build: .
+    container_name: flight-watcher
+    restart: unless-stopped
+    init: true            # evita procesos zombi de Chromium
+    shm_size: "1gb"       # Chromium necesita memoria compartida
+    ports:
+      - "8000:8000"
+    environment:
+      TZ: Europe/Madrid
+      PANEL_USER: ${PANEL_USER:-}
+      PANEL_PASSWORD: ${PANEL_PASSWORD:-}
+    volumes:
+      - ./data:/data      # base de datos SQLite, capturas de diagnóstico

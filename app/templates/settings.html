@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Ajustes{% endblock %}
+{% block content %}
+<h1>Ajustes</h1>
+
+{% if errors %}
+<div class="flash err-box"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+{% endif %}
+
+<form method="post" action="/settings" class="form">
+  <section class="card">
+    <h2>Notificaciones</h2>
+    <label>Webhook de Discord
+      <input name="discord_webhook" type="password" autocomplete="off"
+             placeholder="{{ '•••••• guardado (deja vacío para conservarlo)' if s.has_discord else 'https://discord.com/api/webhooks/…' }}">
+    </label>
+    {% if s.has_discord %}<label class="check"><input type="checkbox" name="clear_discord" value="1"> Borrar webhook guardado</label>{% endif %}
+
+    <div class="row">
+      <label>Token del bot de Telegram
+        <input name="telegram_token" type="password" autocomplete="off"
+               placeholder="{{ '•••••• guardado (deja vacío para conservarlo)' if s.has_telegram else '123456:ABC…' }}">
+      </label>
+      <label>Chat ID de Telegram
+        <input name="telegram_chat_id" value="{{ s.telegram_chat_id }}" placeholder="123456789">
+      </label>
+    </div>
+    {% if s.has_telegram %}<label class="check"><input type="checkbox" name="clear_telegram" value="1"> Borrar datos de Telegram</label>{% endif %}
+
+    <label>URL pública de este panel (opcional)
+      <input name="panel_url" value="{{ s.panel_url }}" placeholder="https://vuelos.midominio.com">
+    </label>
+    <p class="hint">Si la rellenas, cada aviso incluye un enlace al historial y las gráficas de la vigilancia.</p>
+    <label class="check"><input type="checkbox" name="notify_errors" value="1" {% if s.notify_errors == '1' %}checked{% endif %}> Avisarme si una comprobación automática falla</label>
+    <p class="hint">Canales activos: {{ channels|join(', ') if channels else 'ninguno' }}.</p>
+  </section>
+
+  <section class="card">
+    <h2>Programación</h2>
+    <div class="row">
+      <label>Horas (0-23, separadas por comas)
+        <input name="schedule_hours" value="{{ s.schedule_hours }}" placeholder="8 o 8,20">
+      </label>
+      <label>Minuto
+        <input name="schedule_minute" value="{{ s.schedule_minute }}" inputmode="numeric">
+      </label>
+      <label>Zona horaria
+        <input name="timezone" value="{{ s.timezone }}" placeholder="Europe/Madrid">
+      </label>
+    </div>
+    <div class="row">
+      <label>Meses a recorrer del calendario
+        <input name="max_months" value="{{ s.max_months }}" inputmode="numeric">
+      </label>
+      <label>Muestras mínimas para la regla «habitual»
+        <input name="min_samples" value="{{ s.min_samples }}" inputmode="numeric">
+      </label>
+      <label>Conservar histórico (días)
+        <input name="retention_days" value="{{ s.retention_days }}" inputmode="numeric">
+      </label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Enlaces por fecha</h2>
+    <p class="hint">Marcadores disponibles: <code>{origin}</code> <code>{destination}</code> <code>{date}</code> (AAAA-MM-DD) <code>{date_dmy}</code> <code>{year}</code> <code>{month}</code> <code>{day}</code>. Déjalo vacío para usar el valor por defecto.</p>
+    {% for key, p in providers.items() %}
+    <label>Plantilla de enlace de {{ p.label }}
+      <input name="link_{{ key }}" value="{{ s['link_' ~ key] or '' }}" placeholder="{{ p.default_link_template }}">
+    </label>
+    {% endfor %}
+  </section>
+
+  <section class="card">
+    <h2>Navegador y diagnóstico</h2>
+    <label class="check"><input type="checkbox" name="headless" value="1" {% if s.headless == '1' %}checked{% endif %}> Modo sin ventana (headless)</label>
+    <label class="check"><input type="checkbox" name="debug" value="1" {% if s.debug == '1' %}checked{% endif %}> Guardar capturas, HTML y JSON de cada comprobación (ver «Diagnóstico»)</label>
+    <label>Proxy (opcional)
+      <input name="proxy_url" value="{{ s.proxy_url }}" placeholder="http://usuario:clave@host:puerto">
+    </label>
+  </section>
+
+  <div class="actions"><button class="btn">Guardar ajustes</button></div>
+</form>
+
+<form method="post" action="/settings/test" style="margin-top:1rem">
+  <button class="btn ghost">Enviar mensaje de prueba</button>
+</form>
+{% endblock %}
