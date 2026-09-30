@@ -7,8 +7,11 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 from statistics import median
 
+from alembic import command
+from alembic.config import Config as AlembicConfig
 from sqlalchemy import (
     Column, Double, ForeignKey, Index, Integer, MetaData, String, Table, Text, create_engine, delete,
     event, exists, func, insert, inspect, select, text, update,
@@ -38,6 +41,11 @@ DEFAULT_SETTINGS = {
 }
 
 # ------------------------------------------------------------------------ esquema
+# Fuente de verdad del esquema actual. Cualquier cambio aquí necesita su migración en
+# app/migrations/versions (alembic revision --autogenerate); `alembic check` detecta si falta.
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+BASELINE_REVISION = "0001"  # esquema de las BD creadas antes de usar Alembic
+
 # Fechas como texto ISO (como siempre) para que comparar y ordenar funcione igual en todos los motores.
 # Double y no Float: en MySQL/MariaDB FLOAT es de precisión simple (29,99 → 29,9899997).
 _TABLE_OPTS = {"mysql_charset": "utf8mb4"}  # los nombres llevan «→»
@@ -163,17 +171,29 @@ def _one(con, stmt) -> dict | None:
     return dict(row) if row else None
 
 
+def _alembic_config(con) -> AlembicConfig:
+    cfg = AlembicConfig()
+    cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
+    cfg.attributes["connection"] = con
+    return cfg
+
+
 def init():
+    """Aplica las migraciones pendientes de Alembic (crea las tablas en una BD vacía)."""
     if engine.dialect.name == "sqlite":
         with engine.connect() as con:
             con.execute(text("PRAGMA journal_mode=WAL"))
-    metadata.create_all(engine)
-    # Migración de bases creadas antes de guardar el aeropuerto real (códigos de ciudad).
-    cols = {c["name"] for c in inspect(engine).get_columns("prices")}
-    with connect() as con:
-        for col in ("origin", "destination"):
-            if col not in cols:
-                con.execute(text(f"ALTER TABLE prices ADD COLUMN {col} VARCHAR(3)"))
+    with engine.begin() as con:
+        cfg = _alembic_config(con)
+        tables = set(inspect(con).get_table_names())
+        if "watches" in tables and "alembic_version" not in tables:
+            # BD anterior a Alembic: se completa hasta el esquema de la revisión base y se marca como tal.
+            cols = {c["name"] for c in inspect(con).get_columns("prices")}
+            for col in ("origin", "destination"):
+                if col not in cols:
+                    con.execute(text(f"ALTER TABLE prices ADD COLUMN {col} VARCHAR(3)"))
+            command.stamp(cfg, BASELINE_REVISION)
+        command.upgrade(cfg, "head")
 
 
 def seed_defaults():

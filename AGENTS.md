@@ -5,7 +5,8 @@ Panel web + bot que vigila precios de vuelos (solo ida) en Vueling y Ryanair, gu
 ## Stack
 
 - Python 3.12, FastAPI + Jinja2 (server-side rendering), Chart.js en `app/static/charts.js`.
-- SQLAlchemy **Core** (no ORM) en `app/db.py`: tablas declaradas con `Table`, `metadata.create_all()` al arrancar. Motor por `DB_ENGINE` (`sqlite` por defecto con WAL, `postgres` → psycopg, `mysql`/`mariadb` → pymysql). Sin Alembic: `create_all` no añade columnas; la única migración es el `ALTER TABLE` de `prices.origin/destination` en `db.init()`.
+- SQLAlchemy **Core** (no ORM) en `app/db.py`: tablas declaradas con `Table` (fuente de verdad del esquema). Motor por `DB_ENGINE` (`sqlite` por defecto con WAL, `postgres` → psycopg, `mysql`/`mariadb` → pymysql).
+- Migraciones con **Alembic** en `app/migrations/` (dentro de `app/` porque el Dockerfile solo copia esa carpeta). `db.init()` ejecuta `upgrade head` al arrancar; no hay `create_all`.
 - APIs JSON públicas vía `requests` (Vueling, Ryanair) y Playwright/Chromium headless solo para proveedores sin API (hoy ninguno registrado; `CalendarProvider` queda como base y lo cubren los tests). El navegador solo se abre si algún proveedor de la ronda lo necesita.
 - APScheduler (`BackgroundScheduler`) dentro del mismo proceso. `requests` para notificar.
 - Docker / docker-compose. **Un único worker de uvicorn**: el planificador vive en el proceso, más workers = comprobaciones duplicadas.
@@ -17,7 +18,8 @@ app/
   main.py        rutas FastAPI: panel, CRUD de vigilancias, detalle, API de gráficas, ajustes, ejecuciones, diagnóstico
   checker.py     ronda de comprobaciones (por vigilancia × proveedor) + reglas de aviso (deal_reason)
   scheduler.py   cron interno; horas/minuto/zona horaria salen de los ajustes en BD
-  db.py          esquema (SQLAlchemy Core), motor/conexión, ajustes por defecto (DEFAULT_SETTINGS), consultas, seed_defaults()
+  db.py          esquema (SQLAlchemy Core), motor/conexión, init() → Alembic, ajustes por defecto (DEFAULT_SETTINGS), consultas, seed_defaults()
+  migrations/    Alembic: env.py (usa db.engine/db.metadata), versions/0001_esquema_inicial.py
   notify.py      Discord (webhook) y Telegram (bot)
   fmt.py         formateo de fechas/precios para plantillas y avisos
   config.py      DATA_DIR, DEBUG_DIR, DB_ENGINE, DB_PATH (SQLite), DB_HOST/PORT/NAME/USER/PASSWORD
@@ -85,5 +87,8 @@ Variables de entorno: `PANEL_USER` / `PANEL_PASSWORD` (Basic Auth; vacías = sin
 - La regla «habitual» usa la mediana de la ruta+web, no la de la misma fecha de vuelo.
 - Solo ida por vigilancia; para ida y vuelta se crean dos vigilancias.
 - Webhook y token se guardan en texto plano en la BD: no exponer el panel sin autenticación.
-- Multi-motor (verificado 2026-09-30 con el smoke test contra postgres:16, mariadb:11 y mysql:8.4): precios en `Double` (en MySQL `Float` es precisión simple), fechas como texto ISO (`String`), tablas `utf8mb4`, `pool_pre_ping` porque MySQL corta conexiones inactivas, y `PRAGMA foreign_keys=ON` en cada conexión SQLite para que funcione el `CASCADE`. Las columnas `key` y `trigger` son palabras reservadas en MySQL: SQLAlchemy las entrecomilla, no escribir SQL crudo con ellas.
+- Multi-motor (verificado 2026-09-30 con el smoke test y `alembic check` contra postgres:16, mariadb:11 y mysql:8.4): precios en `Double` (en MySQL `Float` es precisión simple), fechas como texto ISO (`String`), tablas `utf8mb4`, `pool_pre_ping` porque MySQL corta conexiones inactivas, y `PRAGMA foreign_keys=ON` en cada conexión SQLite para que funcione el `CASCADE`. Las columnas `key` y `trigger` son palabras reservadas en MySQL: SQLAlchemy las entrecomilla, no escribir SQL crudo con ellas.
+- **Cambiar el esquema:** editar las `Table` de `db.py` y generar la revisión **contra una BD nueva** (`DATA_DIR=$(mktemp -d) python -c "from app import db; db.init()"` y luego `alembic revision --autogenerate -m "…" --rev-id 0002` con el mismo `DATA_DIR`). Revisar el archivo generado (Alembic no detecta renombrados) y comprobar con `alembic check`. Nunca importar `app.db` dentro de una revisión: cada revisión es una foto congelada.
+- Contra una BD SQLite anterior a Alembic, el autogenerate ve diferencias falsas (TEXT vs VARCHAR, REAL vs DOUBLE, FK reflejadas): en SQLite son equivalentes y no afectan en ejecución, pero por eso las revisiones se generan siempre sobre una BD nueva.
+- BD anterior a Alembic (tablas sin `alembic_version`): `db.init()` añade `prices.origin/destination` si faltan, marca la BD con `stamp 0001` y sigue con `upgrade head`. Verificado con datos reales del esquema del primer commit.
 - Para probar contra otro motor: `DB_ENGINE=postgres DB_HOST=127.0.0.1 DB_PORT=… DB_USER=… DB_PASSWORD=… python -m tests.smoke_test` sobre una BD vacía.

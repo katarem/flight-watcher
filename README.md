@@ -29,6 +29,8 @@ Todo se configura en `.env`:
 
 Con MySQL/MariaDB las tablas se crean en `utf8mb4`. Cambiar de motor no migra los datos: el nuevo arranca vacío con las vigilancias iniciales.
 
+El esquema se gestiona con **Alembic**: al arrancar, la app aplica sola las migraciones pendientes (`app/migrations/`), también sobre bases de datos SQLite creadas con versiones anteriores.
+
 Después, en el panel:
 
 1. **Ajustes → Notificaciones:** pega el webhook de Discord y/o el token y chat ID de Telegram y pulsa *Enviar mensaje de prueba*.
@@ -125,6 +127,7 @@ app/
   scheduler.py    planificación (se cambia desde Ajustes)
   notify.py       Discord / Telegram
   db.py           acceso a datos (SQLAlchemy Core: SQLite, PostgreSQL, MySQL, MariaDB)
+  migrations/     migraciones de Alembic
   providers/      base.py (abstracción), extract.py, vueling.py, ryanair.py
   templates/, static/
 tests/
