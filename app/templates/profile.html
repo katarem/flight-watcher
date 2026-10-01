@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Mi perfil{% endblock %}
+{% block content %}
+{% from "_avatar.html" import avatar %}
+{% from "_channels.html" import channel_list %}
+<h1>Mi perfil</h1>
+
+{% if errors %}
+<div class="flash err-box"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+{% endif %}
+
+<form method="post" action="/profile" enctype="multipart/form-data" class="form">
+  <section class="card">
+    <h2>Cuenta</h2>
+    <div class="profile-head">
+      {{ avatar(u, 'lg') }}
+      <div>
+        <strong>@{{ u.username }}</strong>
+        {% if u.role == 'admin' %}<span class="tag admin">admin</span>{% endif %}
+        <label class="file">Cambiar avatar
+          <input type="file" name="avatar" accept="image/png,image/jpeg,image/gif,image/webp">
+        </label>
+        {% if u.avatar %}<label class="check"><input type="checkbox" name="remove_avatar" value="1"> Quitar avatar</label>{% endif %}
+        <p class="hint">PNG, JPG, GIF o WebP de hasta 2 MB.</p>
+      </div>
+    </div>
+    <label>Nombre para mostrar
+      <input name="display_name" value="{{ u.display_name }}" maxlength="100" required>
+    </label>
+  </section>
+
+  <section class="card">
+    <h2>Avisos de errores</h2>
+    <label class="check"><input type="checkbox" name="notify_errors" value="1" {% if u.notify_errors %}checked{% endif %}> Avisarme (por todos mis canales activos) si una comprobación automática de mis vigilancias falla</label>
+  </section>
+
+  <div class="actions"><button class="btn">Guardar perfil</button></div>
+</form>
+
+{{ channel_list(channels, ch_base) }}
+
+<form method="post" action="/profile/password" class="card form">
+  <h2>Cambiar contraseña</h2>
+  {% if pw_errors %}
+  <div class="flash err-box"><ul>{% for e in pw_errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+  {% endif %}
+  <label>Contraseña actual
+    <input name="current_password" type="password" autocomplete="current-password" required>
+  </label>
+  <div class="row">
+    <label>Nueva contraseña
+      <input name="new_password" type="password" autocomplete="new-password" minlength="8" required>
+    </label>
+    <label>Repite la nueva contraseña
+      <input name="confirm_password" type="password" autocomplete="new-password" minlength="8" required>
+    </label>
+  </div>
+  <button class="btn">Cambiar contraseña</button>
+</form>
+{% endblock %}

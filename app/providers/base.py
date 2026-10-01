@@ -18,10 +18,11 @@ from pathlib import Path
 
 import requests
 
+from .. import __version__
 from .extract import JsonCollector, read_calendar_cells
 
 #: User-Agent honesto para las APIs: no nos hacemos pasar por un navegador.
-USER_AGENT = "flight-watcher/1.0 (+alertas de precio personales)"
+USER_AGENT = f"flight-watcher/{__version__} (+alertas de precio personales)"
 
 
 def add_months(day: date, months: int) -> date:

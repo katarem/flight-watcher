@@ -6,6 +6,7 @@ así que el resto de la app no sabe qué base de datos hay debajo.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import median
@@ -33,12 +34,9 @@ DEFAULT_SETTINGS = {
     "headless": "1",
     "debug": "0",
     "proxy_url": "",
-    "discord_webhook": "",
-    "telegram_token": "",
-    "telegram_chat_id": "",
     "panel_url": "",
-    "notify_errors": "1",
 }
+
 
 # ------------------------------------------------------------------------ esquema
 # Fuente de verdad del esquema actual. Cualquier cambio aquí necesita su migración en
@@ -61,9 +59,41 @@ settings_t = Table(
     **_TABLE_OPTS,
 )
 
+users = Table(
+    "users", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("username", String(50), nullable=False),  # siempre en minúsculas
+    Column("display_name", String(100), nullable=False),
+    Column("password_hash", String(255), nullable=False),
+    Column("role", String(10), nullable=False, server_default="user"),  # admin | user
+    Column("enabled", Integer, nullable=False, server_default="1"),
+    Column("avatar", String(100)),  # archivo en DATA_DIR/avatars (NULL = iniciales)
+    Column("notify_errors", Integer, nullable=False, server_default="1"),
+    Column("created_at", ISO, nullable=False),
+    Index("ux_users_username", "username", unique=True),
+    **_TABLE_OPTS,
+)
+
+# Canales de aviso de un usuario (Discord, Telegram…). `config` es JSON con los campos del tipo
+# (ver notify.KINDS); contiene secretos y nunca se devuelve al navegador.
+channels = Table(
+    "channels", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("kind", String(20), nullable=False),
+    Column("name", String(100), nullable=False),
+    Column("config", Text, nullable=False),
+    Column("enabled", Integer, nullable=False, server_default="1"),
+    Column("created_at", ISO, nullable=False),
+    Index("idx_channels_user", "user_id"),
+    **_TABLE_OPTS,
+)
+
 watches = Table(
     "watches", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
+    # Nullable solo por las BD anteriores a los usuarios: bootstrap_admin() las asigna al administrador.
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE", name="fk_watches_user_id")),
     Column("name", String(200), nullable=False),
     Column("origin", IATA, nullable=False),
     Column("destination", IATA, nullable=False),
@@ -74,6 +104,15 @@ watches = Table(
     Column("date_to", String(10)),
     Column("enabled", Integer, nullable=False, server_default="1"),
     Column("created_at", ISO, nullable=False),
+    Index("idx_watches_user", "user_id"),
+    **_TABLE_OPTS,
+)
+
+# Qué canales avisan por cada vigilancia (solo del dueño de la vigilancia).
+watch_channels = Table(
+    "watch_channels", metadata,
+    Column("watch_id", Integer, ForeignKey("watches.id", ondelete="CASCADE"), primary_key=True),
+    Column("channel_id", Integer, ForeignKey("channels.id", ondelete="CASCADE"), primary_key=True),
     **_TABLE_OPTS,
 )
 
@@ -180,24 +219,37 @@ def _alembic_config(con) -> AlembicConfig:
 
 def init():
     """Aplica las migraciones pendientes de Alembic (crea las tablas en una BD vacía)."""
-    if engine.dialect.name == "sqlite":
+    sqlite = engine.dialect.name == "sqlite"
+    if sqlite:
         with engine.connect() as con:
             con.execute(text("PRAGMA journal_mode=WAL"))
-    with engine.begin() as con:
-        cfg = _alembic_config(con)
-        tables = set(inspect(con).get_table_names())
-        if "watches" in tables and "alembic_version" not in tables:
-            # BD anterior a Alembic: se completa hasta el esquema de la revisión base y se marca como tal.
-            cols = {c["name"] for c in inspect(con).get_columns("prices")}
-            for col in ("origin", "destination"):
-                if col not in cols:
-                    con.execute(text(f"ALTER TABLE prices ADD COLUMN {col} VARCHAR(3)"))
-            command.stamp(cfg, BASELINE_REVISION)
-        command.upgrade(cfg, "head")
+    with engine.connect() as con:
+        if sqlite:
+            # Alembic cambia columnas de SQLite recreando la tabla (DROP + copia): con las claves foráneas
+            # activas, el ON DELETE CASCADE borraría los datos hijos (vigilancias, precios…).
+            # El PRAGMA solo vale fuera de una transacción.
+            con.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            con.commit()
+        try:
+            with con.begin():
+                cfg = _alembic_config(con)
+                tables = set(inspect(con).get_table_names())
+                if "watches" in tables and "alembic_version" not in tables:
+                    # BD anterior a Alembic: se completa hasta el esquema de la revisión base y se marca como tal.
+                    cols = {c["name"] for c in inspect(con).get_columns("prices")}
+                    for col in ("origin", "destination"):
+                        if col not in cols:
+                            con.execute(text(f"ALTER TABLE prices ADD COLUMN {col} VARCHAR(3)"))
+                    command.stamp(cfg, BASELINE_REVISION)
+                command.upgrade(cfg, "head")
+        finally:
+            if sqlite:
+                con.exec_driver_sql("PRAGMA foreign_keys=ON")
+                con.commit()
 
 
-def seed_defaults():
-    """Crea las dos vigilancias iniciales si la base de datos está vacía.
+def seed_defaults(user_id: int):
+    """Crea las dos vigilancias iniciales (del usuario dado) si la base de datos no tiene ninguna.
 
     TCI es el código de ciudad de Tenerife: se consultan Tenerife Norte (Vueling) y Sur (Ryanair).
     """
@@ -206,10 +258,146 @@ def seed_defaults():
             return
         now = datetime.now().isoformat(timespec="seconds")
         con.execute(insert(watches), [
-            {"name": name, "origin": o, "destination": d, "providers": "vueling,ryanair",
+            {"user_id": user_id, "name": name, "origin": o, "destination": d, "providers": "vueling,ryanair",
              "max_price": 40, "discount_pct": 30, "created_at": now}
             for name, o, d in (("Sevilla → Tenerife", "SVQ", "TCI"), ("Tenerife → Sevilla", "TCI", "SVQ"))
         ])
+
+
+# --------------------------------------------------------------------- usuarios
+def list_users(con) -> list[dict]:
+    return _all(con, select(users).order_by(users.c.id))
+
+
+def get_user(con, user_id: int) -> dict | None:
+    return _one(con, select(users).where(users.c.id == user_id))
+
+
+def get_user_by_username(con, username: str) -> dict | None:
+    return _one(con, select(users).where(users.c.username == username))
+
+
+def create_user(con, username, display_name, password_hash, role="user", enabled=True) -> int:
+    return con.execute(insert(users).values(
+        username=username, display_name=display_name, password_hash=password_hash, role=role,
+        enabled=int(enabled), created_at=datetime.now().isoformat(timespec="seconds"),
+    )).inserted_primary_key[0]
+
+
+def update_user(con, user_id: int, **values):
+    if "enabled" in values:
+        values["enabled"] = int(values["enabled"])
+    if "notify_errors" in values:
+        values["notify_errors"] = int(values["notify_errors"])
+    con.execute(update(users).where(users.c.id == user_id).values(**values))
+
+
+def delete_user(con, user_id: int):
+    """Borra también sus vigilancias (y con ellas precios, avisos y ejecuciones) por ON DELETE CASCADE."""
+    con.execute(delete(users).where(users.c.id == user_id))
+
+
+def count_admins(con, exclude_id: int | None = None) -> int:
+    """Administradores activos (opcionalmente sin contar a uno): sirve para no dejar el panel sin admin."""
+    stmt = select(func.count()).select_from(users).where(users.c.role == "admin", users.c.enabled == 1)
+    if exclude_id is not None:
+        stmt = stmt.where(users.c.id != exclude_id)
+    return con.execute(stmt).scalar()
+
+
+def watch_counts(con) -> dict[int, int]:
+    rows = con.execute(select(watches.c.user_id, func.count()).group_by(watches.c.user_id)).all()
+    return {uid: n for uid, n in rows}
+
+
+def bootstrap_admin(username: str, password_hash: str) -> tuple[int, bool]:
+    """Garantiza que hay un administrador. Devuelve (id, creado_ahora).
+
+    Si la BD es anterior a los usuarios, el nuevo administrador hereda las vigilancias huérfanas y los
+    canales de aviso que antes eran ajustes globales (que se borran de `settings`).
+    """
+    with connect() as con:
+        admin = _one(con, select(users).where(users.c.role == "admin").order_by(users.c.id).limit(1))
+        created = admin is None
+        if created:
+            uid = create_user(con, username, username.capitalize(), password_hash, role="admin")
+            admin = get_user(con, uid)
+        con.execute(update(watches).where(watches.c.user_id.is_(None)).values(user_id=admin["id"]))
+        legacy = {r["key"]: r["value"] for r in _all(con, select(settings_t))}
+        old_keys = ("discord_webhook", "telegram_token", "telegram_chat_id", "notify_errors")
+        moved = {k: legacy[k] for k in old_keys if k in legacy}
+        if moved:
+            if not list_channels(con, admin["id"]):
+                if moved.get("discord_webhook"):
+                    create_channel(con, admin["id"], "discord", "Discord", {"webhook": moved["discord_webhook"]})
+                if moved.get("telegram_token") and moved.get("telegram_chat_id"):
+                    create_channel(con, admin["id"], "telegram", "Telegram",
+                                   {"token": moved["telegram_token"], "chat_id": moved["telegram_chat_id"]})
+                ids = [c["id"] for c in list_channels(con, admin["id"])]
+                for w in list_watches(con, admin["id"]):
+                    set_watch_channels(con, w["id"], ids)
+            if "notify_errors" in moved:
+                update_user(con, admin["id"], notify_errors=moved["notify_errors"] == "1")
+            con.execute(delete(settings_t).where(settings_t.c.key.in_(list(moved))))
+        return admin["id"], created
+
+
+# ---------------------------------------------------------------------- canales
+def _channel(row: dict) -> dict:
+    row["config"] = json.loads(row["config"])
+    return row
+
+
+def list_channels(con, user_id: int, only_enabled: bool = False) -> list[dict]:
+    stmt = select(channels).where(channels.c.user_id == user_id).order_by(channels.c.id)
+    if only_enabled:
+        stmt = stmt.where(channels.c.enabled == 1)
+    return [_channel(r) for r in _all(con, stmt)]
+
+
+def get_channel(con, channel_id: int) -> dict | None:
+    row = _one(con, select(channels).where(channels.c.id == channel_id))
+    return _channel(row) if row else None
+
+
+def create_channel(con, user_id: int, kind: str, name: str, config: dict, enabled: bool = True) -> int:
+    return con.execute(insert(channels).values(
+        user_id=user_id, kind=kind, name=name, config=json.dumps(config), enabled=int(enabled),
+        created_at=datetime.now().isoformat(timespec="seconds"),
+    )).inserted_primary_key[0]
+
+
+def update_channel(con, channel_id: int, name: str, config: dict, enabled: bool):
+    con.execute(update(channels).where(channels.c.id == channel_id)
+                .values(name=name, config=json.dumps(config), enabled=int(enabled)))
+
+
+def delete_channel(con, channel_id: int):
+    con.execute(delete(channels).where(channels.c.id == channel_id))
+
+
+def channel_counts(con) -> dict[int, int]:
+    return {uid: n for uid, n in con.execute(select(channels.c.user_id, func.count()).group_by(channels.c.user_id)).all()}
+
+
+def set_watch_channels(con, watch_id: int, channel_ids: list[int]):
+    """Sustituye los canales de la vigilancia. El llamador garantiza que son del dueño."""
+    con.execute(delete(watch_channels).where(watch_channels.c.watch_id == watch_id))
+    if channel_ids:
+        con.execute(insert(watch_channels), [{"watch_id": watch_id, "channel_id": c} for c in sorted(set(channel_ids))])
+
+
+def _with_channel_ids(con, ws: list[dict]) -> list[dict]:
+    ids: dict[int, list[int]] = {}
+    if not ws:
+        return ws
+    for wid, cid in con.execute(select(watch_channels.c.watch_id, watch_channels.c.channel_id)
+                                .where(watch_channels.c.watch_id.in_([w["id"] for w in ws]))
+                                .order_by(watch_channels.c.channel_id)).all():
+        ids.setdefault(wid, []).append(cid)
+    for w in ws:
+        w["channel_ids"] = ids.get(w["id"], [])
+    return ws
 
 
 # --------------------------------------------------------------------- ajustes
@@ -252,16 +440,20 @@ def _watch_values(data: dict) -> dict:
     }
 
 
-def list_watches(con) -> list[dict]:
-    return [_watch(r) for r in _all(con, select(watches).order_by(watches.c.id))]
+def list_watches(con, user_id: int | None = None) -> list[dict]:
+    stmt = select(watches).order_by(watches.c.id)
+    if user_id is not None:
+        stmt = stmt.where(watches.c.user_id == user_id)
+    return _with_channel_ids(con, [_watch(r) for r in _all(con, stmt)])
 
 
 def get_watch(con, watch_id: int) -> dict | None:
-    return _watch(_one(con, select(watches).where(watches.c.id == watch_id)))
+    w = _watch(_one(con, select(watches).where(watches.c.id == watch_id)))
+    return _with_channel_ids(con, [w])[0] if w else None
 
 
-def create_watch(con, data: dict) -> int:
-    values = {**_watch_values(data), "created_at": datetime.now().isoformat(timespec="seconds")}
+def create_watch(con, user_id: int, data: dict) -> int:
+    values = {**_watch_values(data), "user_id": user_id, "created_at": datetime.now().isoformat(timespec="seconds")}
     return con.execute(insert(watches).values(**values)).inserted_primary_key[0]
 
 
@@ -350,10 +542,12 @@ def add_alerts(con, watch_id, deals, sent_at):
     ])
 
 
-def list_alerts(con, limit=10, watch_id=None):
+def list_alerts(con, limit=10, watch_id=None, user_id=None):
     stmt = select(alerts, watches.c.name.label("watch_name")).join(watches, watches.c.id == alerts.c.watch_id)
     if watch_id is not None:
         stmt = stmt.where(alerts.c.watch_id == watch_id)
+    if user_id is not None:
+        stmt = stmt.where(watches.c.user_id == user_id)
     return _all(con, stmt.order_by(alerts.c.sent_at.desc(), alerts.c.id.desc()).limit(limit))
 
 
@@ -376,9 +570,11 @@ def last_run(con, watch_id, provider):
                 .order_by(r.id.desc()).limit(1))
 
 
-def list_runs(con, limit=50):
-    return _all(con, select(runs, watches.c.name.label("watch_name"))
-                .join(watches, watches.c.id == runs.c.watch_id).order_by(runs.c.id.desc()).limit(limit))
+def list_runs(con, limit=50, user_id=None):
+    stmt = select(runs, watches.c.name.label("watch_name")).join(watches, watches.c.id == runs.c.watch_id)
+    if user_id is not None:
+        stmt = stmt.where(watches.c.user_id == user_id)
+    return _all(con, stmt.order_by(runs.c.id.desc()).limit(limit))
 
 
 def purge(con, retention_days: int):

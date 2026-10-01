@@ -157,23 +157,31 @@ def _check_one(browser, settings, tz, watch, prov, trigger) -> dict:
     return {"deals": deals, "base": base, "error": error, "started": started}
 
 
-def run_checks(watch_id: int | None = None, trigger: str = "cron") -> str:
-    """Ejecuta una ronda. Devuelve 'busy' si ya hay otra en marcha, 'empty' si no hay nada que hacer."""
+def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int | None = None) -> str:
+    """Ejecuta una ronda (de todos los usuarios, o solo de `user_id`).
+
+    Devuelve 'busy' si ya hay otra en marcha, 'empty' si no hay nada que hacer."""
     if not _lock.acquire(blocking=False):
         return "busy"
     try:
         settings = db.get_settings()
         tz = _tz(settings)
         with db.connect() as con:
-            watches = [w for w in db.list_watches(con)
-                       if (w["id"] == watch_id if watch_id else w["enabled"])]
+            users = {u["id"]: u for u in db.list_users(con)}
+            user_channels = {uid: db.list_channels(con, uid, only_enabled=True) for uid in users}
+            # Las vigilancias de un usuario desactivado no se comprueban (ni se avisa a nadie).
+            watches = [w for w in db.list_watches(con, user_id)
+                       if users.get(w["user_id"], {}).get("enabled")
+                       and (w["id"] == watch_id if watch_id else w["enabled"])]
         if not watches:
             return "empty"
 
-        problems: list[str] = []
+        problems: dict[int, list[str]] = {}  # por usuario: cada uno recibe solo los suyos
         needs_browser = any(PROVIDERS[k].needs_browser for w in watches for k in w["providers"] if k in PROVIDERS)
         with (browser_session(settings) if needs_browser else nullcontext()) as browser:
             for w in watches:
+                owner = users[w["user_id"]]
+                mine = problems.setdefault(owner["id"], [])
                 all_deals, baselines, last_started = [], {}, None
                 for key in w["providers"]:
                     prov = PROVIDERS.get(key)
@@ -185,19 +193,25 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron") -> str:
                     baselines[key] = res["base"]
                     last_started = res["started"]
                     if res["error"]:
-                        problems.append(f"{w['name']} · {prov.label}: {res['error']}")
+                        mine.append(f"{w['name']} · {prov.label}: {res['error']}")
 
                 if all_deals:
-                    sent, errs = notify.send_deals(settings, w, all_deals, baselines)
-                    problems += [f"{w['name']}: {e}" for e in errs]
+                    # Solo los canales que el usuario asignó a esta vigilancia (y siguen activos).
+                    chans = [c for c in user_channels[owner["id"]] if c["id"] in w["channel_ids"]]
+                    if not chans:  # sin marcar como avisados: se reenviarán cuando asigne algún canal
+                        log.info("Hay chollos en «%s» pero no tiene canales de aviso activos", w["name"])
+                        continue
+                    sent, errs = notify.send_deals(chans, w, all_deals, baselines, settings.get("panel_url", ""))
+                    mine += [f"{w['name']}: {e}" for e in errs]
                     if sent:  # solo se marcan como avisadas si llegaron a algún canal
                         with db.connect() as con:
                             db.add_alerts(con, w["id"], all_deals, last_started)
-                    elif not errs:
-                        log.info("Hay chollos pero no hay canales de notificación configurados")
 
-        if problems and trigger == "cron" and settings["notify_errors"] == "1":
-            notify.send_text(settings, "⚠️ Flight Watcher: hubo problemas\n" + "\n".join(f"• {p}" for p in problems))
+        if trigger == "cron":
+            for uid, items in problems.items():
+                if items and users[uid]["notify_errors"]:
+                    notify.send_text(user_channels[uid],
+                                     "⚠️ Flight Watcher: hubo problemas\n" + "\n".join(f"• {p}" for p in items))
 
         with db.connect() as con:
             db.purge(con, int(settings["retention_days"]))

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Nuevo canal' if is_new else 'Editar canal' }}{% endblock %}
+{% block content %}
+<h1>{{ 'Nuevo canal' if is_new else 'Editar canal' }} de {{ kind_label }}{% if owner.id != me.id %} · @{{ owner.username }}{% endif %}</h1>
+
+{% if errors %}
+<div class="flash err-box"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+{% endif %}
+
+<form method="post" action="{{ action }}" class="card form">
+  <input type="hidden" name="kind" value="{{ kind }}">
+  <label>Nombre
+    <input name="name" value="{{ ch_name }}" maxlength="100" placeholder="{{ kind_label }}">
+  </label>
+  {% for f in fields %}
+  <label>{{ f.label }}
+    <input name="{{ f.key }}" value="{{ f.value }}" {% if f.secret %}type="password" autocomplete="off"{% endif %}
+           placeholder="{{ '•••••• guardado (deja vacío para conservarlo)' if f.saved else f.placeholder }}">
+  </label>
+  {% endfor %}
+  <label class="check"><input type="checkbox" name="enabled" value="1" {% if enabled %}checked{% endif %}> Canal activo</label>
+  <div class="actions">
+    <button class="btn">{{ 'Añadir canal' if is_new else 'Guardar canal' }}</button>
+    <a class="btn ghost" href="{{ back }}">Cancelar</a>
+  </div>
+</form>
+{% endblock %}

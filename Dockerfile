@@ -1,5 +1,11 @@
 FROM python:3.12-slim
 
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="Flight Watcher" \
+      org.opencontainers.image.description="Panel y bot que vigila precios de vuelos y avisa por Discord y Telegram" \
+      org.opencontainers.image.source="https://github.com/katarem/flight-watcher" \
+      org.opencontainers.image.version="${VERSION}"
+
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \

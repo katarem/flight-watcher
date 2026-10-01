@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Usuarios{% endblock %}
+{% block content %}
+{% from "_avatar.html" import avatar %}
+<div class="card-head">
+  <h1>Usuarios</h1>
+  <a class="btn" href="/admin/users/new">Nuevo usuario</a>
+</div>
+
+<section class="card">
+  <div class="table-wrap">
+  <table>
+    <tr><th></th><th>Usuario</th><th>Rol</th><th>Estado</th><th>Vigilancias</th><th>Canales</th><th>Alta</th><th></th></tr>
+    {% for u in users %}
+    <tr>
+      <td>{{ avatar(u, 'sm') }}</td>
+      <td><strong>{{ u.display_name }}</strong><br><span class="muted small">@{{ u.username }}</span></td>
+      <td>{% if u.role == 'admin' %}<span class="tag admin">admin</span>{% else %}usuario{% endif %}</td>
+      <td>{% if u.enabled %}activo{% else %}<span class="tag off">desactivado</span>{% endif %}</td>
+      <td class="num">{{ u.n_watches }}</td>
+      <td class="num">{{ u.n_channels }}</td>
+      <td>{{ u.created_at|dt }}</td>
+      <td><div class="actions">
+        <a class="btn small ghost" href="/admin/users/{{ u.id }}/edit">Editar</a>
+        {% if u.id != me.id %}
+        <form method="post" action="/admin/users/{{ u.id }}/delete" class="inline"
+              onsubmit="return confirm('¿Eliminar a {{ u.username }} y todas sus vigilancias con su histórico?');">
+          <button class="btn small danger">Eliminar</button>
+        </form>
+        {% endif %}
+      </div></td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  <p class="hint">Cada usuario ve y gestiona solo sus vigilancias y configura sus propios canales de aviso (tú también puedes, desde «Editar»). Un usuario desactivado no puede entrar y sus vigilancias no se comprueban.</p>
+</section>
+{% endblock %}

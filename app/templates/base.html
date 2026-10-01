@@ -7,29 +7,40 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+{% from "_avatar.html" import avatar %}
 <header class="top">
   <a class="brand" href="/">✈️ Flight Watcher</a>
+  {% if me %}
   <nav>
     <a href="/">Panel</a>
     <a href="/watches/new">Nueva vigilancia</a>
     <a href="/runs">Ejecuciones</a>
+    {% if me.role == 'admin' %}
+    <a href="/admin/users">Usuarios</a>
     <a href="/settings">Ajustes</a>
     <a href="/debug">Diagnóstico</a>
+    {% endif %}
   </nav>
   <form method="post" action="/run" class="inline">
     <button class="btn small" {% if running %}disabled{% endif %}>▶ Comprobar todo</button>
   </form>
+  <div class="usermenu">
+    <a class="who" href="/profile" title="Mi perfil">{{ avatar(me, 'sm') }}<span>{{ me.display_name }}</span>
+      {% if me.role == 'admin' %}<span class="tag admin">admin</span>{% endif %}</a>
+    <form method="post" action="/logout" class="inline"><button class="btn small ghost">Salir</button></form>
+  </div>
+  {% endif %}
 </header>
 <main>
-  {% if running %}
+  {% if me and running %}
   <div class="banner">⏳ Comprobando precios… <strong id="running-current"></strong></div>
   {% endif %}
   {% if msg %}<div class="flash">{{ msg }}</div>{% endif %}
   {% block content %}{% endblock %}
 </main>
-<footer>Próxima comprobación automática: {{ next_run|dt }}</footer>
+{% if me %}<footer>Próxima comprobación automática: {{ next_run|dt }} · Flight Watcher v{{ version }}</footer>{% endif %}
 {% block scripts %}{% endblock %}
-{% if running %}
+{% if me and running %}
 <script>
 (async function poll() {
   try {

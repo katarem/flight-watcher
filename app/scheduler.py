@@ -50,11 +50,11 @@ def next_run():
     return job.next_run_time if job else None
 
 
-def run_now(watch_id: int | None = None) -> bool:
-    """Lanza una ronda en segundo plano. False si ya hay una en marcha."""
+def run_now(watch_id: int | None = None, user_id: int | None = None) -> bool:
+    """Lanza una ronda en segundo plano (de una vigilancia, de un usuario o de todos). False si ya hay una."""
     if checker.is_running():
         return False
     threading.Thread(
-        target=checker.run_checks, kwargs={"watch_id": watch_id, "trigger": "manual"}, daemon=True
+        target=checker.run_checks, kwargs={"watch_id": watch_id, "trigger": "manual", "user_id": user_id}, daemon=True
     ).start()
     return True

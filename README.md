@@ -7,9 +7,12 @@ Sustituye al script suelto anterior: ya no hay que editar archivos ni tocar el c
 ## Puesta en marcha
 
 ```bash
-cp .env.example .env        # usuario y contraseña del panel
-docker compose up -d --build
+cp .env.example .env        # usuario y contraseña del administrador
+docker compose pull         # descarga la imagen publicada en ghcr.io
+docker compose up -d
 ```
+
+Para construir la imagen en local en lugar de descargarla: `docker compose up -d --build`.
 
 Abre `http://localhost:8000`. En el primer arranque se crean dos vigilancias: **Sevilla → Tenerife** (`SVQ → TCI`) y **Tenerife → Sevilla**, con Vueling y Ryanair y un aviso a partir de 40 €.
 
@@ -21,7 +24,10 @@ Todo se configura en `.env`:
 
 | Variable | Por defecto | Para qué |
 |---|---|---|
-| `DATA_PATH` | `./data` | Carpeta **del host** montada en `/data`: BD SQLite y archivos de diagnóstico |
+| `DATA_PATH` | `./data` | Carpeta **del host** montada en `/data`: BD SQLite, avatares, clave de sesión y archivos de diagnóstico |
+| `PANEL_USER`, `PANEL_PASSWORD` | `admin` / aleatoria | Cuenta del **administrador inicial** (solo se usa si aún no hay ningún admin) |
+| `SECRET_KEY` | generada en `/data/.secret_key` | Clave con la que se firman las cookies de sesión |
+| `COOKIE_SECURE` | vacío | `1` si sirves el panel por HTTPS: la cookie solo viaja cifrada |
 | `DB_ENGINE` | `sqlite` | `sqlite`, `postgres`, `mysql` o `mariadb` |
 | `DB_HOST`, `DB_PORT` | `localhost`, 5432 / 3306 | Servidor (se ignoran con SQLite) |
 | `DB_NAME` | `flight_watcher` | La base de datos debe existir; las tablas se crean solas |
@@ -33,9 +39,36 @@ El esquema se gestiona con **Alembic**: al arrancar, la app aplica sola las migr
 
 Después, en el panel:
 
-1. **Ajustes → Notificaciones:** pega el webhook de Discord y/o el token y chat ID de Telegram y pulsa *Enviar mensaje de prueba*.
-2. **Ajustes → Programación:** elige a qué hora(s) se comprueba (p. ej. `8` o `8,20`) y la zona horaria.
-3. Pulsa **Comprobar todo** para traer los primeros precios.
+1. Entra con el administrador (`PANEL_USER` / `PANEL_PASSWORD`). Si no los definiste, se crea `admin` con una contraseña aleatoria que sale **una sola vez en el log** del contenedor (`docker compose logs flight-watcher`).
+2. **Perfil → Canales de aviso:** añade tus canales (Discord con webhook, Telegram con token de bot y chat ID) y pulsa *Probar*. Después marca, en cada vigilancia, a qué canales debe avisar.
+3. **Ajustes → Programación** (solo admin): elige a qué hora(s) se comprueba (p. ej. `8` o `8,20`) y la zona horaria.
+4. Pulsa **Comprobar todo** para traer los primeros precios.
+
+### Usuarios
+
+Cada usuario tiene **sus propias vigilancias, su histórico, sus avisos y una lista de canales de aviso** (hoy de tipo Discord o Telegram; puede crear los que quiera, también varios del mismo tipo), y un **avatar** (PNG, JPG, GIF o WebP de hasta 2 MB; si no hay, se muestran las iniciales). Nadie ve las vigilancias de otro, tampoco el administrador.
+
+Cada vigilancia avisa **solo a los canales que tenga marcados** (formulario de la vigilancia); un canal puede pausarse sin borrarlo. Si una vigilancia no tiene canales no avisa, y los chollos se enviarán cuando le asignes alguno.
+
+El administrador tiene además el apartado **Usuarios** (crear, editar, desactivar y eliminar usuarios, asignar rol y restablecer contraseñas; y **crear, editar, probar y borrar los canales de aviso de cualquier usuario**, útil si alguien no sabe configurarlos; los secretos ya guardados no se muestran a nadie) y los **Ajustes** y el **Diagnóstico** globales. Un usuario desactivado no puede entrar y sus vigilancias no se comprueban; eliminarlo borra también sus vigilancias y su histórico. Cada usuario cambia su contraseña, nombre y avatar en **Perfil**.
+
+Si actualizas desde una versión sin usuarios, el administrador inicial hereda las vigilancias existentes y los canales de aviso que había en Ajustes (como canales «Discord» / «Telegram» asignados a todas ellas).
+
+Para añadir otro tipo de canal (Slack, correo…), añade una entrada a `KINDS` en `app/notify.py`: campos del formulario, validación y función de envío. Aparece sola en las pantallas.
+
+## Versiones e imagen Docker
+
+La versión vive en `app/__init__.py` (`__version__`, hoy **1.1.0**; se ve en el pie del panel) y los cambios se anotan en [CHANGELOG.md](CHANGELOG.md).
+
+El CI (`.github/workflows/docker.yml`) ejecuta el test de humo y comprueba que las migraciones están al día, y publica la imagen en **ghcr.io/katarem/flight-watcher** (`linux/amd64`):
+
+| Evento | Etiquetas publicadas |
+|---|---|
+| Push a `main` | `latest` y `sha-<commit>` |
+| Etiqueta `vX.Y.Z` | `X.Y.Z`, `X.Y` y `latest` |
+| Pull request | solo construye (no publica) |
+
+Para sacar una versión: sube `__version__`, actualiza el CHANGELOG, haz merge a `main` y crea la etiqueta (`git tag v1.1.0 && git push origin v1.1.0`); el CI falla si la etiqueta no coincide con `__version__`. En el servidor, fija `FW_VERSION=1.1.0` en `.env` (o deja `latest`) y ejecuta `docker compose pull && docker compose up -d`. Con el paquete **público** no hace falta `docker login` para descargarlo. La imagen lleva la etiqueta `org.opencontainers.image.source`, que la enlaza con el repositorio: si el repositorio es público, el paquete nace público; si no, ponlo público una vez en GitHub → Packages → *flight-watcher* → Package settings → Change visibility (y comprueba que ahí el repositorio aparece conectado). Si lo dejas privado, `docker login ghcr.io` con un token `read:packages`.
 
 ## Aerolíneas y cómo se consultan
 
@@ -114,7 +147,8 @@ Para añadir otro código de ciudad (como `TCI`), añádelo a `METRO_AREAS` en `
 
 ## Seguridad
 
-- Define `PANEL_USER` y `PANEL_PASSWORD` (Basic Auth) o pon el panel detrás de tu proxy con autenticación. **No lo expongas sin protección:** guarda el webhook de Discord y el token de Telegram en la base de datos en texto plano.
+- El acceso es con usuario y contraseña (sesión por cookie firmada, `SameSite=Lax`). Las contraseñas se guardan con scrypt; cambiarla cierra las demás sesiones y varios fallos seguidos bloquean el inicio de sesión unos minutos. Si publicas el panel, ponlo tras HTTPS y define `COOKIE_SECURE=1`.
+- Los webhooks y tokens de los canales se guardan en la base de datos en texto plano (JSON): protege la BD y su copia de seguridad.
 - Solo se aceptan webhooks de Discord con la URL oficial y los campos secretos nunca se devuelven al navegador.
 - Respeta los términos de uso de cada aerolínea; una comprobación al día es una frecuencia razonable.
 
@@ -122,10 +156,13 @@ Para añadir otro código de ciudad (como `TCI`), añádelo a `METRO_AREAS` en `
 
 ```
 app/
-  main.py         panel web y API de gráficas
+  __init__.py     versión (__version__)
+  main.py         panel web, sesiones, perfil, administración de usuarios y API de gráficas
+  auth.py         contraseñas (scrypt), validación de usuarios y freno de intentos de login
+  avatars.py      guardado y validación de avatares
   checker.py      ronda de comprobaciones + reglas de aviso
   scheduler.py    planificación (se cambia desde Ajustes)
-  notify.py       Discord / Telegram
+  notify.py       tipos de canal (Discord / Telegram) y envío
   db.py           acceso a datos (SQLAlchemy Core: SQLite, PostgreSQL, MySQL, MariaDB)
   migrations/     migraciones de Alembic
   providers/      base.py (abstracción), extract.py, vueling.py, ryanair.py

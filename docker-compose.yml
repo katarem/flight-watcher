@@ -1,5 +1,7 @@
 services:
   flight-watcher:
+    # Imagen publicada por el CI en ghcr.io; `docker compose up -d --build` la construye en local.
+    image: ghcr.io/katarem/flight-watcher:${FW_VERSION:-latest}
     build: .
     container_name: flight-watcher
     restart: unless-stopped
@@ -11,6 +13,7 @@ services:
       TZ: Europe/Madrid
       PANEL_USER: ${PANEL_USER:-}
       PANEL_PASSWORD: ${PANEL_PASSWORD:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
       # Base de datos: sqlite (archivo en la carpeta de datos), postgres, mysql o mariadb.
       DB_ENGINE: ${DB_ENGINE:-sqlite}
       DB_HOST: ${DB_HOST:-}
