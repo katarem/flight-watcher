@@ -2,6 +2,7 @@
 {% block title %}Mi perfil{% endblock %}
 {% block content %}
 {% from "_avatar.html" import avatar %}
+{% from "_channels.html" import channel_list %}
 <h1>Mi perfil</h1>
 
 {% if errors %}
@@ -29,37 +30,16 @@
   </section>
 
   <section class="card">
-    <h2>Mis notificaciones</h2>
-    <p class="hint">Los avisos de <strong>tus</strong> vigilancias llegan solo a estos canales.</p>
-    <label>Webhook de Discord
-      <input name="discord_webhook" type="password" autocomplete="off"
-             placeholder="{{ '•••••• guardado (deja vacío para conservarlo)' if u.has_discord else 'https://discord.com/api/webhooks/…' }}">
-    </label>
-    {% if u.has_discord %}<label class="check"><input type="checkbox" name="clear_discord" value="1"> Borrar webhook guardado</label>{% endif %}
-
-    <div class="row">
-      <label>Token del bot de Telegram
-        <input name="telegram_token" type="password" autocomplete="off"
-               placeholder="{{ '•••••• guardado (deja vacío para conservarlo)' if u.has_telegram else '123456:ABC…' }}">
-      </label>
-      <label>Chat ID de Telegram
-        <input name="telegram_chat_id" value="{{ u.telegram_chat_id }}" placeholder="123456789">
-      </label>
-    </div>
-    {% if u.has_telegram %}<label class="check"><input type="checkbox" name="clear_telegram" value="1"> Borrar datos de Telegram</label>{% endif %}
-
-    <label class="check"><input type="checkbox" name="notify_errors" value="1" {% if u.notify_errors %}checked{% endif %}> Avisarme si una comprobación automática de mis vigilancias falla</label>
-    <p class="hint">Canales activos: {{ channels|join(', ') if channels else 'ninguno' }}.</p>
+    <h2>Avisos de errores</h2>
+    <label class="check"><input type="checkbox" name="notify_errors" value="1" {% if u.notify_errors %}checked{% endif %}> Avisarme (por todos mis canales activos) si una comprobación automática de mis vigilancias falla</label>
   </section>
 
   <div class="actions"><button class="btn">Guardar perfil</button></div>
 </form>
 
-<form method="post" action="/profile/test" style="margin-top:1rem">
-  <button class="btn ghost">Enviar mensaje de prueba</button>
-</form>
+{{ channel_list(channels, ch_base) }}
 
-<form method="post" action="/profile/password" class="card form" style="margin-top:1.5rem">
+<form method="post" action="/profile/password" class="card form">
   <h2>Cambiar contraseña</h2>
   {% if pw_errors %}
   <div class="flash err-box"><ul>{% for e in pw_errors %}<li>{{ e }}</li>{% endfor %}</ul></div>

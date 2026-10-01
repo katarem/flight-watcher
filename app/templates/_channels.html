@@ -1,0 +1,31 @@
+{# Lista de canales de aviso de un usuario. `base` es /profile (uno mismo) o /admin/users/<id> (admin). #}
+{% macro channel_list(channels, base) %}
+<section class="card">
+  <div class="card-head">
+    <h2>Canales de aviso</h2>
+    <a class="btn small" href="{{ base }}/channels/new">+ Añadir canal</a>
+  </div>
+  {% if channels %}
+  <div class="table-wrap">
+  <table>
+    {% for c in channels %}
+    <tr>
+      <td><strong>{{ c.name }}</strong> <span class="tag {{ 'kind' if c.enabled else 'off' }}">{{ c.kind_label }}{{ '' if c.enabled else ' · pausado' }}</span></td>
+      <td><div class="actions">
+        <form method="post" action="{{ base }}/channels/{{ c.id }}/test" class="inline"><button class="btn small ghost">Probar</button></form>
+        <a class="btn small ghost" href="{{ base }}/channels/{{ c.id }}/edit">Editar</a>
+        <form method="post" action="{{ base }}/channels/{{ c.id }}/delete" class="inline"
+              onsubmit="return confirm('¿Eliminar el canal «{{ c.name|e }}»? Dejará de avisar en las vigilancias que lo usan.');">
+          <button class="btn small danger">Eliminar</button>
+        </form>
+      </div></td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}
+  <p class="muted">Todavía no hay ningún canal. Añade uno (Discord o Telegram) y asígnalo a las vigilancias que quieras.</p>
+  {% endif %}
+  <p class="hint">Cada vigilancia avisa solo a los canales que marques en su formulario. Puedes tener varios de cada tipo.</p>
+</section>
+{% endmacro %}

@@ -163,6 +163,7 @@ def index(request: Request, user: dict = Depends(current_user)):
     today = datetime.now(_tz(s)).date().isoformat()
     cards = []
     with db.connect() as con:
+        chan_names = {c["id"]: c["name"] for c in db.list_channels(con, user["id"], only_enabled=True)}
         for w in db.list_watches(con, user["id"]):
             provs = []
             for pk in w["providers"]:
@@ -179,7 +180,8 @@ def index(request: Request, user: dict = Depends(current_user)):
                     "deal": checker.deal_reason(w, best["price"], base) if best else None,
                     "run": db.last_run(con, w["id"], pk),
                 })
-            cards.append({"w": w, "providers": provs})
+            cards.append({"w": w, "providers": provs,
+                          "channels": [chan_names[i] for i in w["channel_ids"] if i in chan_names]})
         runs = db.list_runs(con, 8, user["id"])
         alerts = db.list_alerts(con, 8, user_id=user["id"])
     return render(request, "index.html", cards=cards, runs=runs, alerts=alerts, providers=PROVIDERS)
@@ -241,25 +243,43 @@ def _parse_watch_form(name, origin, destination, providers, max_price, discount_
     return data, errors
 
 
+def _watch_form_page(request: Request, user: dict, w: dict, is_new: bool, errors=()):
+    with db.connect() as con:
+        chans = _channel_rows(db.list_channels(con, user["id"]))
+    return render(request, "watch_form.html", w=w, is_new=is_new, errors=list(errors), providers=PROVIDERS,
+                  channels=chans)
+
+
+def _own_channel_ids(user: dict, raw: list[str]) -> list[int]:
+    """Los ids marcados que de verdad son canales del usuario (el resto se ignora)."""
+    with db.connect() as con:
+        mine = {c["id"] for c in db.list_channels(con, user["id"])}
+    return sorted({int(c) for c in raw if c.isdigit() and int(c) in mine})
+
+
 @app.get("/watches/new")
-def watch_new(request: Request):
+def watch_new(request: Request, user: dict = Depends(current_user)):
+    with db.connect() as con:
+        default_channels = [c["id"] for c in db.list_channels(con, user["id"], only_enabled=True)]
     blank = {"name": "", "origin": "", "destination": "", "providers": ["vueling"], "max_price": None,
-             "discount_pct": 30, "date_from": "", "date_to": "", "enabled": 1}
-    return render(request, "watch_form.html", w=blank, is_new=True, errors=[], providers=PROVIDERS)
+             "discount_pct": 30, "date_from": "", "date_to": "", "enabled": 1, "channel_ids": default_channels}
+    return _watch_form_page(request, user, blank, True)
 
 
 @app.post("/watches")
 def watch_create(
     request: Request, user: dict = Depends(current_user), name: str = Form(""), origin: str = Form(""), destination: str = Form(""),
     providers: list[str] = Form(default=[]), max_price: str = Form(""), discount_pct: str = Form("30"),
-    date_from: str = Form(""), date_to: str = Form(""), enabled: str = Form(""),
+    date_from: str = Form(""), date_to: str = Form(""), enabled: str = Form(""), channels: list[str] = Form(default=[]),
 ):
     data, errors = _parse_watch_form(name, origin, destination, providers, max_price, discount_pct,
                                      date_from, date_to, enabled)
+    data["channel_ids"] = _own_channel_ids(user, channels)
     if errors:
-        return render(request, "watch_form.html", w=data, is_new=True, errors=errors, providers=PROVIDERS)
+        return _watch_form_page(request, user, data, True, errors)
     with db.connect() as con:
         wid = db.create_watch(con, user["id"], data)
+        db.set_watch_channels(con, wid, data["channel_ids"])
     return go(f"/watches/{wid}", "Vigilancia creada. Pulsa «Comprobar ahora» para traer los primeros precios.")
 
 
@@ -267,23 +287,25 @@ def watch_create(
 def watch_edit(request: Request, wid: int, user: dict = Depends(current_user)):
     with db.connect() as con:
         w = _own_watch(con, wid, user)
-    return render(request, "watch_form.html", w=w, is_new=False, errors=[], providers=PROVIDERS)
+    return _watch_form_page(request, user, w, False)
 
 
 @app.post("/watches/{wid}/edit")
 def watch_update(
     request: Request, wid: int, user: dict = Depends(current_user), name: str = Form(""), origin: str = Form(""), destination: str = Form(""),
     providers: list[str] = Form(default=[]), max_price: str = Form(""), discount_pct: str = Form("30"),
-    date_from: str = Form(""), date_to: str = Form(""), enabled: str = Form(""),
+    date_from: str = Form(""), date_to: str = Form(""), enabled: str = Form(""), channels: list[str] = Form(default=[]),
 ):
     data, errors = _parse_watch_form(name, origin, destination, providers, max_price, discount_pct,
                                      date_from, date_to, enabled)
+    data["channel_ids"] = _own_channel_ids(user, channels)
     if errors:
         data["id"] = wid
-        return render(request, "watch_form.html", w=data, is_new=False, errors=errors, providers=PROVIDERS)
+        return _watch_form_page(request, user, data, False, errors)
     with db.connect() as con:
         _own_watch(con, wid, user)
         db.update_watch(con, wid, data)
+        db.set_watch_channels(con, wid, data["channel_ids"])
     return go(f"/watches/{wid}", "Cambios guardados.")
 
 
@@ -401,9 +423,6 @@ def api_status(user: dict = Depends(current_user)):
 
 
 # ------------------------------------------------------------------------ ajustes
-_WEBHOOK = re.compile(r"^https://(?:[\w-]+\.)?discord(?:app)?\.com/api/webhooks/")
-
-
 @app.get("/settings", dependencies=[Depends(require_admin)])
 def settings_page(request: Request):
     return render(request, "settings.html", s=db.get_settings(), errors=[], providers=PROVIDERS)
@@ -564,18 +583,18 @@ def _change_avatar(con, user: dict, upload: UploadFile | None, remove: bool, err
 
 
 # ------------------------------------------------------------------------- perfil
-_TG_TOKEN = re.compile(r"^\d{5,}:[\w-]{20,}$")
-_TG_CHAT = re.compile(r"^-?\d{1,20}$|^@[A-Za-z0-9_]{4,}$")
-
-
-def _profile_view(user: dict, **override) -> dict:
-    return {**_public(user), "notify_errors": user["notify_errors"], "telegram_chat_id": user["telegram_chat_id"],
-            "has_discord": bool(user["discord_webhook"]), "has_telegram": bool(user["telegram_token"]), **override}
+def _channel_rows(chans: list[dict]) -> list[dict]:
+    """Lo que ven las plantillas de un canal: nunca su configuración (secretos)."""
+    return [{"id": c["id"], "kind": c["kind"], "kind_label": notify.KINDS[c["kind"]]["label"], "name": c["name"],
+             "enabled": c["enabled"]} for c in chans if c["kind"] in notify.KINDS]
 
 
 def _profile_page(request: Request, user: dict, errors=(), pw_errors=(), **override):
-    return render(request, "profile.html", u=_profile_view(user, **override), errors=list(errors),
-                  pw_errors=list(pw_errors), channels=notify.channels(notify.target({}, user)))
+    with db.connect() as con:
+        chans = _channel_rows(db.list_channels(con, user["id"]))
+    view = {**_public(user), "notify_errors": user["notify_errors"], **override}
+    return render(request, "profile.html", u=view, errors=list(errors), pw_errors=list(pw_errors),
+                  channels=chans, ch_base="/profile")
 
 
 @app.get("/profile")
@@ -586,42 +605,12 @@ def profile_page(request: Request, user: dict = Depends(current_user)):
 @app.post("/profile")
 def profile_save(
     request: Request, user: dict = Depends(current_user), display_name: str = Form(""),
-    notify_errors: str = Form(""), discord_webhook: str = Form(""), clear_discord: str = Form(""),
-    telegram_token: str = Form(""), telegram_chat_id: str = Form(""), clear_telegram: str = Form(""),
-    avatar: UploadFile | None = File(None), remove_avatar: str = Form(""),
+    notify_errors: str = Form(""), avatar: UploadFile | None = File(None), remove_avatar: str = Form(""),
 ):
-    errors, values = [], {"notify_errors": bool(notify_errors)}
-    values["display_name"] = display_name.strip()[:100] or user["display_name"]
-
-    hook = discord_webhook.strip()
-    if clear_discord:
-        values["discord_webhook"] = ""
-    elif hook:
-        if _WEBHOOK.match(hook) and len(hook) <= 500:
-            values["discord_webhook"] = hook
-        else:
-            errors.append("La URL del webhook de Discord no es válida.")
-
-    token, chat = telegram_token.strip(), telegram_chat_id.strip()
-    if clear_telegram:
-        values["telegram_token"] = values["telegram_chat_id"] = ""
-    else:
-        if token:
-            if _TG_TOKEN.match(token) and len(token) <= 200:
-                values["telegram_token"] = token
-            else:
-                errors.append("El token del bot de Telegram no tiene un formato válido (123456:ABC…).")
-        if chat:
-            if _TG_CHAT.match(chat):
-                values["telegram_chat_id"] = chat
-            else:
-                errors.append("El chat ID de Telegram debe ser un número (o @canal).")
-
-    if errors:
-        return _profile_page(request, user, errors, display_name=values["display_name"],
-                             notify_errors=values["notify_errors"])
+    errors = []
     with db.connect() as con:
-        db.update_user(con, user["id"], **values)
+        db.update_user(con, user["id"], display_name=display_name.strip()[:100] or user["display_name"],
+                       notify_errors=bool(notify_errors))
         _change_avatar(con, user, avatar, bool(remove_avatar), errors)
     if errors:  # el resto sí se ha guardado; solo falló el avatar
         with db.connect() as con:
@@ -651,32 +640,121 @@ def profile_password(
     return go("/profile", "Contraseña cambiada.")
 
 
-@app.post("/profile/test")
-def profile_test(user: dict = Depends(current_user)):
-    target = notify.target(db.get_settings(), user)
-    if not notify.channels(target):
-        return go("/profile", "No tienes ningún canal configurado (Discord o Telegram).")
-    ok, errors = notify.send_text(target, "✅ Flight Watcher: las notificaciones funcionan.")
-    if errors:
-        return go("/profile", "Fallo al enviar: " + ", ".join(errors))
-    return go("/profile", "Mensaje de prueba enviado a: " + ", ".join(ok))
+# ------------------------------------------------- canales de aviso (propios o, el admin, de cualquiera)
+def owner_self(user: dict = Depends(current_user)) -> dict:
+    return user
+
+
+def owner_admin(uid: int, admin: dict = Depends(require_admin)) -> dict:
+    with db.connect() as con:
+        owner = db.get_user(con, uid)
+    if not owner:
+        raise HTTPException(404)
+    return owner
+
+
+def _channel_routes(tag: str, prefix: str, owner_dep, back_fn):
+    """Mismas pantallas para `/profile/channels…` (el propio usuario) y `/admin/users/{uid}/channels…` (admin)."""
+
+    def base(owner: dict) -> str:
+        return prefix.replace("{uid}", str(owner["id"]))
+
+    def own_channel(con, owner: dict, cid: int) -> dict:
+        ch = db.get_channel(con, cid)
+        if not ch or ch["user_id"] != owner["id"] or ch["kind"] not in notify.KINDS:
+            raise HTTPException(404)
+        return ch
+
+    def form_page(request, owner, kind, *, ch=None, name=None, enabled=True, errors=(), form=None):
+        config = (ch or {}).get("config") or {}
+        fields = notify.view_fields(kind, config)
+        for f in fields:  # tras un error se conserva lo escrito (menos los secretos)
+            if form and not f["secret"]:
+                f["value"] = form.get(f["key"], "")
+        return render(request, "channel_form.html", owner=_public(owner), kind=kind, kind_label=notify.KINDS[kind]["label"],
+                      fields=fields, ch=ch, is_new=ch is None, ch_name=name if name is not None else (ch["name"] if ch else ""),
+                      enabled=enabled, errors=list(errors), action=base(owner) + ("/channels" if ch is None else f"/channels/{ch['id']}/edit"),
+                      back=back_fn(owner))
+
+    @app.get(prefix + "/channels/new", name=f"{tag}_channel_new")
+    def channel_new(request: Request, kind: str = "", owner: dict = Depends(owner_dep)):
+        if kind not in notify.KINDS:
+            return render(request, "channel_kinds.html", owner=_public(owner), kinds=notify.KINDS,
+                          new_url=base(owner) + "/channels/new", back=back_fn(owner))
+        return form_page(request, owner, kind)
+
+    @app.post(prefix + "/channels", name=f"{tag}_channel_create")
+    async def channel_create(request: Request, owner: dict = Depends(owner_dep)):
+        form = dict(await request.form())
+        kind = str(form.get("kind", ""))
+        if kind not in notify.KINDS:
+            raise HTTPException(400, "Tipo de canal desconocido")
+        config, errors = notify.validate_config(kind, form)
+        name = str(form.get("name", "")).strip()[:100] or notify.KINDS[kind]["label"]
+        enabled = bool(form.get("enabled"))
+        if errors:
+            return form_page(request, owner, kind, name=name, enabled=enabled, errors=errors, form=form)
+        with db.connect() as con:
+            db.create_channel(con, owner["id"], kind, name, config, enabled)
+        return go(back_fn(owner), f"Canal «{name}» añadido. Asígnalo a tus vigilancias para recibir avisos.")
+
+    @app.get(prefix + "/channels/{cid}/edit", name=f"{tag}_channel_edit")
+    def channel_edit(request: Request, cid: int, owner: dict = Depends(owner_dep)):
+        with db.connect() as con:
+            ch = own_channel(con, owner, cid)
+        return form_page(request, owner, ch["kind"], ch=ch, enabled=bool(ch["enabled"]))
+
+    @app.post(prefix + "/channels/{cid}/edit", name=f"{tag}_channel_update")
+    async def channel_update(request: Request, cid: int, owner: dict = Depends(owner_dep)):
+        form = dict(await request.form())
+        with db.connect() as con:
+            ch = own_channel(con, owner, cid)
+            config, errors = notify.validate_config(ch["kind"], form, ch["config"])
+            name = str(form.get("name", "")).strip()[:100] or notify.KINDS[ch["kind"]]["label"]
+            enabled = bool(form.get("enabled"))
+            if errors:
+                return form_page(request, owner, ch["kind"], ch=ch, name=name, enabled=enabled, errors=errors, form=form)
+            db.update_channel(con, cid, name, config, enabled)
+        return go(back_fn(owner), f"Canal «{name}» guardado.")
+
+    @app.post(prefix + "/channels/{cid}/delete", name=f"{tag}_channel_delete")
+    def channel_delete(cid: int, owner: dict = Depends(owner_dep)):
+        with db.connect() as con:
+            ch = own_channel(con, owner, cid)
+            db.delete_channel(con, cid)
+        return go(back_fn(owner), f"Canal «{ch['name']}» eliminado (también de las vigilancias que lo usaban).")
+
+    @app.post(prefix + "/channels/{cid}/test", name=f"{tag}_channel_test")
+    def channel_test(cid: int, owner: dict = Depends(owner_dep)):
+        with db.connect() as con:
+            ch = own_channel(con, owner, cid)
+        ok, errors = notify.send_text([ch], "✅ Flight Watcher: las notificaciones funcionan.")
+        return go(back_fn(owner), ("Fallo al enviar: " + ", ".join(errors)) if errors else f"Mensaje de prueba enviado a «{ch['name']}».")
+
+
+_channel_routes("me", "/profile", owner_self, lambda o: "/profile")
+_channel_routes("admin", "/admin/users/{uid}", owner_admin, lambda o: f"/admin/users/{o['id']}/edit")
 
 
 # --------------------------------------------------------- usuarios (solo admin)
-def _user_row(u: dict, n_watches: int) -> dict:
-    return {**_public(u), "n_watches": n_watches,
-            "channels": notify.channels(notify.target({}, u))}
+def _user_row(u: dict, n_watches: int, n_channels: int) -> dict:
+    return {**_public(u), "n_watches": n_watches, "n_channels": n_channels}
 
 
 def _admin_form(request: Request, u: dict, is_new: bool, errors=()):
-    return render(request, "user_form.html", u=u, is_new=is_new, errors=list(errors), roles=auth.ROLES)
+    chans = []
+    if not is_new:
+        with db.connect() as con:
+            chans = _channel_rows(db.list_channels(con, u["id"]))
+    return render(request, "user_form.html", u=u, is_new=is_new, errors=list(errors), roles=auth.ROLES,
+                  channels=chans, ch_base=f"/admin/users/{u['id']}")
 
 
 @app.get("/admin/users")
 def users_page(request: Request, admin: dict = Depends(require_admin)):
     with db.connect() as con:
-        counts = db.watch_counts(con)
-        rows = [_user_row(u, counts.get(u["id"], 0)) for u in db.list_users(con)]
+        counts, ch_counts = db.watch_counts(con), db.channel_counts(con)
+        rows = [_user_row(u, counts.get(u["id"], 0), ch_counts.get(u["id"], 0)) for u in db.list_users(con)]
     return render(request, "users.html", users=rows)
 
 

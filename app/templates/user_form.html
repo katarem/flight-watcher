@@ -2,6 +2,7 @@
 {% block title %}{{ 'Nuevo usuario' if is_new else 'Editar usuario' }}{% endblock %}
 {% block content %}
 {% from "_avatar.html" import avatar %}
+{% from "_channels.html" import channel_list %}
 <h1>{{ 'Nuevo usuario' if is_new else 'Editar @' ~ u.username }}</h1>
 
 {% if errors %}
@@ -42,10 +43,16 @@
   </div>
   <label class="check"><input type="checkbox" name="enabled" value="1" {% if u.enabled %}checked{% endif %} {% if is_self %}disabled{% endif %}> Cuenta activa</label>
   {% if is_self %}<p class="hint">No puedes cambiar tu propio rol ni desactivarte.</p>{% endif %}
-  <p class="hint">El administrador gestiona usuarios y los ajustes globales. Los canales de aviso los configura cada usuario en su perfil.</p>
+  <p class="hint">El administrador gestiona usuarios y los ajustes globales. {% if is_new %}Los canales de aviso se podrán añadir al guardar el usuario.{% endif %}</p>
   <div class="actions">
     <button class="btn">{{ 'Crear usuario' if is_new else 'Guardar cambios' }}</button>
     <a class="btn ghost" href="/admin/users">Cancelar</a>
   </div>
 </form>
+
+{% if not is_new %}
+<h2 style="margin-top:1.5rem">Canales de aviso de @{{ u.username }}</h2>
+<p class="hint">Como administrador puedes configurarlos por quien no sepa hacerlo; el usuario los verá en su perfil y los asigna a sus vigilancias. Los secretos guardados no se muestran.</p>
+{{ channel_list(channels, ch_base) }}
+{% endif %}
 {% endblock %}

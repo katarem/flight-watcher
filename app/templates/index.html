@@ -18,6 +18,7 @@
         · −{{ c.w.discount_pct|int }} % sobre lo habitual
         {% if c.w.date_from or c.w.date_to %}· {{ c.w.date_from or '…' }} – {{ c.w.date_to or '…' }}{% endif %}
       </p>
+      <p class="muted small">{% if c.channels %}🔔 Avisa a: {{ c.channels|join(', ') }}{% else %}🔕 Sin canales de aviso: <a href="/watches/{{ c.w.id }}/edit">asígnalos</a>{% endif %}</p>
     </div>
     <div class="actions">
       <form method="post" action="/watches/{{ c.w.id }}/run" class="inline"><button class="btn small" {% if running %}disabled{% endif %}>▶ Comprobar</button></form>

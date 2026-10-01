@@ -168,6 +168,7 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
         tz = _tz(settings)
         with db.connect() as con:
             users = {u["id"]: u for u in db.list_users(con)}
+            user_channels = {uid: db.list_channels(con, uid, only_enabled=True) for uid in users}
             # Las vigilancias de un usuario desactivado no se comprueban (ni se avisa a nadie).
             watches = [w for w in db.list_watches(con, user_id)
                        if users.get(w["user_id"], {}).get("enabled")
@@ -195,18 +196,21 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
                         mine.append(f"{w['name']} · {prov.label}: {res['error']}")
 
                 if all_deals:
-                    sent, errs = notify.send_deals(notify.target(settings, owner), w, all_deals, baselines)
+                    # Solo los canales que el usuario asignó a esta vigilancia (y siguen activos).
+                    chans = [c for c in user_channels[owner["id"]] if c["id"] in w["channel_ids"]]
+                    if not chans:  # sin marcar como avisados: se reenviarán cuando asigne algún canal
+                        log.info("Hay chollos en «%s» pero no tiene canales de aviso activos", w["name"])
+                        continue
+                    sent, errs = notify.send_deals(chans, w, all_deals, baselines, settings.get("panel_url", ""))
                     mine += [f"{w['name']}: {e}" for e in errs]
                     if sent:  # solo se marcan como avisadas si llegaron a algún canal
                         with db.connect() as con:
                             db.add_alerts(con, w["id"], all_deals, last_started)
-                    elif not errs:
-                        log.info("Hay chollos pero no hay canales de notificación configurados")
 
         if trigger == "cron":
             for uid, items in problems.items():
                 if items and users[uid]["notify_errors"]:
-                    notify.send_text(notify.target(settings, users[uid]),
+                    notify.send_text(user_channels[uid],
                                      "⚠️ Flight Watcher: hubo problemas\n" + "\n".join(f"• {p}" for p in items))
 
         with db.connect() as con:

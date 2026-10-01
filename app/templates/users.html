@@ -10,7 +10,7 @@
 <section class="card">
   <div class="table-wrap">
   <table>
-    <tr><th></th><th>Usuario</th><th>Rol</th><th>Estado</th><th>Vigilancias</th><th>Avisos</th><th>Alta</th><th></th></tr>
+    <tr><th></th><th>Usuario</th><th>Rol</th><th>Estado</th><th>Vigilancias</th><th>Canales</th><th>Alta</th><th></th></tr>
     {% for u in users %}
     <tr>
       <td>{{ avatar(u, 'sm') }}</td>
@@ -18,7 +18,7 @@
       <td>{% if u.role == 'admin' %}<span class="tag admin">admin</span>{% else %}usuario{% endif %}</td>
       <td>{% if u.enabled %}activo{% else %}<span class="tag off">desactivado</span>{% endif %}</td>
       <td class="num">{{ u.n_watches }}</td>
-      <td>{{ u.channels|join(', ') if u.channels else '—' }}</td>
+      <td class="num">{{ u.n_channels }}</td>
       <td>{{ u.created_at|dt }}</td>
       <td><div class="actions">
         <a class="btn small ghost" href="/admin/users/{{ u.id }}/edit">Editar</a>
@@ -33,6 +33,6 @@
     {% endfor %}
   </table>
   </div>
-  <p class="hint">Cada usuario ve y gestiona solo sus vigilancias y configura sus propios canales de aviso. Un usuario desactivado no puede entrar y sus vigilancias no se comprueban.</p>
+  <p class="hint">Cada usuario ve y gestiona solo sus vigilancias y configura sus propios canales de aviso (tú también puedes, desde «Editar»). Un usuario desactivado no puede entrar y sus vigilancias no se comprueban.</p>
 </section>
 {% endblock %}

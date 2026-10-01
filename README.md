@@ -37,17 +37,21 @@ El esquema se gestiona con **Alembic**: al arrancar, la app aplica sola las migr
 Después, en el panel:
 
 1. Entra con el administrador (`PANEL_USER` / `PANEL_PASSWORD`). Si no los definiste, se crea `admin` con una contraseña aleatoria que sale **una sola vez en el log** del contenedor (`docker compose logs flight-watcher`).
-2. **Perfil → Mis notificaciones:** pega tu webhook de Discord y/o el token y chat ID de Telegram y pulsa *Enviar mensaje de prueba*.
+2. **Perfil → Canales de aviso:** añade tus canales (Discord con webhook, Telegram con token de bot y chat ID) y pulsa *Probar*. Después marca, en cada vigilancia, a qué canales debe avisar.
 3. **Ajustes → Programación** (solo admin): elige a qué hora(s) se comprueba (p. ej. `8` o `8,20`) y la zona horaria.
 4. Pulsa **Comprobar todo** para traer los primeros precios.
 
 ### Usuarios
 
-Cada usuario tiene **sus propias vigilancias, su histórico, sus avisos y sus canales de notificación** (webhook de Discord y/o bot de Telegram propios), y un **avatar** (PNG, JPG, GIF o WebP de hasta 2 MB; si no hay, se muestran las iniciales). Nadie ve las vigilancias de otro, tampoco el administrador.
+Cada usuario tiene **sus propias vigilancias, su histórico, sus avisos y una lista de canales de aviso** (hoy de tipo Discord o Telegram; puede crear los que quiera, también varios del mismo tipo), y un **avatar** (PNG, JPG, GIF o WebP de hasta 2 MB; si no hay, se muestran las iniciales). Nadie ve las vigilancias de otro, tampoco el administrador.
 
-El administrador tiene además el apartado **Usuarios** (crear, editar, desactivar y eliminar usuarios, asignar rol y restablecer contraseñas) y los **Ajustes** y el **Diagnóstico** globales. Un usuario desactivado no puede entrar y sus vigilancias no se comprueban; eliminarlo borra también sus vigilancias y su histórico. Cada usuario cambia su contraseña, nombre y avatar en **Perfil**.
+Cada vigilancia avisa **solo a los canales que tenga marcados** (formulario de la vigilancia); un canal puede pausarse sin borrarlo. Si una vigilancia no tiene canales no avisa, y los chollos se enviarán cuando le asignes alguno.
 
-Si actualizas desde una versión sin usuarios, el administrador inicial hereda las vigilancias existentes y los canales de aviso que había en Ajustes.
+El administrador tiene además el apartado **Usuarios** (crear, editar, desactivar y eliminar usuarios, asignar rol y restablecer contraseñas; y **crear, editar, probar y borrar los canales de aviso de cualquier usuario**, útil si alguien no sabe configurarlos; los secretos ya guardados no se muestran a nadie) y los **Ajustes** y el **Diagnóstico** globales. Un usuario desactivado no puede entrar y sus vigilancias no se comprueban; eliminarlo borra también sus vigilancias y su histórico. Cada usuario cambia su contraseña, nombre y avatar en **Perfil**.
+
+Si actualizas desde una versión sin usuarios, el administrador inicial hereda las vigilancias existentes y los canales de aviso que había en Ajustes (como canales «Discord» / «Telegram» asignados a todas ellas).
+
+Para añadir otro tipo de canal (Slack, correo…), añade una entrada a `KINDS` en `app/notify.py`: campos del formulario, validación y función de envío. Aparece sola en las pantallas.
 
 ## Aerolíneas y cómo se consultan
 
@@ -127,7 +131,7 @@ Para añadir otro código de ciudad (como `TCI`), añádelo a `METRO_AREAS` en `
 ## Seguridad
 
 - El acceso es con usuario y contraseña (sesión por cookie firmada, `SameSite=Lax`). Las contraseñas se guardan con scrypt; cambiarla cierra las demás sesiones y varios fallos seguidos bloquean el inicio de sesión unos minutos. Si publicas el panel, ponlo tras HTTPS y define `COOKIE_SECURE=1`.
-- Los webhooks y tokens de cada usuario se guardan en la base de datos en texto plano: protege la BD y su copia de seguridad.
+- Los webhooks y tokens de los canales se guardan en la base de datos en texto plano (JSON): protege la BD y su copia de seguridad.
 - Solo se aceptan webhooks de Discord con la URL oficial y los campos secretos nunca se devuelven al navegador.
 - Respeta los términos de uso de cada aerolínea; una comprobación al día es una frecuencia razonable.
 
@@ -140,7 +144,7 @@ app/
   avatars.py      guardado y validación de avatares
   checker.py      ronda de comprobaciones + reglas de aviso
   scheduler.py    planificación (se cambia desde Ajustes)
-  notify.py       Discord / Telegram
+  notify.py       tipos de canal (Discord / Telegram) y envío
   db.py           acceso a datos (SQLAlchemy Core: SQLite, PostgreSQL, MySQL, MariaDB)
   migrations/     migraciones de Alembic
   providers/      base.py (abstracción), extract.py, vueling.py, ryanair.py

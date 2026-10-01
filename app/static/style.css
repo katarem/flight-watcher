@@ -79,3 +79,4 @@ code { background: var(--bg); padding: .05rem .3rem; border-radius: 4px; }
 .login { max-width: 360px; margin: 3rem auto; }
 .login h1 { text-align: center; }
 @media (max-width: 520px) { .usermenu .who span:not(.avatar) { display: none; } }
+.tag.kind { background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); }

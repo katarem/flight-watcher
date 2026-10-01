@@ -51,6 +51,19 @@
   </div>
   <p class="hint">Sin límites, se comprueban todas las fechas con precio desde hoy en adelante.</p>
 
+  <fieldset>
+    <legend>Canales de aviso</legend>
+    {% for c in channels %}
+    <label class="check">
+      <input type="checkbox" name="channels" value="{{ c.id }}" {% if c.id in w.channel_ids %}checked{% endif %}>
+      {{ c.name }} <span class="tag {{ 'kind' if c.enabled else 'off' }}">{{ c.kind_label }}{{ '' if c.enabled else ' · pausado' }}</span>
+    </label>
+    {% else %}
+    <p class="muted">No tienes canales de aviso: esta vigilancia no avisará a nadie. Crea uno en <a href="/profile">tu perfil</a>.</p>
+    {% endfor %}
+    {% if channels %}<p class="hint">La vigilancia avisa solo a los canales marcados. Si no marcas ninguno, no recibirás avisos.</p>{% endif %}
+  </fieldset>
+
   <label class="check"><input type="checkbox" name="enabled" value="1" {% if w.enabled %}checked{% endif %}> Vigilancia activa</label>
 
   <div class="actions">

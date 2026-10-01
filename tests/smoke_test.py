@@ -74,15 +74,15 @@ for k, prov in PROVIDERS.items():
     type(prov).fetch_prices = make_fetch(k)
 
 SENT = []
-TARGETS = []  # webhook de Discord al que iba cada aviso (cada usuario tiene el suyo)
+TARGETS = []  # nombres de los canales a los que iba cada aviso
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
 
 
-def fake_send(settings, discord_lines, telegram_lines):
-    SENT.append((list(discord_lines), list(telegram_lines)))
-    TARGETS.append(settings.get("discord_webhook"))
-    return ["discord"], []
+def fake_send(channels, lines):
+    SENT.append((list(lines["markdown"]), list(lines["html"])))
+    TARGETS.append(tuple(c["name"] for c in channels))
+    return [c["name"] for c in channels], []
 
 
 notify.send = fake_send
@@ -151,29 +151,106 @@ def users_flow(admin_client, admin_id):
           "cada uno ve solo las suyas en el panel")
     check(admin_client.get(f"/watches/{ana_watch['id']}").status_code == 404, "ni el admin ve la de Ana")
 
-    # --- canales de aviso por usuario
-    bad = ana_client.post("/profile", data={"display_name": "Ana", "discord_webhook": "https://evil.example/hook"})
+    # --- canales de aviso: lista por usuario, varios tipos, validación y secretos
+    r = ana_client.get("/profile/channels/new")
+    check("Discord" in r.text and "Telegram" in r.text, "elegir el tipo de canal")
+    bad = ana_client.post("/profile/channels", data={"kind": "discord", "name": "x", "webhook": "https://evil.example/hook"})
     check("webhook de Discord no es válida" in bad.text, "validación del webhook de Discord")
-    bad = ana_client.post("/profile", data={"display_name": "Ana", "telegram_token": "x", "telegram_chat_id": "hola"})
+    bad = ana_client.post("/profile/channels", data={"kind": "telegram", "token": "x", "chat_id": "hola"})
     check("token del bot" in bad.text and "chat ID" in bad.text, "validación de Telegram")
-    r = ana_client.post("/profile", data={"display_name": "Ana G.", "notify_errors": "1",
-                                          "discord_webhook": "https://discord.com/api/webhooks/2/ana"}, follow_redirects=False)
-    check(r.status_code == 303, "Ana configura su webhook")
+    check(ana_client.post("/profile/channels", data={"kind": "sms"}).status_code == 400, "tipo de canal desconocido")
+    for data in ({"kind": "discord", "name": "Mi Discord", "enabled": "1", "webhook": "https://discord.com/api/webhooks/2/ana"},
+                 {"kind": "discord", "name": "Discord del grupo", "enabled": "1", "webhook": "https://discord.com/api/webhooks/3/grupo"},
+                 {"kind": "telegram", "name": "Mi Telegram", "enabled": "1", "token": "123456:ABCDEFGHIJKLMNOPQRSTUVWX", "chat_id": "42"}):
+        r = ana_client.post("/profile/channels", data=data, follow_redirects=False)
+        check(r.status_code == 303, f"Ana añade el canal «{data['name']}»")
+    with db.connect() as con:
+        chans = {c["name"]: c for c in db.list_channels(con, ana["id"])}
+    check(set(chans) == {"Mi Discord", "Discord del grupo", "Mi Telegram"}, "un usuario puede tener varios canales, también del mismo tipo")
     page = ana_client.get("/profile").text
-    check("discord.com/api/webhooks/2/ana" not in page and "guardado" in page, "el webhook nunca vuelve al navegador")
+    check("Mi Telegram" in page and "webhooks/2/ana" not in page and "ABCDEFGH" not in page, "la lista de canales no muestra secretos")
+    page = ana_client.get(f"/profile/channels/{chans['Mi Discord']['id']}/edit").text
+    check("webhooks/2/ana" not in page and "guardado" in page, "ni siquiera al editar vuelve el secreto")
+    r = ana_client.post(f"/profile/channels/{chans['Mi Discord']['id']}/edit", data={"name": "Mi Discord", "enabled": "1", "webhook": ""},
+                        follow_redirects=False)
+    with db.connect() as con:
+        check(db.get_channel(con, chans["Mi Discord"]["id"])["config"]["webhook"].endswith("/2/ana"), "secreto vacío = se conserva el guardado")
+    check(ana_client.post(f"/profile/channels/{chans['Mi Telegram']['id']}/test", follow_redirects=False).status_code == 303
+          and "Mi Telegram" in TARGETS[-1], "mensaje de prueba a un canal")
+
+    # --- asignar canales a cada vigilancia
+    ids = {n: c["id"] for n, c in chans.items()}
+    with db.connect() as con:
+        admin_chan_id = db.list_channels(con, admin_id)[0]["id"]
+    form = {"name": "Vigilancia de Ana", "origin": "MAD", "destination": "BCN", "providers": ["mockweb"],
+            "max_price": "100", "enabled": "1"}
+    check("Mi Discord" in ana_client.get(f"/watches/{ana_watch['id']}/edit").text, "el formulario ofrece los canales del usuario")
+    check("Mi Telegram" not in admin_client.get("/watches/new").text, "…y solo los suyos")
+    ana_client.post(f"/watches/{ana_watch['id']}/edit", data={**form, "channels": [str(ids["Mi Discord"]), str(admin_chan_id)]},
+                    follow_redirects=False)
+    with db.connect() as con:
+        check(db.get_watch(con, ana_watch["id"])["channel_ids"] == [ids["Mi Discord"]], "un canal ajeno no se puede asignar")
+    # el aviso de Ana solo va al canal asignado (no a su Telegram ni al del grupo)
+    with db.connect() as con:
+        db.set_watch_channels(con, ana_watch["id"], [ids["Mi Discord"]])
     SENT.clear(); TARGETS.clear()
     checker.run_checks(user_id=ana["id"], trigger="manual")
-    check(len(SENT) == 1 and TARGETS == ["https://discord.com/api/webhooks/2/ana"] and "Vigilancia de Ana" in "\n".join(SENT[0][0]),
-          "el aviso de Ana va a su webhook")
+    check(len(SENT) == 1 and TARGETS == [("Mi Discord",)] and "Vigilancia de Ana" in "\n".join(SENT[0][0]),
+          "el aviso va solo al canal asignado a la vigilancia")
+    with db.connect() as con:  # varios canales a la vez; uno pausado no recibe
+        db.set_watch_channels(con, ana_watch["id"], [ids["Mi Discord"], ids["Mi Telegram"], ids["Discord del grupo"]])
+        con.execute(text("DELETE FROM alerts WHERE watch_id = :w"), {"w": ana_watch["id"]})
+    ana_client.post(f"/profile/channels/{ids['Discord del grupo']}/edit", data={"name": "Discord del grupo", "webhook": ""}, follow_redirects=False)
+    SENT.clear(); TARGETS.clear()
+    checker.run_checks(user_id=ana["id"], trigger="manual")
+    check(TARGETS == [("Mi Discord", "Mi Telegram")], "avisa a todos los canales asignados y activos (el pausado, no)")
+    with db.connect() as con:
+        con.execute(text("DELETE FROM alerts WHERE watch_id = :w"), {"w": ana_watch["id"]})
+        db.set_watch_channels(con, ana_watch["id"], [])
+    SENT.clear(); TARGETS.clear()
+    checker.run_checks(user_id=ana["id"], trigger="manual")
+    check(not SENT, "sin canales asignados no se avisa")
     SENT.clear(); TARGETS.clear()
     checker.run_checks(user_id=admin_id, trigger="manual")
-    check(all(t.endswith("/admin") for t in TARGETS) and not any("Vigilancia de Ana" in "\n".join(m[0]) for m in SENT),
+    check(all(t == ("Discord admin",) for t in TARGETS) and not any("Vigilancia de Ana" in "\n".join(m[0]) for m in SENT),
           "las rondas por usuario no mezclan vigilancias ni canales")
-    r = ana_client.post("/profile", data={"display_name": "Ana G.", "clear_discord": "1"}, follow_redirects=False)
+    check("Avisa a: Discord admin" in admin_client.get("/").text and "Sin canales de aviso" in ana_client.get("/").text,
+          "el panel indica a qué canales avisa cada vigilancia")
+
+    # --- aislamiento de canales entre usuarios
+    for path in (f"/profile/channels/{admin_chan_id}/edit",):
+        check(ana_client.get(path).status_code == 404, "no se puede abrir un canal ajeno")
+    check(ana_client.post(f"/profile/channels/{admin_chan_id}/delete", follow_redirects=False).status_code == 404, "ni borrarlo")
+    check(ana_client.post(f"/profile/channels/{admin_chan_id}/test", follow_redirects=False).status_code == 404, "ni probarlo")
+    check(ana_client.get(f"/admin/users/{ana['id']}/channels/new").status_code == 403, "las rutas de canales de admin están protegidas")
+
+    # --- el admin gestiona los canales de un usuario
+    check("Mi Telegram" in admin_client.get(f"/admin/users/{ana['id']}/edit").text, "el admin ve los canales del usuario (sin secretos)")
+    check("ABCDEFGH" not in admin_client.get(f"/admin/users/{ana['id']}/edit").text, "…sin secretos")
+    r = admin_client.post(f"/admin/users/{ana['id']}/channels", data={"kind": "discord", "name": "Puesto por el admin", "enabled": "1",
+                          "webhook": "https://discord.com/api/webhooks/4/admin-para-ana"}, follow_redirects=False)
     with db.connect() as con:
-        check(r.status_code == 303 and db.get_user(con, ana["id"])["discord_webhook"] == "", "Ana borra su webhook")
-    r = ana_client.post("/profile/test", follow_redirects=False)
-    check("ningún canal" in unquote(r.headers["location"]), "mensaje de prueba sin canales")
+        made = [c for c in db.list_channels(con, ana["id"]) if c["name"] == "Puesto por el admin"]
+    check(r.status_code == 303 and made, "el admin crea un canal para Ana")
+    check("Puesto por el admin" in ana_client.get("/profile").text, "Ana lo ve en su perfil")
+    r = admin_client.post(f"/admin/users/{ana['id']}/channels/{made[0]['id']}/edit", data={"name": "Renombrado", "enabled": "1", "webhook": ""},
+                          follow_redirects=False)
+    with db.connect() as con:
+        c = db.get_channel(con, made[0]["id"])
+    check(c["name"] == "Renombrado" and c["config"]["webhook"].endswith("admin-para-ana"), "el admin edita el canal y conserva el secreto")
+    check(admin_client.post(f"/admin/users/{admin_id}/channels/{made[0]['id']}/edit", data={"name": "x"}, follow_redirects=False).status_code == 404,
+          "…solo dentro del usuario indicado en la URL")
+    check(admin_client.post(f"/admin/users/{ana['id']}/channels/{made[0]['id']}/test", follow_redirects=False).status_code == 303, "el admin prueba el canal")
+    admin_client.post(f"/admin/users/{ana['id']}/channels/{made[0]['id']}/delete", follow_redirects=False)
+    with db.connect() as con:
+        check(db.get_channel(con, made[0]["id"]) is None, "el admin elimina el canal")
+    ana_client.post(f"/profile/channels/{ids['Mi Discord']}/delete", follow_redirects=False)
+    with db.connect() as con:
+        db.set_watch_channels(con, ana_watch["id"], [ids["Mi Telegram"]])
+    check(ana_client.post(f"/profile/channels/{ids['Mi Telegram']}/delete", follow_redirects=False).status_code == 303, "Ana borra un canal")
+    with db.connect() as con:
+        check(db.get_watch(con, ana_watch["id"])["channel_ids"] == [], "borrar un canal lo quita de las vigilancias que lo usaban")
+    ana_client.post("/profile", data={"display_name": "Ana G.", "notify_errors": "1"}, follow_redirects=False)
 
     # --- contraseña propia: las demás sesiones se cierran
     other_session = TestClient(app)
@@ -256,10 +333,12 @@ def main():
 
         # --- ronda 1 (sin histórico): solo aplica el precio máximo
         with db.connect() as con:
-            db.update_user(con, admin_id, discord_webhook="https://discord.com/api/webhooks/1/admin")
+            admin_chan = db.create_channel(con, admin_id, "discord", "Discord admin", {"webhook": "https://discord.com/api/webhooks/1/admin"})
+            for w in db.list_watches(con, admin_id):
+                db.set_watch_channels(con, w["id"], [admin_chan])
         check(checker.run_checks(trigger="manual") == "done", "run_checks termina")
-        check(len(SENT) == 2 and set(TARGETS) == {"https://discord.com/api/webhooks/1/admin"},
-              f"un aviso por vigilancia, al webhook de su dueño ({len(SENT)})")
+        check(len(SENT) == 2 and set(TARGETS) == {("Discord admin",)},
+              f"un aviso por vigilancia, a sus canales asignados ({len(SENT)})")
         discord = "\n".join(SENT[0][0])
         telegram = "\n".join(SENT[0][1])
         target_day = (TODAY + timedelta(days=11)).isoformat()
@@ -286,6 +365,7 @@ def main():
                 "name": "Prueba relativa", "origin": "MAD", "destination": "BCN", "providers": ["mockweb"],
                 "max_price": None, "discount_pct": 30, "date_from": None, "date_to": None, "enabled": True,
             })
+            db.set_watch_channels(con, wid, [admin_chan])
             old = (datetime.now() - timedelta(days=3)).isoformat(timespec="seconds")
             db.insert_prices(con, wid, "mockweb", old, [DayPrice(TODAY + timedelta(days=20 + i), 200) for i in range(40)])
         SENT.clear()
@@ -314,7 +394,7 @@ def main():
         s = db.get_settings()
         check(s["schedule_hours"] == "8,20", "ajustes persistidos")
         with db.connect() as con:
-            check(db.get_user(con, admin_id)["discord_webhook"].endswith("/admin"), "los ajustes ya no tocan los canales del usuario")
+            check(len(db.list_channels(con, admin_id)) == 1, "los ajustes no tocan los canales del usuario")
         bad = client.post("/settings", data={"schedule_hours": "99", "schedule_minute": "0", "timezone": "Nope/Zone",
                                              "max_months": "11", "min_samples": "30", "retention_days": "400"})
         check("Las horas deben ser" in bad.text and "Zona horaria desconocida" in bad.text, "validación de ajustes")
