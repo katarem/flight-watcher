@@ -53,7 +53,6 @@ jobs:
       - name: Versión
         id: version
         run: echo "value=$(python3 -c 'from app import __version__; print(__version__)')" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Iniciar sesión en ghcr.io
         if: github.event_name != 'pull_request'
@@ -76,7 +75,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

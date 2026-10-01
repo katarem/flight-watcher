@@ -56,7 +56,7 @@ tests/
 
 ## Versiones y CI/CD
 
-`__version__` en `app/__init__.py` + entrada en `CHANGELOG.md` en cada versión. `.github/workflows/docker.yml`: tests (smoke + `alembic check`) y, si pasan, imagen multi-arquitectura a `ghcr.io/katarem/flight-watcher` (`latest`+sha en `main`; `X.Y.Z`/`X.Y`/`latest` con la etiqueta `vX.Y.Z`, que debe coincidir con `__version__`). El `docker-compose.yml` usa esa imagen (`FW_VERSION`) y conserva `build: .`.
+`__version__` en `app/__init__.py` + entrada en `CHANGELOG.md` en cada versión. `.github/workflows/docker.yml`: tests (smoke + `alembic check`) y, si pasan, imagen `linux/amd64` a `ghcr.io/katarem/flight-watcher` (`latest`+sha en `main`; `X.Y.Z`/`X.Y`/`latest` con la etiqueta `vX.Y.Z`, que debe coincidir con `__version__`). El `docker-compose.yml` usa esa imagen (`FW_VERSION`) y conserva `build: .`.
 
 ## Cómo ejecutar
 

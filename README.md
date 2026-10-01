@@ -60,7 +60,7 @@ Para añadir otro tipo de canal (Slack, correo…), añade una entrada a `KINDS`
 
 La versión vive en `app/__init__.py` (`__version__`, hoy **1.1.0**; se ve en el pie del panel) y los cambios se anotan en [CHANGELOG.md](CHANGELOG.md).
 
-El CI (`.github/workflows/docker.yml`) ejecuta el test de humo y comprueba que las migraciones están al día, y publica la imagen en **ghcr.io/katarem/flight-watcher** (`linux/amd64` y `linux/arm64`):
+El CI (`.github/workflows/docker.yml`) ejecuta el test de humo y comprueba que las migraciones están al día, y publica la imagen en **ghcr.io/katarem/flight-watcher** (`linux/amd64`):
 
 | Evento | Etiquetas publicadas |
 |---|---|
@@ -68,7 +68,7 @@ El CI (`.github/workflows/docker.yml`) ejecuta el test de humo y comprueba que l
 | Etiqueta `vX.Y.Z` | `X.Y.Z`, `X.Y` y `latest` |
 | Pull request | solo construye (no publica) |
 
-Para sacar una versión: sube `__version__`, actualiza el CHANGELOG, haz merge a `main` y crea la etiqueta (`git tag v1.1.0 && git push origin v1.1.0`); el CI falla si la etiqueta no coincide con `__version__`. En el servidor, fija `FW_VERSION=1.1.0` en `.env` (o deja `latest`) y ejecuta `docker compose pull && docker compose up -d`. Si el paquete es privado, `docker login ghcr.io` con un token con permiso `read:packages`; para hacerlo público: GitHub → Packages → Package settings → Change visibility.
+Para sacar una versión: sube `__version__`, actualiza el CHANGELOG, haz merge a `main` y crea la etiqueta (`git tag v1.1.0 && git push origin v1.1.0`); el CI falla si la etiqueta no coincide con `__version__`. En el servidor, fija `FW_VERSION=1.1.0` en `.env` (o deja `latest`) y ejecuta `docker compose pull && docker compose up -d`. Con el paquete **público** no hace falta `docker login` para descargarlo. La imagen lleva la etiqueta `org.opencontainers.image.source`, que la enlaza con el repositorio: si el repositorio es público, el paquete nace público; si no, ponlo público una vez en GitHub → Packages → *flight-watcher* → Package settings → Change visibility (y comprueba que ahí el repositorio aparece conectado). Si lo dejas privado, `docker login ghcr.io` con un token `read:packages`.
 
 ## Aerolíneas y cómo se consultan
 
