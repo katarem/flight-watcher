@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Iniciar sesión{% endblock %}
+{% block content %}
+<div class="login">
+  <h1>✈️ Flight Watcher</h1>
+  {% if error %}<div class="flash err-box">{{ error }}</div>{% endif %}
+  <form method="post" action="/login" class="card form">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label>Usuario
+      <input name="username" value="{{ username }}" autocomplete="username" autocapitalize="none" required autofocus>
+    </label>
+    <label>Contraseña
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <button class="btn">Entrar</button>
+  </form>
+</div>
+{% endblock %}

@@ -1,6 +1,6 @@
 # Flight Watcher — contexto del proyecto
 
-Panel web + bot que vigila precios de vuelos (solo ida) en Vueling y Ryanair, guarda el histórico en SQLite/PostgreSQL/MySQL/MariaDB, dibuja gráficas y avisa por Discord y/o Telegram con un enlace directo a cada fecha. Todo el código, comentarios, textos de UI y README están **en castellano de España** (tuteo, nunca voseo ni expresiones rioplatenses); mantenlo así, también al hablar con el usuario.
+Panel web + bot multiusuario que vigila precios de vuelos (solo ida) en Vueling y Ryanair, guarda el histórico en SQLite/PostgreSQL/MySQL/MariaDB, dibuja gráficas y avisa por Discord y/o Telegram (canales propios de cada usuario) con un enlace directo a cada fecha. Todo el código, comentarios, textos de UI y README están **en castellano de España** (tuteo, nunca voseo ni expresiones rioplatenses); mantenlo así, también al hablar con el usuario.
 
 ## Stack
 
@@ -15,12 +15,14 @@ Panel web + bot que vigila precios de vuelos (solo ida) en Vueling y Ryanair, gu
 
 ```
 app/
-  main.py        rutas FastAPI: panel, CRUD de vigilancias, detalle, API de gráficas, ajustes, ejecuciones, diagnóstico
+  main.py        rutas FastAPI: login/sesión, panel, CRUD de vigilancias (por usuario), detalle, API de gráficas, perfil, administración de usuarios (admin), ajustes y diagnóstico (admin), ejecuciones
+  auth.py        hash scrypt de contraseñas, validación de usuario/clave, LoginThrottle (en memoria)
+  avatars.py     guardado de avatares en DATA_DIR/avatars (tipo por magic bytes, 2 MB, sin SVG)
   checker.py     ronda de comprobaciones (por vigilancia × proveedor) + reglas de aviso (deal_reason)
   scheduler.py   cron interno; horas/minuto/zona horaria salen de los ajustes en BD
-  db.py          esquema (SQLAlchemy Core), motor/conexión, init() → Alembic, ajustes por defecto (DEFAULT_SETTINGS), consultas, seed_defaults()
-  migrations/    Alembic: env.py (usa db.engine/db.metadata), versions/0001_esquema_inicial.py
-  notify.py      Discord (webhook) y Telegram (bot)
+  db.py          esquema (SQLAlchemy Core), motor/conexión, init() → Alembic, ajustes por defecto (DEFAULT_SETTINGS), consultas, bootstrap_admin(), seed_defaults()
+  migrations/    Alembic: env.py (usa db.engine/db.metadata), versions/0001_esquema_inicial.py, 0002_usuarios.py
+  notify.py      Discord (webhook) y Telegram (bot); `target(settings, user)` mezcla los canales del usuario en los ajustes
   fmt.py         formateo de fechas/precios para plantillas y avisos
   config.py      DATA_DIR, DEBUG_DIR, DB_ENGINE, DB_PATH (SQLite), DB_HOST/PORT/NAME/USER/PASSWORD
   providers/
@@ -36,16 +38,17 @@ tests/
 
 ## Flujo principal
 
-1. `scheduler` dispara `checker.run_checks()` (o el usuario pulsa «Comprobar»: `scheduler.run_now`). Un `threading.Lock` impide rondas simultáneas.
+1. `scheduler` dispara `checker.run_checks()` para **todos** los usuarios (o el usuario pulsa «Comprobar»: `scheduler.run_now(watch_id, user_id)`, solo lo suyo). Un `threading.Lock` impide rondas simultáneas. Las vigilancias de usuarios desactivados se saltan.
 2. Por cada vigilancia activa y cada proveedor, `routes()` expande los códigos de ciudad (TCI → TFN y TFS) y por cada par de aeropuertos se llama a `provider.fetch_prices(page, origin, destination, max_months, debug_dir)` (`page=None` en ApiProvider), hasta 2 intentos. Se queda el mínimo por día; cada `DayPrice` lleva el aeropuerto real. Una ruta que falla solo es error si ninguna dio precios (Vueling no vuela a TFS, Ryanair no vuela a TFN).
 3. Se filtra por `date_from`/`date_to`, se guarda el snapshot en `prices` y se evalúa `deal_reason`: `fixed` (precio ≤ `max_price`) o `relative` (≥ `discount_pct`% bajo la mediana histórica de esa ruta+web, solo si hay `min_samples`).
-4. Los chollos nuevos (`already_alerted` evita repetir salvo que baje más) se envían con `notify.send_deals`. Solo se guardan en `alerts` si llegaron a algún canal; sin canales se reenvían cuando se configuren.
+4. Los chollos nuevos (`already_alerted` evita repetir salvo que baje más) se envían con `notify.send_deals` **a los canales del dueño de la vigilancia**; los fallos de la ronda (`notify_errors`) también van a cada dueño, solo los de sus vigilancias. Solo se guardan en `alerts` si llegaron a algún canal; sin canales se reenvían cuando se configuren.
 5. Se purga el histórico (`retention_days`) y los archivos de diagnóstico de más de 7 días.
 
 ## Modelo de datos (`data/flight_watcher.db` con SQLite, o la BD de `DB_NAME`)
 
-- `settings(key, value)`: clave/valor. `db.get_settings()` mezcla `DEFAULT_SETTINGS` con lo guardado. También hay claves dinámicas `link_<provider>` (plantilla de enlace por proveedor).
-- `watches`: id, name, origin, destination (IATA 3 letras), providers (CSV de claves), max_price, discount_pct, date_from, date_to, enabled.
+- `settings(key, value)`: clave/valor **globales** (solo admin). `db.get_settings()` mezcla `DEFAULT_SETTINGS` con lo guardado. También hay claves dinámicas `link_<provider>` (plantilla de enlace por proveedor).
+- `users`: id, username (único, minúsculas), display_name, password_hash (`scrypt$n$r$p$salt$hash`), role (`admin`|`user`), enabled, avatar (nombre de archivo o NULL), discord_webhook, telegram_token, telegram_chat_id, notify_errors, created_at. `watches.user_id` → `users` con `ON DELETE CASCADE` (borrar un usuario se lleva sus vigilancias, precios, avisos y ejecuciones).
+- `watches`: id, user_id, name, origin, destination (IATA 3 letras), providers (CSV de claves), max_price, discount_pct, date_from, date_to, enabled.
 - `prices`: watch_id, provider, flight_date, price, currency, checked_at, origin, destination (aeropuerto real; NULL en datos antiguos = el de la vigilancia). Un registro por día de vuelo por comprobación. Migración con `ALTER TABLE` en `db.init()`.
 - `alerts`, `runs`: avisos enviados y ejecuciones (ok/error/n_prices/n_deals). Todo con `ON DELETE CASCADE` desde `watches`.
 
@@ -57,7 +60,7 @@ python -m tests.smoke_test                             # sin red
 python -m tests.browser_mock_test                      # necesita Chromium (FW_CHROMIUM=/ruta si usas el tuyo)
 ```
 
-Variables de entorno: `PANEL_USER` / `PANEL_PASSWORD` (Basic Auth; vacías = sin auth), `DATA_DIR` (por defecto `./data`; en Docker es `/data` y la carpeta del host se elige con `DATA_PATH` en el compose), `DB_ENGINE` / `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD`, `SEED_DEFAULTS` (`1` por defecto; `0` desactiva las vigilancias iniciales), `FW_CHROMIUM`, `TZ`.
+Variables de entorno: `PANEL_USER` / `PANEL_PASSWORD` (credenciales del **admin inicial**, solo si aún no hay ningún admin; sin contraseña se genera una y se escribe en el log), `SECRET_KEY` (firma de cookies; si falta se crea `DATA_DIR/.secret_key`), `COOKIE_SECURE` (`1` con HTTPS), `DATA_DIR` (por defecto `./data`; en Docker es `/data` y la carpeta del host se elige con `DATA_PATH` en el compose), `DB_ENGINE` / `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD`, `SEED_DEFAULTS` (`1` por defecto; `0` desactiva las vigilancias iniciales), `FW_CHROMIUM`, `TZ`.
 
 ## Convenciones
 
@@ -65,7 +68,8 @@ Variables de entorno: `PANEL_USER` / `PANEL_PASSWORD` (Basic Auth; vacías = sin
 - Acceso a BD siempre con `with db.connect() as con:` (commit/rollback automáticos); las funciones de `db.py` reciben `con` y devuelven `dict` (nunca objetos de SQLAlchemy), así el resto de la app no sabe qué motor hay. Nada de SQL específico de un motor fuera de `db.py` (el upsert de `settings` elige dialecto ahí).
 - Los `except Exception` amplios llevan `# noqa: BLE001` y solo donde el fallo de un tercero (web, navegador) no debe tumbar la ronda.
 - Añadir una aerolínea: nueva clase en `app/providers/<nombre>.py` (preferir `ApiProvider` con el endpoint JSON que usa la web; `CalendarProvider` solo si no hay otra vía) y añadirla al dict `PROVIDERS` de `providers/__init__.py`. Formularios, gráficas, avisos y plantilla de enlace en Ajustes la recogen solos.
-- Los campos secretos (webhook, token) nunca se devuelven al navegador; el webhook de Discord se valida contra la URL oficial.
+- Los campos secretos (webhook, token) nunca se devuelven al navegador; el webhook de Discord se valida contra la URL oficial. A las plantillas solo llegan usuarios saneados con `_public()`/`_profile_view()` (nunca el hash ni los canales).
+- **Usuarios y permisos:** autenticación por sesión (`SessionMiddleware`, cookie `fw_session`); `require_login` es dependencia global (salvo `/login`), `current_user` da el usuario y `require_admin` protege `/admin/users*`, `/settings` y `/debug`. Una vigilancia solo existe para su dueño: toda ruta con `wid` pasa por `_own_watch()` (404 para otro usuario, admin incluido). Cualquier consulta nueva de vigilancias/avisos/ejecuciones debe filtrar por `user_id`.
 - Sin CSS/JS frameworks: plantillas Jinja + `style.css` + `charts.js`.
 
 ## Gotchas
@@ -85,6 +89,9 @@ Variables de entorno: `PANEL_USER` / `PANEL_PASSWORD` (Basic Auth; vacías = sin
 - Plantillas de enlace editables en Ajustes (`link_<provider>`) con `{origin} {destination} {date} {date_dmy} {year} {month} {day}`.
 - `seed_defaults()` (SVQ↔TCI con vueling,ryanair) solo actúa si la tabla `watches` está vacía; el smoke test depende de esas vigilancias iniciales y simula que Vueling solo opera TFN y Ryanair solo TFS.
 - La regla «habitual» usa la mediana de la ruta+web, no la de la misma fecha de vuelo.
+- Sesión: la cookie guarda `uid` y una huella del hash de la contraseña; el usuario se recarga de BD en cada petición, así que desactivar/borrar o cambiar la clave cierra las sesiones al instante. Un admin no puede cambiarse a sí mismo el rol ni desactivarse, y siempre debe quedar un admin activo.
+- `bootstrap_admin()` (en cada arranque): si no hay admin lo crea; también asigna al admin las vigilancias sin dueño y traslada a su fila los antiguos ajustes globales `discord_webhook`/`telegram_*`/`notify_errors` (y los borra de `settings`). Es la vía de actualización de BD anteriores a los usuarios. `seed_defaults(user_id)` siembra las vigilancias iniciales para el admin.
+- Los tests inician sesión con el admin de `PANEL_USER`/`PANEL_PASSWORD` y usan `TestClient` por usuario (cada cliente conserva su cookie).
 - Solo ida por vigilancia; para ida y vuelta se crean dos vigilancias.
 - Webhook y token se guardan en texto plano en la BD: no exponer el panel sin autenticación.
 - Multi-motor (verificado 2026-09-30 con el smoke test y `alembic check` contra postgres:16, mariadb:11 y mysql:8.4): precios en `Double` (en MySQL `Float` es precisión simple), fechas como texto ISO (`String`), tablas `utf8mb4`, `pool_pre_ping` porque MySQL corta conexiones inactivas, y `PRAGMA foreign_keys=ON` en cada conexión SQLite para que funcione el `CASCADE`. Las columnas `key` y `trigger` son palabras reservadas en MySQL: SQLAlchemy las entrecomilla, no escribir SQL crudo con ellas.

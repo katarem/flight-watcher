@@ -33,12 +33,11 @@ DEFAULT_SETTINGS = {
     "headless": "1",
     "debug": "0",
     "proxy_url": "",
-    "discord_webhook": "",
-    "telegram_token": "",
-    "telegram_chat_id": "",
     "panel_url": "",
-    "notify_errors": "1",
 }
+
+# Canales de notificación: viven en la fila de cada usuario (antes eran ajustes globales).
+CHANNEL_FIELDS = ("discord_webhook", "telegram_token", "telegram_chat_id")
 
 # ------------------------------------------------------------------------ esquema
 # Fuente de verdad del esquema actual. Cualquier cambio aquí necesita su migración en
@@ -61,9 +60,29 @@ settings_t = Table(
     **_TABLE_OPTS,
 )
 
+users = Table(
+    "users", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("username", String(50), nullable=False),  # siempre en minúsculas
+    Column("display_name", String(100), nullable=False),
+    Column("password_hash", String(255), nullable=False),
+    Column("role", String(10), nullable=False, server_default="user"),  # admin | user
+    Column("enabled", Integer, nullable=False, server_default="1"),
+    Column("avatar", String(100)),  # archivo en DATA_DIR/avatars (NULL = iniciales)
+    Column("discord_webhook", String(500), nullable=False, server_default=""),
+    Column("telegram_token", String(200), nullable=False, server_default=""),
+    Column("telegram_chat_id", String(50), nullable=False, server_default=""),
+    Column("notify_errors", Integer, nullable=False, server_default="1"),
+    Column("created_at", ISO, nullable=False),
+    Index("ux_users_username", "username", unique=True),
+    **_TABLE_OPTS,
+)
+
 watches = Table(
     "watches", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
+    # Nullable solo por las BD anteriores a los usuarios: bootstrap_admin() las asigna al administrador.
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE", name="fk_watches_user_id")),
     Column("name", String(200), nullable=False),
     Column("origin", IATA, nullable=False),
     Column("destination", IATA, nullable=False),
@@ -74,6 +93,7 @@ watches = Table(
     Column("date_to", String(10)),
     Column("enabled", Integer, nullable=False, server_default="1"),
     Column("created_at", ISO, nullable=False),
+    Index("idx_watches_user", "user_id"),
     **_TABLE_OPTS,
 )
 
@@ -196,8 +216,8 @@ def init():
         command.upgrade(cfg, "head")
 
 
-def seed_defaults():
-    """Crea las dos vigilancias iniciales si la base de datos está vacía.
+def seed_defaults(user_id: int):
+    """Crea las dos vigilancias iniciales (del usuario dado) si la base de datos no tiene ninguna.
 
     TCI es el código de ciudad de Tenerife: se consultan Tenerife Norte (Vueling) y Sur (Ryanair).
     """
@@ -206,10 +226,79 @@ def seed_defaults():
             return
         now = datetime.now().isoformat(timespec="seconds")
         con.execute(insert(watches), [
-            {"name": name, "origin": o, "destination": d, "providers": "vueling,ryanair",
+            {"user_id": user_id, "name": name, "origin": o, "destination": d, "providers": "vueling,ryanair",
              "max_price": 40, "discount_pct": 30, "created_at": now}
             for name, o, d in (("Sevilla → Tenerife", "SVQ", "TCI"), ("Tenerife → Sevilla", "TCI", "SVQ"))
         ])
+
+
+# --------------------------------------------------------------------- usuarios
+def list_users(con) -> list[dict]:
+    return _all(con, select(users).order_by(users.c.id))
+
+
+def get_user(con, user_id: int) -> dict | None:
+    return _one(con, select(users).where(users.c.id == user_id))
+
+
+def get_user_by_username(con, username: str) -> dict | None:
+    return _one(con, select(users).where(users.c.username == username))
+
+
+def create_user(con, username, display_name, password_hash, role="user", enabled=True) -> int:
+    return con.execute(insert(users).values(
+        username=username, display_name=display_name, password_hash=password_hash, role=role,
+        enabled=int(enabled), created_at=datetime.now().isoformat(timespec="seconds"),
+    )).inserted_primary_key[0]
+
+
+def update_user(con, user_id: int, **values):
+    if "enabled" in values:
+        values["enabled"] = int(values["enabled"])
+    if "notify_errors" in values:
+        values["notify_errors"] = int(values["notify_errors"])
+    con.execute(update(users).where(users.c.id == user_id).values(**values))
+
+
+def delete_user(con, user_id: int):
+    """Borra también sus vigilancias (y con ellas precios, avisos y ejecuciones) por ON DELETE CASCADE."""
+    con.execute(delete(users).where(users.c.id == user_id))
+
+
+def count_admins(con, exclude_id: int | None = None) -> int:
+    """Administradores activos (opcionalmente sin contar a uno): sirve para no dejar el panel sin admin."""
+    stmt = select(func.count()).select_from(users).where(users.c.role == "admin", users.c.enabled == 1)
+    if exclude_id is not None:
+        stmt = stmt.where(users.c.id != exclude_id)
+    return con.execute(stmt).scalar()
+
+
+def watch_counts(con) -> dict[int, int]:
+    rows = con.execute(select(watches.c.user_id, func.count()).group_by(watches.c.user_id)).all()
+    return {uid: n for uid, n in rows}
+
+
+def bootstrap_admin(username: str, password_hash: str) -> tuple[int, bool]:
+    """Garantiza que hay un administrador. Devuelve (id, creado_ahora).
+
+    Si la BD es anterior a los usuarios, el nuevo administrador hereda las vigilancias huérfanas y los
+    canales de aviso que antes eran ajustes globales (que se borran de `settings`).
+    """
+    with connect() as con:
+        admin = _one(con, select(users).where(users.c.role == "admin").order_by(users.c.id).limit(1))
+        created = admin is None
+        if created:
+            uid = create_user(con, username, username.capitalize(), password_hash, role="admin")
+            admin = get_user(con, uid)
+        con.execute(update(watches).where(watches.c.user_id.is_(None)).values(user_id=admin["id"]))
+        legacy = {r["key"]: r["value"] for r in _all(con, select(settings_t))}
+        moved = {k: legacy[k] for k in (*CHANNEL_FIELDS, "notify_errors") if k in legacy}
+        if moved:
+            if created or not any(admin[k] for k in CHANNEL_FIELDS):
+                update_user(con, admin["id"], **{k: v for k, v in moved.items() if k in CHANNEL_FIELDS},
+                            **({"notify_errors": moved["notify_errors"] == "1"} if "notify_errors" in moved else {}))
+            con.execute(delete(settings_t).where(settings_t.c.key.in_(list(moved))))
+        return admin["id"], created
 
 
 # --------------------------------------------------------------------- ajustes
@@ -252,16 +341,19 @@ def _watch_values(data: dict) -> dict:
     }
 
 
-def list_watches(con) -> list[dict]:
-    return [_watch(r) for r in _all(con, select(watches).order_by(watches.c.id))]
+def list_watches(con, user_id: int | None = None) -> list[dict]:
+    stmt = select(watches).order_by(watches.c.id)
+    if user_id is not None:
+        stmt = stmt.where(watches.c.user_id == user_id)
+    return [_watch(r) for r in _all(con, stmt)]
 
 
 def get_watch(con, watch_id: int) -> dict | None:
     return _watch(_one(con, select(watches).where(watches.c.id == watch_id)))
 
 
-def create_watch(con, data: dict) -> int:
-    values = {**_watch_values(data), "created_at": datetime.now().isoformat(timespec="seconds")}
+def create_watch(con, user_id: int, data: dict) -> int:
+    values = {**_watch_values(data), "user_id": user_id, "created_at": datetime.now().isoformat(timespec="seconds")}
     return con.execute(insert(watches).values(**values)).inserted_primary_key[0]
 
 
@@ -350,10 +442,12 @@ def add_alerts(con, watch_id, deals, sent_at):
     ])
 
 
-def list_alerts(con, limit=10, watch_id=None):
+def list_alerts(con, limit=10, watch_id=None, user_id=None):
     stmt = select(alerts, watches.c.name.label("watch_name")).join(watches, watches.c.id == alerts.c.watch_id)
     if watch_id is not None:
         stmt = stmt.where(alerts.c.watch_id == watch_id)
+    if user_id is not None:
+        stmt = stmt.where(watches.c.user_id == user_id)
     return _all(con, stmt.order_by(alerts.c.sent_at.desc(), alerts.c.id.desc()).limit(limit))
 
 
@@ -376,9 +470,11 @@ def last_run(con, watch_id, provider):
                 .order_by(r.id.desc()).limit(1))
 
 
-def list_runs(con, limit=50):
-    return _all(con, select(runs, watches.c.name.label("watch_name"))
-                .join(watches, watches.c.id == runs.c.watch_id).order_by(runs.c.id.desc()).limit(limit))
+def list_runs(con, limit=50, user_id=None):
+    stmt = select(runs, watches.c.name.label("watch_name")).join(watches, watches.c.id == runs.c.watch_id)
+    if user_id is not None:
+        stmt = stmt.where(watches.c.user_id == user_id)
+    return _all(con, stmt.order_by(runs.c.id.desc()).limit(limit))
 
 
 def purge(con, retention_days: int):

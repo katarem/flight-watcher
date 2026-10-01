@@ -9,30 +9,11 @@
 
 <form method="post" action="/settings" class="form">
   <section class="card">
-    <h2>Notificaciones</h2>
-    <label>Webhook de Discord
-      <input name="discord_webhook" type="password" autocomplete="off"
-             placeholder="{{ '•••••• guardado (deja vacío para conservarlo)' if s.has_discord else 'https://discord.com/api/webhooks/…' }}">
-    </label>
-    {% if s.has_discord %}<label class="check"><input type="checkbox" name="clear_discord" value="1"> Borrar webhook guardado</label>{% endif %}
-
-    <div class="row">
-      <label>Token del bot de Telegram
-        <input name="telegram_token" type="password" autocomplete="off"
-               placeholder="{{ '•••••• guardado (deja vacío para conservarlo)' if s.has_telegram else '123456:ABC…' }}">
-      </label>
-      <label>Chat ID de Telegram
-        <input name="telegram_chat_id" value="{{ s.telegram_chat_id }}" placeholder="123456789">
-      </label>
-    </div>
-    {% if s.has_telegram %}<label class="check"><input type="checkbox" name="clear_telegram" value="1"> Borrar datos de Telegram</label>{% endif %}
-
+    <h2>Panel</h2>
     <label>URL pública de este panel (opcional)
       <input name="panel_url" value="{{ s.panel_url }}" placeholder="https://vuelos.midominio.com">
     </label>
-    <p class="hint">Si la rellenas, cada aviso incluye un enlace al historial y las gráficas de la vigilancia.</p>
-    <label class="check"><input type="checkbox" name="notify_errors" value="1" {% if s.notify_errors == '1' %}checked{% endif %}> Avisarme si una comprobación automática falla</label>
-    <p class="hint">Canales activos: {{ channels|join(', ') if channels else 'ninguno' }}.</p>
+    <p class="hint">Si la rellenas, cada aviso incluye un enlace al historial y las gráficas de la vigilancia. Los canales de aviso (Discord, Telegram) los configura cada usuario en su <a href="/profile">perfil</a>.</p>
   </section>
 
   <section class="card">
@@ -83,7 +64,4 @@
   <div class="actions"><button class="btn">Guardar ajustes</button></div>
 </form>
 
-<form method="post" action="/settings/test" style="margin-top:1rem">
-  <button class="btn ghost">Enviar mensaje de prueba</button>
-</form>
 {% endblock %}

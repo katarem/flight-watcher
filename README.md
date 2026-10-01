@@ -21,7 +21,10 @@ Todo se configura en `.env`:
 
 | Variable | Por defecto | Para qué |
 |---|---|---|
-| `DATA_PATH` | `./data` | Carpeta **del host** montada en `/data`: BD SQLite y archivos de diagnóstico |
+| `DATA_PATH` | `./data` | Carpeta **del host** montada en `/data`: BD SQLite, avatares, clave de sesión y archivos de diagnóstico |
+| `PANEL_USER`, `PANEL_PASSWORD` | `admin` / aleatoria | Cuenta del **administrador inicial** (solo se usa si aún no hay ningún admin) |
+| `SECRET_KEY` | generada en `/data/.secret_key` | Clave con la que se firman las cookies de sesión |
+| `COOKIE_SECURE` | vacío | `1` si sirves el panel por HTTPS: la cookie solo viaja cifrada |
 | `DB_ENGINE` | `sqlite` | `sqlite`, `postgres`, `mysql` o `mariadb` |
 | `DB_HOST`, `DB_PORT` | `localhost`, 5432 / 3306 | Servidor (se ignoran con SQLite) |
 | `DB_NAME` | `flight_watcher` | La base de datos debe existir; las tablas se crean solas |
@@ -33,9 +36,18 @@ El esquema se gestiona con **Alembic**: al arrancar, la app aplica sola las migr
 
 Después, en el panel:
 
-1. **Ajustes → Notificaciones:** pega el webhook de Discord y/o el token y chat ID de Telegram y pulsa *Enviar mensaje de prueba*.
-2. **Ajustes → Programación:** elige a qué hora(s) se comprueba (p. ej. `8` o `8,20`) y la zona horaria.
-3. Pulsa **Comprobar todo** para traer los primeros precios.
+1. Entra con el administrador (`PANEL_USER` / `PANEL_PASSWORD`). Si no los definiste, se crea `admin` con una contraseña aleatoria que sale **una sola vez en el log** del contenedor (`docker compose logs flight-watcher`).
+2. **Perfil → Mis notificaciones:** pega tu webhook de Discord y/o el token y chat ID de Telegram y pulsa *Enviar mensaje de prueba*.
+3. **Ajustes → Programación** (solo admin): elige a qué hora(s) se comprueba (p. ej. `8` o `8,20`) y la zona horaria.
+4. Pulsa **Comprobar todo** para traer los primeros precios.
+
+### Usuarios
+
+Cada usuario tiene **sus propias vigilancias, su histórico, sus avisos y sus canales de notificación** (webhook de Discord y/o bot de Telegram propios), y un **avatar** (PNG, JPG, GIF o WebP de hasta 2 MB; si no hay, se muestran las iniciales). Nadie ve las vigilancias de otro, tampoco el administrador.
+
+El administrador tiene además el apartado **Usuarios** (crear, editar, desactivar y eliminar usuarios, asignar rol y restablecer contraseñas) y los **Ajustes** y el **Diagnóstico** globales. Un usuario desactivado no puede entrar y sus vigilancias no se comprueban; eliminarlo borra también sus vigilancias y su histórico. Cada usuario cambia su contraseña, nombre y avatar en **Perfil**.
+
+Si actualizas desde una versión sin usuarios, el administrador inicial hereda las vigilancias existentes y los canales de aviso que había en Ajustes.
 
 ## Aerolíneas y cómo se consultan
 
@@ -114,7 +126,8 @@ Para añadir otro código de ciudad (como `TCI`), añádelo a `METRO_AREAS` en `
 
 ## Seguridad
 
-- Define `PANEL_USER` y `PANEL_PASSWORD` (Basic Auth) o pon el panel detrás de tu proxy con autenticación. **No lo expongas sin protección:** guarda el webhook de Discord y el token de Telegram en la base de datos en texto plano.
+- El acceso es con usuario y contraseña (sesión por cookie firmada, `SameSite=Lax`). Las contraseñas se guardan con scrypt; cambiarla cierra las demás sesiones y varios fallos seguidos bloquean el inicio de sesión unos minutos. Si publicas el panel, ponlo tras HTTPS y define `COOKIE_SECURE=1`.
+- Los webhooks y tokens de cada usuario se guardan en la base de datos en texto plano: protege la BD y su copia de seguridad.
 - Solo se aceptan webhooks de Discord con la URL oficial y los campos secretos nunca se devuelven al navegador.
 - Respeta los términos de uso de cada aerolínea; una comprobación al día es una frecuencia razonable.
 
@@ -122,7 +135,9 @@ Para añadir otro código de ciudad (como `TCI`), añádelo a `METRO_AREAS` en `
 
 ```
 app/
-  main.py         panel web y API de gráficas
+  main.py         panel web, sesiones, perfil, administración de usuarios y API de gráficas
+  auth.py         contraseñas (scrypt), validación de usuarios y freno de intentos de login
+  avatars.py      guardado y validación de avatares
   checker.py      ronda de comprobaciones + reglas de aviso
   scheduler.py    planificación (se cambia desde Ajustes)
   notify.py       Discord / Telegram

@@ -6,6 +6,7 @@ import logging
 
 import requests
 
+from .db import CHANNEL_FIELDS as db_channel_fields
 from .fmt import fmt_day, fmt_price
 from .providers import PROVIDERS
 
@@ -25,6 +26,11 @@ def _chunks(lines: list[str], limit: int):
         size += len(line) + 1
     if cur:
         yield "\n".join(cur)
+
+
+def target(settings: dict, user: dict) -> dict:
+    """Ajustes con los canales del usuario: `send*` y `channels` leen webhook/token/chat de ahí."""
+    return {**settings, **{k: user.get(k) or "" for k in db_channel_fields}}
 
 
 def channels(settings: dict) -> list[str]:

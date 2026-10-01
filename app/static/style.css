@@ -66,3 +66,16 @@ th { color: var(--muted); font-weight: 600; font-size: .82rem; }
 label.check { display: flex; gap: .5rem; align-items: center; font-weight: 400; margin-bottom: .5rem; }
 fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 1rem; padding: .6rem 1rem; }
 code { background: var(--bg); padding: .05rem .3rem; border-radius: 4px; }
+.usermenu { display: flex; align-items: center; gap: .6rem; }
+.usermenu .who { display: flex; align-items: center; gap: .45rem; color: var(--text); }
+.usermenu .who:hover { text-decoration: none; }
+.avatar { display: inline-flex; align-items: center; justify-content: center; width: 2.4rem; height: 2.4rem; border-radius: 50%; object-fit: cover; flex: none;
+  background: hsl(var(--h, 215) 55% 45%); color: #fff; font-weight: 600; font-size: 1rem; vertical-align: middle; }
+.avatar.sm { width: 1.8rem; height: 1.8rem; font-size: .8rem; }
+.avatar.lg { width: 5rem; height: 5rem; font-size: 2rem; }
+.tag.admin { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.profile-head { display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; }
+.form label.file input { margin-top: .25rem; padding: .35rem; }
+.login { max-width: 360px; margin: 3rem auto; }
+.login h1 { text-align: center; }
+@media (max-width: 520px) { .usermenu .who span:not(.avatar) { display: none; } }
