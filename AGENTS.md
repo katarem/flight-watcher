@@ -15,6 +15,7 @@ Panel web + bot multiusuario que vigila precios de vuelos (solo ida) en Vueling 
 
 ```
 app/
+  __init__.py    `__version__`: única fuente de la versión (pie del panel, User-Agent, imagen Docker, CI)
   main.py        rutas FastAPI: login/sesión, panel, CRUD de vigilancias (por usuario), detalle, API de gráficas, perfil, administración de usuarios (admin), ajustes y diagnóstico (admin), ejecuciones
   auth.py        hash scrypt de contraseñas, validación de usuario/clave, LoginThrottle (en memoria)
   avatars.py     guardado de avatares en DATA_DIR/avatars (tipo por magic bytes, 2 MB, sin SVG)
@@ -52,6 +53,10 @@ tests/
 - `watches`: id, user_id, name, origin, destination (IATA 3 letras), providers (CSV de claves), max_price, discount_pct, date_from, date_to, enabled.
 - `prices`: watch_id, provider, flight_date, price, currency, checked_at, origin, destination (aeropuerto real; NULL en datos antiguos = el de la vigilancia). Un registro por día de vuelo por comprobación. Migración con `ALTER TABLE` en `db.init()`.
 - `alerts`, `runs`: avisos enviados y ejecuciones (ok/error/n_prices/n_deals). Todo con `ON DELETE CASCADE` desde `watches`.
+
+## Versiones y CI/CD
+
+`__version__` en `app/__init__.py` + entrada en `CHANGELOG.md` en cada versión. `.github/workflows/docker.yml`: tests (smoke + `alembic check`) y, si pasan, imagen multi-arquitectura a `ghcr.io/katarem/flight-watcher` (`latest`+sha en `main`; `X.Y.Z`/`X.Y`/`latest` con la etiqueta `vX.Y.Z`, que debe coincidir con `__version__`). El `docker-compose.yml` usa esa imagen (`FW_VERSION`) y conserva `build: .`.
 
 ## Cómo ejecutar
 

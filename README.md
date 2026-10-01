@@ -7,9 +7,12 @@ Sustituye al script suelto anterior: ya no hay que editar archivos ni tocar el c
 ## Puesta en marcha
 
 ```bash
-cp .env.example .env        # usuario y contraseña del panel
-docker compose up -d --build
+cp .env.example .env        # usuario y contraseña del administrador
+docker compose pull         # descarga la imagen publicada en ghcr.io
+docker compose up -d
 ```
+
+Para construir la imagen en local en lugar de descargarla: `docker compose up -d --build`.
 
 Abre `http://localhost:8000`. En el primer arranque se crean dos vigilancias: **Sevilla → Tenerife** (`SVQ → TCI`) y **Tenerife → Sevilla**, con Vueling y Ryanair y un aviso a partir de 40 €.
 
@@ -52,6 +55,20 @@ El administrador tiene además el apartado **Usuarios** (crear, editar, desactiv
 Si actualizas desde una versión sin usuarios, el administrador inicial hereda las vigilancias existentes y los canales de aviso que había en Ajustes (como canales «Discord» / «Telegram» asignados a todas ellas).
 
 Para añadir otro tipo de canal (Slack, correo…), añade una entrada a `KINDS` en `app/notify.py`: campos del formulario, validación y función de envío. Aparece sola en las pantallas.
+
+## Versiones e imagen Docker
+
+La versión vive en `app/__init__.py` (`__version__`, hoy **1.1.0**; se ve en el pie del panel) y los cambios se anotan en [CHANGELOG.md](CHANGELOG.md).
+
+El CI (`.github/workflows/docker.yml`) ejecuta el test de humo y comprueba que las migraciones están al día, y publica la imagen en **ghcr.io/katarem/flight-watcher** (`linux/amd64` y `linux/arm64`):
+
+| Evento | Etiquetas publicadas |
+|---|---|
+| Push a `main` | `latest` y `sha-<commit>` |
+| Etiqueta `vX.Y.Z` | `X.Y.Z`, `X.Y` y `latest` |
+| Pull request | solo construye (no publica) |
+
+Para sacar una versión: sube `__version__`, actualiza el CHANGELOG, haz merge a `main` y crea la etiqueta (`git tag v1.1.0 && git push origin v1.1.0`); el CI falla si la etiqueta no coincide con `__version__`. En el servidor, fija `FW_VERSION=1.1.0` en `.env` (o deja `latest`) y ejecuta `docker compose pull && docker compose up -d`. Si el paquete es privado, `docker login ghcr.io` con un token con permiso `read:packages`; para hacerlo público: GitHub → Packages → Package settings → Change visibility.
 
 ## Aerolíneas y cómo se consultan
 
@@ -139,6 +156,7 @@ Para añadir otro código de ciudad (como `TCI`), añádelo a `METRO_AREAS` en `
 
 ```
 app/
+  __init__.py     versión (__version__)
   main.py         panel web, sesiones, perfil, administración de usuarios y API de gráficas
   auth.py         contraseñas (scrypt), validación de usuarios y freno de intentos de login
   avatars.py      guardado y validación de avatares

@@ -38,7 +38,7 @@
   {% if msg %}<div class="flash">{{ msg }}</div>{% endif %}
   {% block content %}{% endblock %}
 </main>
-{% if me %}<footer>Próxima comprobación automática: {{ next_run|dt }}</footer>{% endif %}
+{% if me %}<footer>Próxima comprobación automática: {{ next_run|dt }} · Flight Watcher v{{ version }}</footer>{% endif %}
 {% block scripts %}{% endblock %}
 {% if me and running %}
 <script>

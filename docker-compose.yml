@@ -1,5 +1,7 @@
 services:
   flight-watcher:
+    # Imagen publicada por el CI en ghcr.io; `docker compose up -d --build` la construye en local.
+    image: ghcr.io/katarem/flight-watcher:${FW_VERSION:-latest}
     build: .
     container_name: flight-watcher
     restart: unless-stopped

@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import auth, avatars, checker, db, fmt, notify, scheduler
+from . import __version__, auth, avatars, checker, db, fmt, notify, scheduler
 from .config import AVATAR_DIR, BASE_DIR, DEBUG_DIR, SECRET_KEY
 from .providers import PROVIDERS, link_for
 
@@ -89,7 +89,7 @@ async def lifespan(_app: FastAPI):
     scheduler.stop()
 
 
-app = FastAPI(title="Flight Watcher", dependencies=[Depends(require_login)], lifespan=lifespan)
+app = FastAPI(title="Flight Watcher", version=__version__, dependencies=[Depends(require_login)], lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware, secret_key=SECRET_KEY, session_cookie="fw_session", max_age=30 * 86400,
     same_site="lax", https_only=os.getenv("COOKIE_SECURE") == "1",
@@ -97,6 +97,7 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 templates.env.filters.update(fdate=fmt.fmt_day, price=fmt.fmt_price, dt=fmt.fmt_dt)
+templates.env.globals["version"] = __version__
 
 
 @app.exception_handler(NotAuthenticated)
