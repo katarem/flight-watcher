@@ -5,6 +5,7 @@ guardado de precios, reglas de aviso, enlaces con fecha, mensajes, panel, gráfi
 """
 import base64
 import os
+import re
 import sqlite3
 import tempfile
 from contextlib import contextmanager
@@ -114,7 +115,9 @@ def users_flow(admin_client, admin_id):
     check(ana and ana["role"] == "user" and ana["avatar"] and ana["avatar"].endswith(".png"), "usuario y avatar guardados")
     got = admin_client.get(f"/avatars/{ana['avatar']}")
     check(got.status_code == 200 and got.content == PNG and got.headers["content-type"] == "image/png", "el avatar se sirve")
-    check(f"/avatars/{ana['avatar']}" in admin_client.get("/admin/users").text, "la lista muestra el avatar")
+    users_page = admin_client.get("/admin/users").text
+    check(f"/avatars/{ana['avatar']}" in users_page, "la lista muestra el avatar")
+    check(re.search(r'<img class="avatar sm"[^>]*width="\d+" height="\d+"', users_page), "el avatar lleva tamaño propio sin CSS")
     check(admin_client.get("/avatars/../../etc/passwd").status_code == 404 and admin_client.get("/avatars/nope.png").status_code == 404,
           "avatar inexistente → 404")
     r = admin_client.post(f"/admin/users/{ana['id']}/edit", data={"username": "ana", "display_name": "Ana García", "role": "user", "enabled": "1"},
@@ -375,6 +378,9 @@ def main():
         # --- panel, detalle y gráficas
         page = client.get(f"/watches/{wid}")
         check(page.status_code == 200 and "chart-min" in page.text, "detalle con gráficas")
+        day = (TODAY + timedelta(days=11)).isoformat()  # el más barato de la ronda simulada
+        check('class="cal"' in page.text and f'data-date="{day}"' in page.text, "detalle con calendario de precios")
+        check(re.search(r'/static/style\.css\?v=[0-9a-f]{10}"', page.text), "el CSS lleva huella de versión")
         charts = client.get(f"/api/watches/{wid}/charts").json()
         check(charts["min_over_time"]["labels"] and "mockweb" in charts["min_over_time"]["series"], "API de gráficas")
         hist = client.get(f"/api/watches/{wid}/date-history", params={"date": (TODAY + timedelta(days=20)).isoformat()}).json()

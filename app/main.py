@@ -1,11 +1,13 @@
 """Panel web de Flight Watcher (FastAPI + Jinja2 + Chart.js): sesiones, vigilancias por usuario y administración."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
 import secrets
 import statistics
+from calendar import Calendar
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from urllib.parse import quote
@@ -96,8 +98,16 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
-templates.env.filters.update(fdate=fmt.fmt_day, price=fmt.fmt_price, dt=fmt.fmt_dt)
+templates.env.filters.update(fdate=fmt.fmt_day, price=fmt.fmt_price, price_short=fmt.fmt_price_short, dt=fmt.fmt_dt)
 templates.env.globals["version"] = __version__
+
+
+def _asset_hash(name: str) -> str:
+    """Huella corta del contenido de un estático: cambia la URL cuando cambia el archivo (evita CSS/JS viejos en caché)."""
+    return hashlib.sha256((BASE_DIR / "static" / name).read_bytes()).hexdigest()[:10]
+
+
+templates.env.globals["asset"] = {name: f"/static/{name}?v={_asset_hash(name)}" for name in ("style.css", "charts.js")}
 
 
 @app.exception_handler(NotAuthenticated)
@@ -377,9 +387,42 @@ def watch_detail(request: Request, wid: int, provider: str = "", user: dict = De
         summary = db.checks_summary(con, wid, 40)
         alerts = db.list_alerts(con, 15, wid)
     default_date = rows[0]["flight_date"] if rows else (sorted(dates)[0] if dates else "")
-    return render(request, "watch_detail.html", w=w, provs=provs, rows=rows[:40], summary=summary,
+    return render(request, "watch_detail.html", w=w, provs=provs, months=_calendar(rows), summary=summary,
                   alerts=alerts, dates=sorted(dates), default_date=default_date,
                   provider_filter=provider, providers=PROVIDERS)
+
+
+def _calendar(rows: list[dict]) -> list[dict]:
+    """Precios de la última comprobación como meses de semanas (lunes a domingo) para el calendario.
+
+    Cada día lleva sus precios de más barato a más caro y un nivel 1–4 según el cuartil de su
+    precio mínimo entre todos los días mostrados (1 = de los más baratos)."""
+    by_day: dict[str, list[dict]] = {}
+    for r in rows:
+        by_day.setdefault(r["flight_date"][:10], []).append(r)
+    if not by_day:
+        return []
+    for day_rows in by_day.values():
+        day_rows.sort(key=lambda r: r["price"])
+    mins = sorted(v[0]["price"] for v in by_day.values())
+    cuts = [mins[min(len(mins) - 1, int(len(mins) * q))] for q in (0.25, 0.5, 0.75)]
+    first, last = fmt.to_date(min(by_day)), fmt.to_date(max(by_day))
+    months, (y, m) = [], (first.year, first.month)
+    while (y, m) <= (last.year, last.month):
+        weeks = []
+        for week in Calendar().monthdatescalendar(y, m):
+            cells = []
+            for d in week:
+                prices = by_day.get(d.isoformat(), []) if d.month == m else []
+                cells.append(None if d.month != m else {
+                    "day": d.day, "date": d.isoformat(), "prices": prices,
+                    "level": 1 + sum(prices[0]["price"] > c for c in cuts) if prices else 0,
+                    "deal": any(p["deal"] for p in prices),
+                })
+            weeks.append(cells)
+        months.append({"label": f"{fmt.MESES[m - 1]} {y}", "weeks": weeks})
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return months
 
 
 def _align(points: dict[str, dict[str, float]]) -> dict:

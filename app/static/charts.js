@@ -60,5 +60,11 @@ async function initCharts(watchId) {
   if (select) {
     select.addEventListener('change', () => loadDateHistory(watchId, select.value));
     loadDateHistory(watchId, select.value);
+    // Pulsar el día en el calendario muestra el historial de esa fecha.
+    document.querySelectorAll('button.cal-day[data-date]').forEach((btn) => btn.addEventListener('click', () => {
+      select.value = btn.dataset.date;
+      loadDateHistory(watchId, select.value);
+      select.closest('section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }));
   }
 }
