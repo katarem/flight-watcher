@@ -1,5 +1,14 @@
 # Cambios
 
+## 1.2.0 — 2026-10-09
+
+### Añadido
+- **Calendario de precios** en el detalle de una vigilancia (sustituye a la lista «Mejores precios ahora mismo»): meses de lunes a domingo con el precio de cada web por día, color según lo barato que sale el día y borde para los chollos. Pulsar un precio abre esa fecha en la web; pulsar el día muestra su historial.
+
+### Corregido
+- El avatar de la cabecera podía mostrarse a tamaño real si el navegador o un proxy/CDN servía un `style.css` antiguo: las URL de `style.css` y `charts.js` llevan ahora una huella del contenido (`?v=…`) y el `<img>` del avatar lleva `width`/`height` propios.
+- En móvil, las tablas de la parte inferior del detalle ya no ensanchan la página.
+
 ## 1.1.0 — 2026-10-01
 
 ### Añadido
