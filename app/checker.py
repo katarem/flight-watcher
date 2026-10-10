@@ -9,9 +9,9 @@ from contextlib import contextmanager, nullcontext
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from . import db, notify
+from . import db, fx, notify, places
 from .config import DEBUG_DIR
-from .providers import PROVIDERS, DayPrice, link_for, routes
+from .providers import PROVIDERS, DayPrice, ProviderBlocked, link_for, ordered
 
 log = logging.getLogger("checker")
 
@@ -55,6 +55,20 @@ def browser_session(settings):
             browser.close()
 
 
+@contextmanager
+def browser_page(browser, settings: dict | None = None):
+    """Página nueva en un contexto propio (se cierra al salir)."""
+    settings = settings or {}
+    ctx = browser.new_context(locale="es-ES", timezone_id=settings.get("timezone", "Europe/Madrid"),
+                              viewport={"width": 1366, "height": 900})
+    page = ctx.new_page()
+    page.set_default_timeout(20000)
+    try:
+        yield page
+    finally:
+        ctx.close()
+
+
 def _save_failure(page, tag: str):
     try:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -75,56 +89,65 @@ def _cleanup_debug(days: int = 7):
 
 def _fetch_one(browser, settings, watch, prov, origin, destination, debug_dir) -> list[DayPrice]:
     """Consulta una ruta concreta (hasta 2 intentos). Lanza la última excepción si fallan ambos."""
+    months = int(settings["max_months"])
+    kw = {"max_stops": watch.get("max_stops")} if prov.stops_filter else {}
     for attempt in (1, 2):
         if not prov.needs_browser:
             try:
-                return prov.fetch_prices(None, origin, destination, int(settings["max_months"]), debug_dir)
+                return prov.fetch_prices(None, origin, destination, months, debug_dir, **kw)
+            except ProviderBlocked:
+                raise  # si nos bloquea, reintentar solo empeora las cosas
             except Exception as exc:  # noqa: BLE001
                 if attempt == 2:
                     raise
                 log.warning("%s/%s %s-%s intento 1: %s", watch["name"], prov.key, origin, destination, exc)
                 continue
-        ctx = browser.new_context(
-            locale="es-ES", timezone_id=settings["timezone"], viewport={"width": 1366, "height": 900}
-        )
-        page = ctx.new_page()
-        page.set_default_timeout(20000)
-        try:
-            return prov.fetch_prices(page, origin, destination, int(settings["max_months"]), debug_dir)
-        except Exception as exc:  # noqa: BLE001
-            _save_failure(page, f"{prov.key}-{origin}-{destination}")
-            if attempt == 2:
-                raise
-            log.warning("%s/%s %s-%s intento 1: %s", watch["name"], prov.key, origin, destination, exc)
-        finally:
-            ctx.close()
+        with browser_page(browser, settings) as page:
+            try:
+                return prov.fetch_prices(page, origin, destination, months, debug_dir, **kw)
+            except Exception as exc:  # noqa: BLE001
+                _save_failure(page, f"{prov.key}-{origin}-{destination}")
+                if attempt == 2 or isinstance(exc, ProviderBlocked):
+                    raise
+                log.warning("%s/%s %s-%s intento 1: %s", watch["name"], prov.key, origin, destination, exc)
     return []
 
 
-def _fetch_all_routes(browser, settings, watch, prov, debug_dir) -> tuple[list[DayPrice], list[str]]:
-    """Precio mínimo por día entre todos los aeropuertos que cubre la vigilancia (TCI = TFN + TFS)."""
+def _usable(watch, p: DayPrice) -> bool:
+    """Convierte el precio a euros y dice si cumple el máximo de escalas de la vigilancia."""
+    p.price_eur = fx.to_eur(p.price, p.currency)
+    limit = watch.get("max_stops")
+    return limit is None or p.stops is None or p.stops <= limit
+
+
+def _fetch_all_routes(browser, settings, watch, prov, pairs, debug_dir) -> tuple[list[DayPrice], list[str]]:
+    """Precio mínimo (en euros) por día entre los pares de aeropuertos que el proveedor cubre (TCI = TFN + TFS)."""
     best: dict = {}
     errors = []
-    for origin, destination in routes(watch["origin"], watch["destination"]):
+    for origin, destination in pairs:
         try:
             found = _fetch_one(browser, settings, watch, prov, origin, destination, debug_dir)
+            found = [p for p in found if _usable(watch, p)]
+        except fx.FxError as exc:
+            errors.append(f"{origin}-{destination}: sin cambio de divisa ({exc})")
+            continue
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{origin}-{destination}: {type(exc).__name__}: {exc}".splitlines()[0][:300])
             continue
         for p in found:
-            if p.day not in best or p.price < best[p.day].price:
+            if p.day not in best or p.price_eur < best[p.day].price_eur:
                 best[p.day] = p
     return [best[d] for d in sorted(best)], errors
 
 
-def _check_one(browser, settings, tz, watch, prov, trigger) -> dict:
+def _check_one(browser, settings, tz, watch, prov, pairs, trigger) -> dict:
     now = datetime.now(tz).replace(tzinfo=None)
     started = now.isoformat(timespec="seconds")
     with db.connect() as con:
         run_id = db.start_run(con, watch["id"], prov.key, trigger, started)
 
     debug_dir = DEBUG_DIR if settings["debug"] == "1" else None
-    prices, errors = _fetch_all_routes(browser, settings, watch, prov, debug_dir)
+    prices, errors = _fetch_all_routes(browser, settings, watch, prov, pairs, debug_dir)
     # Solo es un fallo si no se pudo consultar ninguna ruta (p. ej. TCI: Vueling no vuela a TFS).
     error = "; ".join(errors) if errors and not prices else None
     if errors and prices:
@@ -144,11 +167,12 @@ def _check_one(browser, settings, tz, watch, prov, trigger) -> dict:
                                int(settings["min_samples"]))
             db.insert_prices(con, watch["id"], prov.key, started, prices)
             for p in prices:
-                reason = deal_reason(watch, p.price, base)
-                if reason and not db.already_alerted(con, watch["id"], prov.key, p.day.isoformat(), p.price):
+                reason = deal_reason(watch, p.price_eur, base)
+                if reason and not db.already_alerted(con, watch["id"], prov.key, p.day.isoformat(), p.price_eur):
                     deals.append({
-                        "provider": prov.key, "day": p.day, "price": p.price, "reason": reason,
-                        "origin": p.origin, "destination": p.destination,
+                        "provider": prov.key, "day": p.day, "price": p.price_eur, "reason": reason,
+                        "origin": p.origin, "destination": p.destination, "stops": p.stops,
+                        "currency": p.currency, "orig_price": p.price if p.currency != "EUR" else None,
                         "link": link_for(settings, prov.key, p.origin or watch["origin"],
                                          p.destination or watch["destination"], p.day),
                     })
@@ -177,18 +201,20 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
             return "empty"
 
         problems: dict[int, list[str]] = {}  # por usuario: cada uno recibe solo los suyos
-        needs_browser = any(PROVIDERS[k].needs_browser for w in watches for k in w["providers"] if k in PROVIDERS)
+        needs_browser = any(PROVIDERS[k].needs_browser for w in watches for k, c in w["coverage"].items()
+                            if k in PROVIDERS and c["active"])
         with (browser_session(settings) if needs_browser else nullcontext()) as browser:
             for w in watches:
                 owner = users[w["user_id"]]
                 mine = problems.setdefault(owner["id"], [])
                 all_deals, baselines, last_started = [], {}, None
-                for key in w["providers"]:
-                    prov = PROVIDERS.get(key)
-                    if not prov:
+                for key in ordered(w["providers"]):
+                    prov, cov = PROVIDERS[key], w["coverage"][key]
+                    if not cov["active"]:  # no opera la ruta ahora (p. ej. de temporada): ni se consulta
                         continue
+                    pairs = cov["routes"] or places.routes(w["origin"], w["destination"])
                     STATE["current"] = f"{w['name']} · {prov.label}"
-                    res = _check_one(browser, settings, tz, w, prov, trigger)
+                    res = _check_one(browser, settings, tz, w, prov, pairs, trigger)
                     all_deals += res["deals"]
                     baselines[key] = res["base"]
                     last_started = res["started"]

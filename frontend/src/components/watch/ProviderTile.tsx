@@ -1,8 +1,8 @@
-import { AlertTriangle, ArrowUpRight, Sparkles } from 'lucide-react'
+import { AlertTriangle, ArrowUpRight, CalendarOff, Sparkles } from 'lucide-react'
 import type { ProviderStat } from '@/api/types'
 import { Badge } from '@/components/ui/card'
 import { cn } from '@/lib/cn'
-import { fmtAgo, fmtDay, fmtPrice } from '@/lib/format'
+import { fmtAgo, fmtDay, fmtPrice, priceExtras } from '@/lib/format'
 
 /** Mejor precio actual de una web dentro de una vigilancia. */
 export function ProviderTile({ stat, detail, className }: { stat: ProviderStat; detail?: boolean; className?: string }) {
@@ -15,18 +15,29 @@ export function ProviderTile({ stat, detail, className }: { stat: ProviderStat; 
       <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 bg-(--c)" />
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-medium">{stat.label}</span>
-        {best?.deal && (
+        {best?.deal && stat.active && (
           <Badge tone="deal">
             <Sparkles aria-hidden="true" /> chollo
           </Badge>
         )}
+        {!stat.active && (
+          <Badge tone="warn">
+            <CalendarOff aria-hidden="true" /> sin vuelos ahora
+          </Badge>
+        )}
       </div>
+      {!stat.active && (
+        <p className="mt-1 text-xs text-muted">
+          No opera esta ruta ahora (de temporada o cerrada): no se consulta y se revisa cada semana.
+        </p>
+      )}
       {best ? (
         <>
           <p className="mt-1 text-3xl font-semibold tracking-tight tabular-nums">{fmtPrice(best.price)}</p>
           <p className="text-sm text-muted">
             {fmtDay(best.flight_date)}
             {best.route && <span className="ml-1 font-mono text-xs">· {best.route}</span>}
+            {priceExtras(best) && <span className="ml-1 text-xs">· {priceExtras(best)}</span>}
           </p>
           {(() => {
             const facts = [
@@ -51,7 +62,7 @@ export function ProviderTile({ stat, detail, className }: { stat: ProviderStat; 
           </div>
         </>
       ) : (
-        <p className="mt-2 text-sm text-muted">Sin datos todavía</p>
+        stat.active && <p className="mt-2 text-sm text-muted">Sin datos todavía</p>
       )}
       {stat.run && !stat.run.ok && (
         <p className="mt-2 flex gap-1.5 text-xs text-danger">

@@ -36,6 +36,8 @@ jobs:
           alembic check
       - name: Test de humo (sin red)
         run: python -m tests.smoke_test
+      - name: Migraciones sobre una BD con datos
+        run: python -m tests.migration_test
       - name: La etiqueta coincide con la versión del código
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

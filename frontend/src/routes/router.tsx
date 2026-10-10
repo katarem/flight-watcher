@@ -45,6 +45,7 @@ export const router = createBrowserRouter([
       { path: 'admin/users/:uid/edit', ...page(() => import('@/pages/UserFormPage'), 'UserFormPage', true) },
       { path: 'admin/users/:uid/channels/new', element: admin(<ChannelFormPage />) },
       { path: 'admin/users/:uid/channels/:cid/edit', element: admin(<ChannelFormPage />) },
+      { path: 'admin/providers', ...page(() => import('@/pages/ProvidersPage'), 'ProvidersPage', true) },
       { path: 'settings', ...page(() => import('@/pages/SettingsPage'), 'SettingsPage', true) },
       { path: 'debug', ...page(() => import('@/pages/DebugPage'), 'DebugPage', true) },
       { path: '*', element: <NotFoundPage /> },

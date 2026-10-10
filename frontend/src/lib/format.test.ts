@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fmtAgo, fmtDateTime, fmtDay, fmtPrice, fmtPriceShort, fmtShortDay } from './format'
+import { fmtAgo, fmtDateTime, fmtDay, fmtMoney, fmtPrice, fmtPriceShort, fmtShortDay, priceExtras, stopsRule } from './format'
 
 describe('format', () => {
   it('fechas como en los avisos', () => {
@@ -22,5 +22,15 @@ describe('format', () => {
     expect(fmtAgo('2026-10-10T11:30:00', now)).toBe('hace 30 min')
     expect(fmtAgo('2026-10-10T07:00:00', now)).toBe('hace 5 h')
     expect(fmtAgo('2026-10-08T12:00:00', now)).toBe('hace 2 días')
+  })
+
+  it('otras monedas y escalas', () => {
+    expect(fmtMoney(12000, 'HUF')).toBe('12.000 HUF')
+    expect(fmtMoney(1234.5, 'GBP')).toBe('1.234,50 GBP')
+    expect(priceExtras({ currency: 'HUF', orig_price: 12000, stops: 1 })).toBe('12.000 HUF · 1 escala')
+    expect(priceExtras({ currency: 'EUR', orig_price: null, stops: 0 })).toBe('')
+    expect(stopsRule(0)).toBe('solo directos')
+    expect(stopsRule(2)).toBe('hasta 2 escalas')
+    expect(stopsRule(null)).toBe('con o sin escalas')
   })
 })

@@ -65,12 +65,13 @@ export function Switch({ checked, onChange, label, description, disabled }: {
   )
 }
 
-export function Checkbox({ checked, onChange, children, className, disabled }: {
+export function Checkbox({ checked, onChange, children, className, disabled, describedBy }: {
   checked: boolean
   onChange: (v: boolean) => void
   children: ReactNode
   className?: string
   disabled?: boolean
+  describedBy?: string
 }) {
   const id = useId()
   return (
@@ -79,8 +80,9 @@ export function Checkbox({ checked, onChange, children, className, disabled }: {
         id={id}
         checked={checked}
         disabled={disabled}
+        aria-describedby={describedBy}
         onCheckedChange={(v) => onChange(v === true)}
-        className="grid size-5 shrink-0 place-items-center rounded-md border border-line bg-surface shadow-sm transition data-[state=checked]:border-accent data-[state=checked]:bg-accent"
+        className="grid size-5 shrink-0 place-items-center rounded-md border border-line bg-surface shadow-sm transition disabled:opacity-50 data-[state=checked]:border-accent data-[state=checked]:bg-accent"
       >
         <RCheckbox.Indicator>
           <Check className="size-3.5 text-accent-fg" strokeWidth={3} aria-hidden="true" />

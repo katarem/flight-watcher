@@ -8,6 +8,9 @@ export interface CalendarPrice {
   route: string | null
   link: string
   deal: string | null
+  currency?: string
+  orig_price?: number | null
+  stops?: number | null
 }
 
 export interface CalendarDay {

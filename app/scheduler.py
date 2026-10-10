@@ -1,4 +1,8 @@
-"""Planificador interno (sustituye al cron externo). La hora se cambia desde Ajustes."""
+"""Planificador interno (sustituye al cron externo). La hora se cambia desde Ajustes.
+
+Dos tareas: la ronda de precios (a las horas de Ajustes) y, cada lunes, la revalidación de la cobertura
+de rutas (`coverage.revalidate`), que avisa si una ruta de temporada se abre o se cierra.
+"""
 from __future__ import annotations
 
 import logging
@@ -9,7 +13,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from . import checker, db
+from . import checker, coverage, db
 
 log = logging.getLogger("scheduler")
 scheduler = BackgroundScheduler()
@@ -31,6 +35,11 @@ def reschedule():
     scheduler.add_job(
         checker.run_checks, trigger, id="daily", replace_existing=True,
         coalesce=True, misfire_grace_time=3600, kwargs={"trigger": "cron"},
+    )
+    # La revalidación semanal, antes de la primera ronda del lunes para que ya use la cobertura nueva.
+    scheduler.add_job(
+        coverage.revalidate, CronTrigger(day_of_week="mon", hour=5, minute=10, timezone=tz), id="coverage",
+        replace_existing=True, coalesce=True, misfire_grace_time=6 * 3600, kwargs={"trigger": "cron"},
     )
     log.info("Comprobación programada a las %s:%s (%s)", hours, s["schedule_minute"], tz)
 
@@ -57,4 +66,10 @@ def run_now(watch_id: int | None = None, user_id: int | None = None) -> bool:
     threading.Thread(
         target=checker.run_checks, kwargs={"watch_id": watch_id, "trigger": "manual", "user_id": user_id}, daemon=True
     ).start()
+    return True
+
+
+def revalidate_now() -> bool:
+    """Revalida ya la cobertura de todas las vigilancias (en segundo plano)."""
+    threading.Thread(target=coverage.revalidate, kwargs={"trigger": "manual"}, daemon=True).start()
     return True

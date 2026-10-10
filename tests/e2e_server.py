@@ -25,7 +25,7 @@ fakes.install()
 
 def rich_fetch(key, base, operates):
     """Unos meses de precios variados (con algún día muy barato) para que el calendario tenga chicha."""
-    def fetch(self, page, origin, destination, max_months, debug_dir=None):
+    def fetch(self, page, origin, destination, max_months, debug_dir=None, **_kw):
         if not operates & {origin, destination}:
             return []
         out = []

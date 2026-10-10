@@ -63,3 +63,31 @@ export function fmtAgo(value: string | null | undefined, now: Date = new Date())
   if (days < 8) return `hace ${days} ${days === 1 ? 'día' : 'días'}`
   return fmtDateTime(value).slice(0, 10)
 }
+
+/** Importe en otra moneda: «12.990 HUF», «45,50 GBP». */
+export function fmtMoney(value: number, currency: string): string {
+  const whole = Math.abs(value - Math.round(value)) < 0.005
+  const [int, dec] = (whole ? Math.round(value).toString() : value.toFixed(2)).split('.')
+  const grouped = int.replace(/\B(?=(\d{3})+(?!\d))/g, '.')
+  return `${dec ? `${grouped},${dec}` : grouped} ${currency}`
+}
+
+/** «directo», «1 escala», «2 escalas» o '' si no se sabe. */
+export function fmtStops(stops: number | null | undefined): string {
+  if (stops == null) return ''
+  return stops === 0 ? 'directo' : `${stops} ${stops === 1 ? 'escala' : 'escalas'}`
+}
+
+/** Moneda original y escalas de un precio en una frase corta (vacía si es en euros y directo). */
+export function priceExtras(p: { currency?: string; orig_price?: number | null; stops?: number | null }): string {
+  const parts = []
+  if (p.currency && p.currency !== 'EUR' && p.orig_price != null) parts.push(fmtMoney(p.orig_price, p.currency))
+  if (p.stops) parts.push(fmtStops(p.stops))
+  return parts.join(' · ')
+}
+
+/** «solo directos», «hasta 1 escala», «sin límite de escalas». */
+export function stopsRule(maxStops: number | null): string {
+  if (maxStops == null) return 'con o sin escalas'
+  return maxStops === 0 ? 'solo directos' : `hasta ${maxStops} ${maxStops === 1 ? 'escala' : 'escalas'}`
+}
