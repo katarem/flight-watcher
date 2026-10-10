@@ -1,5 +1,21 @@
 # Cambios
 
+## 1.4.0 — 2026-10-10
+
+### Añadido
+- **Origen y destino con autocompletado**: aeropuertos de OurAirports (dominio público, solo con vuelos regulares), ciudades con varios aeropuertos (`TCI`, `LON`, `PAR`…), países (`ES`, `PT`…) y grupos propios (`canarias`, `baleares`, `andalucia`…). Endpoint `GET /api/v1/places`.
+- **Cobertura por proveedor**: cada uno declara si publica su red de rutas (Ryanair, Wizz Air), si hay que preguntarle por cada ruta (Vueling) o si cubre cualquiera (Google Flights). Se guarda en caché (`provider_routes`).
+- **Comprobación de la ruta al crear o editar** (`POST /api/v1/route-check`): consulta los proveedores en paralelo, con tiempo límite por proveedor, y el formulario muestra cuáles la operan y por qué los demás no.
+- **Revalidación semanal** (los lunes) de la cobertura de cada vigilancia, con aviso si una ruta de temporada se abre o se cierra. Mientras está cerrada, ese proveedor no se consulta.
+- **Escalas**: cada precio guarda sus escalas y cada vigilancia tiene un «máx. escalas» (solo directos por defecto).
+- **Monedas**: cada precio se guarda en su moneda original y en euros con el cambio de referencia del BCE.
+- Proveedores nuevos: **Wizz Air** y **Google Flights** (sin verificar todavía contra las webs reales: compruébalo en Proveedores).
+- **Proveedores** (solo administradores): prueba de acceso a cada proveedor desde la IP del servidor, como un healthcheck (cobertura y precios de un mes, con estado, código HTTP y tiempos), del cambio de divisas del BCE y de las portadas de las aerolíneas en estudio (Volotea, easyJet, Iberia), con o sin navegador.
+
+### Cambiado
+- `watch_providers` sustituye a la lista de proveedores en CSV de cada vigilancia: guarda el proveedor, los pares de aeropuertos reales que opera, si está activo y cuándo se comprobó. La migración `0004` convierte las vigilancias actuales (se aplica sola al arrancar).
+- Una sola petición a la vez por proveedor y con pausas entre ellas, también entre la ronda, la comprobación de rutas y la prueba de acceso. Si una web nos bloquea (403/429/anti-bot) no se reintenta.
+
 ## 1.3.0 — 2026-10-10
 
 ### Cambiado

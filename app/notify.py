@@ -7,8 +7,8 @@ import re
 
 import requests
 
-from .fmt import fmt_day, fmt_price
-from .providers import PROVIDERS
+from .fmt import fmt_day, fmt_money, fmt_price, fmt_stops
+from .providers import PROVIDERS, ordered
 
 log = logging.getLogger("notify")
 
@@ -119,7 +119,7 @@ def send_deals(channels: list[dict], watch: dict, deals: list[dict], baselines: 
     d_lines = [f"✈️ **{watch['name']}** ({route})"]
     t_lines = [f"✈️ <b>{html.escape(watch['name'])}</b> ({route})"]
 
-    for key in watch["providers"]:
+    for key in ordered(watch["providers"]):
         mine = sorted((d for d in deals if d["provider"] == key), key=lambda d: d["price"])
         if not mine:
             continue
@@ -132,6 +132,10 @@ def send_deals(channels: list[dict], watch: dict, deals: list[dict], baselines: 
             day, price = fmt_day(d["day"]), fmt_price(d["price"])
             if d.get("origin") and (d["origin"], d["destination"]) != (watch["origin"], watch["destination"]):
                 day += f" ({d['origin']}→{d['destination']})"
+            if d.get("orig_price") and d.get("currency", "EUR") != "EUR":
+                price += f" ({fmt_money(d['orig_price'], d['currency'])})"
+            if d.get("stops"):
+                price += f" · {fmt_stops(d['stops'])}"
             d_lines.append(f"• [{day} → **{price}**](<{d['link']}>)")
             t_lines.append(
                 f'• <a href="{html.escape(d["link"], quote=True)}">{day} → <b>{price}</b></a>'

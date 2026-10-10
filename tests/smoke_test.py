@@ -2,12 +2,16 @@
 
 Sustituye el navegador y los proveedores por datos simulados y comprueba de extremo a extremo:
 guardado de precios, reglas de aviso, enlaces con fecha, mensajes, la API del panel (sesión, permisos,
-vigilancias, gráficas, canales, usuarios, ajustes) y que el servidor entrega el panel compilado.
+vigilancias, gráficas, canales, usuarios, ajustes), lugares y cobertura de rutas, escalas y monedas, la
+revalidación semanal, la prueba de acceso a los proveedores y que el servidor entrega el panel compilado.
 """
 import base64
 import os
 import sqlite3
 import tempfile
+import threading
+import time
+import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -24,13 +28,15 @@ os.environ["WEB_DIR"] = str(WEB)
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
-from app import checker, config, db  # noqa: E402
+from app import checker, config, coverage, db, fx, places  # noqa: E402
 from app.main import app  # noqa: E402
 from app.providers import PROVIDERS, DayPrice  # noqa: E402
+from app.providers.base import Provider  # noqa: E402
 from app.providers.extract import parse_day, parse_price, walk_json  # noqa: E402
+from app.providers.google import parse_response, request_body  # noqa: E402
 
 from . import fakes  # noqa: E402
-from .fakes import SENT, TARGETS, TODAY  # noqa: E402
+from .fakes import ASKED, SENT, TARGETS, TODAY  # noqa: E402
 
 fakes.install()
 
@@ -105,10 +111,11 @@ def users_flow(admin: Api, admin_id: int):
     # --- el usuario normal: sesión propia, sin acceso a lo de admin y con sus propias vigilancias
     ana_c = Api()
     check(ana_c.login("ana", "clave-de-ana-1").status_code == 200, "login de usuario normal")
-    for path in ("/users", f"/users/{admin_id}", "/settings", "/debug/files", f"/users/{admin_id}/channels"):
+    for path in ("/users", f"/users/{admin_id}", "/settings", "/debug/files", f"/users/{admin_id}/channels", "/providers"):
         check(ana_c.get(path).status_code == 403, f"{path} prohibido para un usuario normal")
     check(ana_c.post("/users", {"username": "x1x", "password": "12345678"}).status_code == 403, "crear usuarios prohibido")
     check(ana_c.put("/settings", {"schedule_hours": "1"}).status_code == 403, "cambiar ajustes prohibido")
+    check(ana_c.post("/providers/health", {}).status_code == 403, "probar proveedores, solo admin")
     watches = ana_c.get("/watches").json()["watches"]
     check(not watches, "no ve vigilancias ajenas")
     me = ana_c.get("/me").json()["user"]
@@ -284,6 +291,184 @@ def users_flow(admin: Api, admin_id: int):
     check(admin.login("admin", "clave-de-prueba-1").status_code == 200, "volver a entrar")
 
 
+def providers_flow(admin: Api, admin_id: int, admin_chan: int):
+    # --- catálogo de lugares y autocompletado
+    found = admin.get("/places", params={"q": "tenerife"}).json()["places"]
+    check(found[0]["code"] == "TCI" and found[0]["kind"] == "city" and found[0]["airports"] == ["TFN", "TFS"],
+          "autocompletado: la ciudad (TCI) antes que sus aeropuertos")
+    check([p["code"] for p in admin.get("/places", params={"q": "malaga"}).json()["places"]][:1] == ["AGP"],
+          "autocompletado sin tildes (malaga → Málaga)")
+    check(admin.get("/places", params={"q": "canarias"}).json()["places"][0]["code"] == "canarias", "grupos propios")
+    es = admin.get("/places/es").json()["place"]
+    check(es["kind"] == "country" and es["label"] == "España" and "SVQ" in es["airports"], "países (con sus aeropuertos regulares)")
+    check(admin.get("/places/XQZ").status_code == 404, "lugar desconocido → 404")
+    check(places.routes("SVQ", "TCI") == [("SVQ", "TFN"), ("SVQ", "TFS")], "expansión de ciudades a aeropuertos")
+
+    # --- comprobación de ruta al crear: en paralelo, con el motivo de los que no valen
+    ASKED.clear()
+    r = admin.post("/route-check", {"origin": "SVQ", "destination": "TCI"})
+    res = {p["key"]: p for p in r.json()["providers"]}
+    check(r.status_code == 200 and r.json()["pairs"] == ["SVQ-TFN", "SVQ-TFS"], "route-check expande origen y destino")
+    check(res["vueling"]["ok"] and res["vueling"]["routes"] == ["SVQ-TFN"] and res["ryanair"]["routes"] == ["SVQ-TFS"],
+          "cada proveedor dice qué pares opera (Vueling → TFN, Ryanair → TFS)")
+    check(res["wizzair"]["status"] == "none" and "no tiene vuelos directos" in res["wizzair"]["reason"],
+          "…y por qué no vale el que no la opera")
+    check(res["google"]["ok"] and res["google"]["coverage"] == "universal" and len(res["google"]["routes"]) == 2,
+          "Google Flights cubre cualquier ruta")
+    asked = len(ASKED)
+    admin.post("/route-check", {"origin": "SVQ", "destination": "TCI"})
+    check(len(ASKED) == asked, "la cobertura se guarda en caché (no se vuelve a preguntar)")
+    r = admin.post("/route-check", {"origin": "andalucia", "destination": "canarias"})
+    res = {p["key"]: p for p in r.json()["providers"]}
+    check(res["google"]["status"] == "too_many" and "como mucho 12" in res["google"]["reason"], "límite de pares de Google Flights")
+    bad = admin.post("/route-check", {"origin": "ES", "destination": "canarias"})
+    check(bad.status_code == 422 and "combinaciones" in errors(bad), "demasiadas combinaciones de aeropuertos")
+
+    def slow_probe(self, session, o, d):
+        time.sleep(2)
+        return True
+    old_probe = type(PROVIDERS["vueling"]).probe
+    type(PROVIDERS["vueling"]).probe = slow_probe
+    started = time.monotonic()
+    out = {x.key: x for x in coverage.check_many(["vueling", "ryanair"], [("MAD", "PMI")], timeout=0.5)}
+    check(out["vueling"].status == "timeout" and out["ryanair"].status in ("ok", "none") and time.monotonic() - started < 1.5,
+          "tiempo límite por proveedor (el lento no retrasa a los demás)")
+    type(PROVIDERS["vueling"]).probe = old_probe
+
+    # --- vigilancias con cobertura, escalas y monedas
+    bad = admin.post("/watches", {"origin": "SVQ", "destination": "TCI", "providers": ["vueling", "wizzair"]})
+    check(bad.status_code == 422 and "Wizz Air no opera esta ruta" in errors(bad), "no se guarda un proveedor que no opera la ruta")
+    r = admin.post("/watches", {"name": "Barcelona → Budapest", "origin": "BCN", "destination": "BUD", "providers": ["wizzair"],
+                                "max_price": "35", "max_stops": "0", "channel_ids": [admin_chan]})
+    w = r.json()["watch"]
+    check(r.status_code == 201 and w["coverage"][0]["routes"] == ["BCN-BUD"] and w["coverage"][0]["checked_at"]
+          and w["origin_place"]["label"] == "Barcelona (BCN)" and w["max_stops"] == 0, "vigilancia con su cobertura comprobada")
+    SENT.clear()
+    checker.run_checks(watch_id=w["id"], trigger="manual")
+    with db.connect() as con:
+        snap = db.latest_snapshot(con, w["id"], "wizzair")
+    check(snap[0]["price"] == 30 and snap[0]["orig_price"] == 12000 and snap[0]["currency"] == "HUF",
+          "precio en moneda original y su equivalente en euros (cambio del BCE)")
+    check(SENT and "12.000 HUF" in "\n".join(SENT[0][0]) and "30 €" in "\n".join(SENT[0][0]), "el aviso muestra euros y la moneda original")
+    detail = admin.get(f"/watches/{w['id']}").json()
+    check(detail["prices"][0]["currency"] == "HUF" and detail["stats"][0]["best"]["orig_price"] == 12000, "el panel recibe la moneda original")
+    bad = admin.post("/watches", {"origin": "MAD", "destination": "BCN", "providers": ["google"], "max_stops": "7"})
+    check("máximo de escalas" in errors(bad), "validación del máximo de escalas")
+
+    g = admin.post("/watches", {"origin": "MAD", "destination": "BCN", "providers": ["google"], "max_stops": "0"}).json()["watch"]
+    checker.run_checks(watch_id=g["id"], trigger="manual")
+    with db.connect() as con:
+        days = {r["flight_date"]: r for r in db.latest_snapshot(con, g["id"], "google")}
+    check((TODAY + timedelta(days=11)).isoformat() not in days and len(days) == 2, "solo directos: el día con escala no cuenta")
+    admin.put(f"/watches/{g['id']}", {"origin": "MAD", "destination": "BCN", "providers": ["google"], "max_stops": ""})
+    checker.run_checks(watch_id=g["id"], trigger="manual")
+    with db.connect() as con:
+        snap = db.latest_snapshot(con, g["id"], "google")
+    check(snap[0]["price"] == 70 and snap[0]["stops"] == 1, "sin límite de escalas: entra y se guarda cuántas tiene")
+    admin.delete(f"/watches/{g['id']}")
+
+    # --- un proveedor inactivo (ruta cerrada) no se consulta
+    with db.connect() as con:
+        db.update_watch_provider(con, 1, "ryanair", [], False, "2026-01-01T00:00:00")
+        before = con.execute(text("SELECT count(*) FROM runs WHERE watch_id = 1 AND provider = 'ryanair'")).scalar()
+    checker.run_checks(watch_id=1, trigger="manual")
+    with db.connect() as con:
+        after = con.execute(text("SELECT count(*) FROM runs WHERE watch_id = 1 AND provider = 'ryanair'")).scalar()
+    card = {c["id"]: c for c in admin.get("/watches").json()["watches"]}[1]
+    check(after == before and not {s["key"]: s for s in card["stats"]}["ryanair"]["active"],
+          "un proveedor inactivo no se consulta y el panel lo marca")
+
+    # --- revalidación semanal: la primera vez sin avisos; después avisa si una ruta se abre o se cierra
+    with db.connect() as con:
+        db.set_watch_providers(con, 1, db.default_coverage("SVQ", "TCI", ["vueling", "ryanair"]))
+    SENT.clear()
+    coverage.revalidate()
+    with db.connect() as con:
+        cov = db.get_watch(con, 1)["coverage"]
+    check(cov["vueling"]["routes"] == [("SVQ", "TFN")] and cov["ryanair"]["routes"] == [("SVQ", "TFS")]
+          and cov["ryanair"]["checked_at"] and not SENT, "primera revalidación: ajusta los pares sin avisar")
+    fakes.OPERATES["ryanair"] = set()
+    coverage.revalidate()
+    with db.connect() as con:
+        cov = db.get_watch(con, 1)["coverage"]
+    msg = "\n".join(m for s in SENT for m in s[0])
+    check(not cov["ryanair"]["active"] and "Ryanair: deja de operar SVQ→TFS" in msg and TARGETS[-1] == ("Discord admin",),
+          "aviso al cerrarse una ruta de temporada (a los canales de la vigilancia)")
+    r = admin.put("/watches/1", {"name": "Sevilla → Tenerife", "origin": "SVQ", "destination": "TCI",
+                                 "providers": ["vueling", "ryanair"], "max_price": 40, "max_stops": 0, "channel_ids": [admin_chan]})
+    check(r.status_code == 200 and {c["key"]: c for c in r.json()["watch"]["coverage"]}["ryanair"]["active"] is False,
+          "al editar se conserva el proveedor de temporada (inactivo)")
+    fakes.OPERATES["ryanair"] = {"TFS"}
+    SENT.clear()
+    coverage.revalidate()
+    msg = "\n".join(m for s in SENT for m in s[0])
+    check("Ryanair: se abre SVQ→TFS" in msg, "aviso al abrirse de nuevo")
+
+    # --- una sola petición a la vez por proveedor y con pausa entre ellas
+    class Slow(Provider):
+        key, label, min_interval, jitter = "lento", "Lento", 0.15, 0
+
+        def fetch_prices(self, *a, **k):
+            return []
+    prov, spans = Slow(), []
+
+    def use():
+        with prov.slot():
+            start = time.monotonic()
+            time.sleep(0.05)
+            spans.append((start, time.monotonic()))
+    threads = [threading.Thread(target=use) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    spans.sort()
+    check(all(b[0] >= a[1] + 0.14 for a, b in zip(spans, spans[1:])), "turno por proveedor: sin solapes y con pausa")
+
+    # --- prueba de acceso a los proveedores (solo admin)
+    r = admin.post("/providers/health", {})
+    res = {x["key"]: x for x in r.json()["results"]}
+    check(r.status_code == 200 and set(res) >= {"vueling", "ryanair", "wizzair", "google"}
+          and res["vueling"]["status"] == res["google"]["status"] == "ok", "prueba de acceso de todos los proveedores")
+    check([s["name"] for s in res["ryanair"]["steps"]] == ["Cobertura", "Precios (1 mes)"]
+          and "1 destino directo desde SVQ (no incluye BCN)" in res["ryanair"]["steps"][0]["detail"]
+          and res["ryanair"]["status"] == "empty", "pasos: cobertura y precios (accesible pero sin precios en esa ruta)")
+    check(res["google"]["steps"][0]["status"] == "skipped" and res["mockweb"]["steps"][1]["status"] == "skipped",
+          "pasos que no aplican: omitidos sin estropear el resultado")
+    check(r.json()["fx"]["status"] == "ok" and "BCE" in r.json()["fx"]["name"], "también el cambio de divisas")
+    fakes.BLOCKED.add("wizzair")
+    r = admin.post("/providers/health", {"providers": ["wizzair"], "origin": "bcn", "destination": "bud"})
+    res = r.json()["results"][0]
+    check(res["status"] == "blocked" and res["steps"][0]["http_status"] == 403 and len(res["steps"]) == 1,
+          "un proveedor que bloquea sale como «bloqueado» y no se insiste")
+    fakes.BLOCKED.clear()
+    lst = admin.get("/providers").json()
+    last = {p["key"]: p for p in lst["providers"]}
+    check(last["wizzair"]["last"]["status"] == "blocked" and last["vueling"]["coverage"] == "probe"
+          and last["google"]["verified"] is None and lst["candidates"], "último resultado guardado por proveedor")
+    bad = admin.post("/providers/health", {"origin": "TCI", "destination": "SVQ"})
+    check(bad.status_code == 422 and "aeropuerto" in errors(bad), "la ruta de prueba debe ser de aeropuertos")
+    r = admin.post("/providers/health", {"providers": [], "candidates": True, "browser": True})
+    cands = {c["key"]: c for c in r.json()["candidates"]}
+    check(cands["iberia"]["status"] == "blocked" and "Akamai" in cands["iberia"]["steps"][0]["detail"]
+          and cands["volotea"]["status"] == "ok" and "Cloudflare" in cands["volotea"]["steps"][0]["detail"]
+          and len(cands["easyjet"]["steps"]) == 2, "aerolíneas en estudio: portada sin y con navegador, con anti-bot detectado")
+
+    # --- piezas sueltas: respuesta de Google Flights y cambio del BCE
+    body = ")]}'\n\n123\n" + json.dumps([["wrb.fr", None, json.dumps(
+        [None, [["2026-11-02", None, [[None, 54], "x"]], ["2026-11-03", None, [[None, 61.5], "y"]]]])]])
+    check(parse_response(body) == {date(2026, 11, 2): 54, date(2026, 11, 3): 61.5}, "Google Flights: precios por día")
+    check('[[[\\"SVQ\\",0]]]' in request_body("SVQ", "TFN", date(2026, 11, 1), date(2026, 12, 1), 0), "Google Flights: petición")
+    try:
+        parse_response("<html>consent</html>")
+        check(False, "Google Flights: formato inesperado")
+    except Exception as exc:  # noqa: BLE001
+        check("formato inesperado" in str(exc), "Google Flights: un formato inesperado es un error claro")
+    xml = "<Cube time='2026-10-09'><Cube currency='USD' rate='1.1012'/><Cube currency='HUF' rate='398.5'/></Cube>"
+    check(fx.parse(xml) == {"date": "2026-10-09", "rates": {"USD": 1.1012, "HUF": 398.5}}, "lectura del XML del BCE")
+    check(fx.to_eur(110, "USD") == 100 and fx.to_eur(5, "EUR") == 5, "conversión a euros")
+
+
 def main():
     with TestClient(app) as raw:
         client = Api(raw)
@@ -415,14 +600,16 @@ def main():
         check(link.endswith("f=24/10/2026"), "plantilla de enlace personalizada")
 
         # --- CRUD de vigilancias
-        bad = client.post("/watches", {"origin": "SV", "destination": "TFN"})
+        bad = client.post("/watches", {"origin": "S1", "destination": "TFN"})
         check(bad.status_code == 422 and "código IATA" in errors(bad) and "al menos un proveedor" in errors(bad), "validación del formulario")
         bad = client.post("/watches", {"origin": 3, "providers": "x"})
         check(bad.status_code == 422 and "Datos no válidos" in errors(bad), "tipos incorrectos → 422 en castellano")
-        r = client.post("/watches", {"origin": "agp", "destination": "bcn", "providers": ["vueling", "nope"], "max_price": "25,5"})
+        bad = client.post("/watches", {"origin": "agp", "destination": "bcn", "providers": ["vueling"]})
+        check(bad.status_code == 422 and "Vueling no opera esta ruta" in errors(bad), "un proveedor que no opera la ruta no se puede elegir")
+        r = client.post("/watches", {"origin": "agp", "destination": "bcn", "providers": ["mockweb", "nope"], "max_price": "25,5"})
         check(r.status_code == 201, "crear vigilancia")
         new = r.json()["watch"]
-        check(new["origin"] == "AGP" and new["destination"] == "BCN" and new["max_price"] == 25.5 and new["providers"] == ["vueling"]
+        check(new["origin"] == "AGP" and new["destination"] == "BCN" and new["max_price"] == 25.5 and new["providers"] == ["mockweb"]
               and new["name"] == "AGP → BCN", "IATA en mayúsculas, decimales con coma y proveedores desconocidos fuera")
         r = client.post(f"/watches/{new['id']}/toggle")
         check(r.status_code == 200 and r.json()["watch"]["enabled"] is False, "pausar/reanudar")
@@ -431,6 +618,7 @@ def main():
         check(st["running"] is False and st["current"] == "" and st["next_run"], "estado de ejecución y próxima ronda")
         check(sum(1 for r in client.get("/runs").json()["runs"] if r["ok"]) >= 2, "historial de ejecuciones")
 
+        providers_flow(client, admin_id, admin_chan)
         users_flow(client, admin_id)
 
     # --- extractor genérico

@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import URL, Engine
 
-from . import config
+from . import config, places
 
 DEFAULT_SETTINGS = {
     "schedule_hours": "8",
@@ -49,6 +49,7 @@ BASELINE_REVISION = "0001"  # esquema de las BD creadas antes de usar Alembic
 _TABLE_OPTS = {"mysql_charset": "utf8mb4"}  # los nombres llevan «→»
 ISO = String(32)
 IATA = String(3)
+PLACE = String(places.CODE_MAX)  # aeropuerto, ciudad, país o grupo (ver app/places.py)
 
 metadata = MetaData()
 
@@ -95,16 +96,50 @@ watches = Table(
     # Nullable solo por las BD anteriores a los usuarios: bootstrap_admin() las asigna al administrador.
     Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE", name="fk_watches_user_id")),
     Column("name", String(200), nullable=False),
-    Column("origin", IATA, nullable=False),
-    Column("destination", IATA, nullable=False),
-    Column("providers", String(200), nullable=False, server_default="vueling"),
+    Column("origin", PLACE, nullable=False),
+    Column("destination", PLACE, nullable=False),
     Column("max_price", Double),
     Column("discount_pct", Double, nullable=False, server_default="30"),
     Column("date_from", String(10)),
     Column("date_to", String(10)),
+    Column("max_stops", Integer),  # escalas como máximo (0 = solo directos, NULL = sin límite)
     Column("enabled", Integer, nullable=False, server_default="1"),
     Column("created_at", ISO, nullable=False),
     Index("idx_watches_user", "user_id"),
+    **_TABLE_OPTS,
+)
+
+# Proveedores de cada vigilancia con su cobertura: pares de aeropuertos reales que opera
+# (JSON ["SVQ-TFN", …]), si está activo (opera alguno ahora) y cuándo se comprobó (NULL = nunca).
+watch_providers = Table(
+    "watch_providers", metadata,
+    Column("watch_id", Integer, ForeignKey("watches.id", ondelete="CASCADE"), primary_key=True),
+    Column("provider", String(50), primary_key=True),
+    Column("routes", Text, nullable=False),
+    Column("active", Integer, nullable=False, server_default="1"),
+    Column("checked_at", ISO),
+    **_TABLE_OPTS,
+)
+
+# Caché de cobertura: si un proveedor opera un par de aeropuertos (red publicada o pregunta directa).
+provider_routes = Table(
+    "provider_routes", metadata,
+    Column("provider", String(50), primary_key=True),
+    Column("origin", IATA, primary_key=True),
+    Column("destination", IATA, primary_key=True),
+    Column("operated", Integer, nullable=False),
+    Column("checked_at", ISO, nullable=False),
+    **_TABLE_OPTS,
+)
+
+# Último resultado de la comprobación de acceso de cada proveedor (zona «Proveedores» del admin).
+provider_health = Table(
+    "provider_health", metadata,
+    Column("provider", String(50), primary_key=True),
+    Column("status", String(20), nullable=False),  # ok | empty | blocked | error | timeout
+    Column("detail", Text, nullable=False),  # JSON con los pasos
+    Column("latency_ms", Integer, nullable=False, server_default="0"),
+    Column("checked_at", ISO, nullable=False),
     **_TABLE_OPTS,
 )
 
@@ -122,11 +157,13 @@ prices = Table(
     Column("watch_id", Integer, ForeignKey("watches.id", ondelete="CASCADE"), nullable=False),
     Column("provider", String(50), nullable=False),
     Column("flight_date", String(10), nullable=False),
-    Column("price", Double, nullable=False),
-    Column("currency", String(3), nullable=False, server_default="EUR"),
+    Column("price", Double, nullable=False),  # en euros (convertido con el cambio del BCE)
+    Column("currency", String(3), nullable=False, server_default="EUR"),  # moneda original
     Column("checked_at", ISO, nullable=False),
     Column("origin", IATA),       # aeropuerto real (NULL = el de la vigilancia)
     Column("destination", IATA),
+    Column("orig_price", Double),  # precio en la moneda original (NULL = el mismo en euros)
+    Column("stops", Integer),      # escalas (NULL = datos antiguos, directos)
     Index("idx_prices_snap", "watch_id", "provider", "checked_at"),
     Index("idx_prices_date", "watch_id", "provider", "flight_date"),
     **_TABLE_OPTS,
@@ -256,12 +293,11 @@ def seed_defaults(user_id: int):
     with connect() as con:
         if con.execute(select(func.count()).select_from(watches)).scalar():
             return
-        now = datetime.now().isoformat(timespec="seconds")
-        con.execute(insert(watches), [
-            {"user_id": user_id, "name": name, "origin": o, "destination": d, "providers": "vueling,ryanair",
-             "max_price": 40, "discount_pct": 30, "created_at": now}
-            for name, o, d in (("Sevilla → Tenerife", "SVQ", "TCI"), ("Tenerife → Sevilla", "TCI", "SVQ"))
-        ])
+        for name, o, d in (("Sevilla → Tenerife", "SVQ", "TCI"), ("Tenerife → Sevilla", "TCI", "SVQ")):
+            create_watch(con, user_id, {
+                "name": name, "origin": o, "destination": d, "providers": ["vueling", "ryanair"], "max_price": 40,
+                "discount_pct": 30, "date_from": None, "date_to": None, "max_stops": 0, "enabled": True,
+            })
 
 
 # --------------------------------------------------------------------- usuarios
@@ -424,41 +460,92 @@ def save_settings(values: dict):
 
 
 # ------------------------------------------------------------------ vigilancias
-def _watch(row: dict | None) -> dict | None:
-    if row is None:
-        return None
-    row["providers"] = [p for p in row["providers"].split(",") if p]
-    return row
-
-
 def _watch_values(data: dict) -> dict:
     return {
         "name": data["name"], "origin": data["origin"], "destination": data["destination"],
-        "providers": ",".join(data["providers"]), "max_price": data["max_price"],
-        "discount_pct": data["discount_pct"], "date_from": data["date_from"], "date_to": data["date_to"],
-        "enabled": int(data["enabled"]),
+        "max_price": data["max_price"], "discount_pct": data["discount_pct"], "date_from": data["date_from"],
+        "date_to": data["date_to"], "max_stops": data.get("max_stops"), "enabled": int(data["enabled"]),
     }
+
+
+def pair_key(pair) -> str:
+    return f"{pair[0]}-{pair[1]}"
+
+
+def parse_pair(key: str) -> tuple[str, str]:
+    o, d = key.split("-", 1)
+    return o, d
+
+
+def default_coverage(origin: str, destination: str, keys) -> dict[str, dict]:
+    """Cobertura sin comprobar: todos los pares de aeropuertos del origen y el destino."""
+    pairs = places.routes(origin, destination)
+    return {k: {"routes": pairs, "active": True, "checked_at": None} for k in keys}
+
+
+def _with_extras(con, ws: list[dict]) -> list[dict]:
+    """Añade a cada vigilancia `channel_ids`, `providers` (claves) y `coverage` (por proveedor)."""
+    if not ws:
+        return ws
+    _with_channel_ids(con, ws)
+    rows = _all(con, select(watch_providers).where(watch_providers.c.watch_id.in_([w["id"] for w in ws]))
+                .order_by(watch_providers.c.provider))
+    cov: dict[int, dict] = {}
+    for r in rows:
+        cov.setdefault(r["watch_id"], {})[r["provider"]] = {
+            "routes": [parse_pair(p) for p in json.loads(r["routes"])], "active": bool(r["active"]),
+            "checked_at": r["checked_at"],
+        }
+    for w in ws:
+        w["coverage"] = cov.get(w["id"], {})
+        w["providers"] = list(w["coverage"])
+    return ws
 
 
 def list_watches(con, user_id: int | None = None) -> list[dict]:
     stmt = select(watches).order_by(watches.c.id)
     if user_id is not None:
         stmt = stmt.where(watches.c.user_id == user_id)
-    return _with_channel_ids(con, [_watch(r) for r in _all(con, stmt)])
+    return _with_extras(con, _all(con, stmt))
 
 
 def get_watch(con, watch_id: int) -> dict | None:
-    w = _watch(_one(con, select(watches).where(watches.c.id == watch_id)))
-    return _with_channel_ids(con, [w])[0] if w else None
+    w = _one(con, select(watches).where(watches.c.id == watch_id))
+    return _with_extras(con, [w])[0] if w else None
+
+
+def set_watch_providers(con, watch_id: int, coverage: dict[str, dict]):
+    """Sustituye los proveedores de la vigilancia: {clave: {"routes": [(o, d)], "active", "checked_at"}}."""
+    con.execute(delete(watch_providers).where(watch_providers.c.watch_id == watch_id))
+    if coverage:
+        con.execute(insert(watch_providers), [
+            {"watch_id": watch_id, "provider": k, "routes": json.dumps([pair_key(p) for p in c["routes"]]),
+             "active": int(c["active"]), "checked_at": c["checked_at"]}
+            for k, c in coverage.items()
+        ])
+
+
+def update_watch_provider(con, watch_id: int, provider: str, routes, active: bool, checked_at: str | None):
+    con.execute(update(watch_providers)
+                .where(watch_providers.c.watch_id == watch_id, watch_providers.c.provider == provider)
+                .values(routes=json.dumps([pair_key(p) for p in routes]), active=int(active), checked_at=checked_at))
+
+
+def _coverage_of(data: dict) -> dict[str, dict]:
+    return data.get("coverage") or default_coverage(data["origin"], data["destination"], data.get("providers", []))
 
 
 def create_watch(con, user_id: int, data: dict) -> int:
+    """`data["coverage"]` con la cobertura comprobada o, si falta, `data["providers"]` (sin comprobar)."""
     values = {**_watch_values(data), "user_id": user_id, "created_at": datetime.now().isoformat(timespec="seconds")}
-    return con.execute(insert(watches).values(**values)).inserted_primary_key[0]
+    wid = con.execute(insert(watches).values(**values)).inserted_primary_key[0]
+    set_watch_providers(con, wid, _coverage_of(data))
+    return wid
 
 
 def update_watch(con, watch_id: int, data: dict):
     con.execute(update(watches).where(watches.c.id == watch_id).values(**_watch_values(data)))
+    set_watch_providers(con, watch_id, _coverage_of(data))
 
 
 def delete_watch(con, watch_id: int):
@@ -471,11 +558,13 @@ def toggle_watch(con, watch_id: int):
 
 # ----------------------------------------------------------------------- precios
 def insert_prices(con, watch_id, provider, checked_at, rows):
+    """Filas `DayPrice`; `price_eur` (si lo tienen) es el precio en euros y `price` el de su moneda."""
     if not rows:
         return
     con.execute(insert(prices), [
-        {"watch_id": watch_id, "provider": provider, "flight_date": r.day.isoformat(), "price": r.price,
-         "currency": r.currency, "checked_at": checked_at,
+        {"watch_id": watch_id, "provider": provider, "flight_date": r.day.isoformat(),
+         "price": getattr(r, "price_eur", None) or r.price, "currency": r.currency, "checked_at": checked_at,
+         "orig_price": r.price if r.currency != "EUR" else None, "stops": getattr(r, "stops", 0),
          "origin": r.origin or None, "destination": r.destination or None}
         for r in rows
     ])
@@ -484,7 +573,8 @@ def insert_prices(con, watch_id, provider, checked_at, rows):
 def latest_snapshot(con, watch_id, provider) -> list[dict]:
     p = prices.c
     last = select(func.max(p.checked_at)).where(p.watch_id == watch_id, p.provider == provider).scalar_subquery()
-    return _all(con, select(p.flight_date, p.price, p.checked_at, p.origin, p.destination)
+    return _all(con, select(p.flight_date, p.price, p.checked_at, p.origin, p.destination, p.currency, p.orig_price,
+                            p.stops)
                 .where(p.watch_id == watch_id, p.provider == provider, p.checked_at == last)
                 .order_by(p.price, p.flight_date))
 
@@ -582,3 +672,40 @@ def purge(con, retention_days: int):
     con.execute(delete(prices).where(prices.c.checked_at < cutoff))
     con.execute(delete(runs).where(runs.c.started_at < cutoff))
     con.execute(delete(alerts).where(alerts.c.sent_at < cutoff))
+
+
+# ------------------------------------------------------------ cobertura de rutas
+def cached_routes(con, provider: str, pairs, since_iso: str) -> dict[tuple[str, str], bool]:
+    """Pares ya comprobados desde `since_iso`: {(o, d): opera}."""
+    if not pairs:
+        return {}
+    r = provider_routes.c
+    wanted = set(pairs)
+    origins = sorted({o for o, _d in wanted})
+    rows = con.execute(select(r.origin, r.destination, r.operated)
+                       .where(r.provider == provider, r.checked_at >= since_iso, r.origin.in_(origins))).all()
+    return {(o, d): bool(op) for o, d, op in rows if (o, d) in wanted}
+
+
+def save_routes(con, provider: str, results: dict[tuple[str, str], bool], checked_at: str):
+    if not results:
+        return
+    r = provider_routes.c
+    for o in {o for o, _d in results}:
+        dests = [d for oo, d in results if oo == o]
+        con.execute(delete(provider_routes).where(r.provider == provider, r.origin == o, r.destination.in_(dests)))
+    con.execute(insert(provider_routes), [
+        {"provider": provider, "origin": o, "destination": d, "operated": int(ok), "checked_at": checked_at}
+        for (o, d), ok in results.items()
+    ])
+
+
+# ------------------------------------------------------ salud de los proveedores
+def save_health(con, provider: str, status: str, detail: list[dict], latency_ms: int, checked_at: str):
+    con.execute(delete(provider_health).where(provider_health.c.provider == provider))
+    con.execute(insert(provider_health).values(provider=provider, status=status, detail=json.dumps(detail),
+                                               latency_ms=latency_ms, checked_at=checked_at))
+
+
+def list_health(con) -> dict[str, dict]:
+    return {r["provider"]: {**r, "detail": json.loads(r["detail"])} for r in _all(con, select(provider_health))}

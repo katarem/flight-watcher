@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Dialog } from 'radix-ui'
 import {
-  Bug, History, LayoutDashboard, LogOut, Menu as MenuIcon, Monitor, Moon, Play, Plane, Settings, Sun, User as UserIcon,
+  Activity, Bug, History, LayoutDashboard, LogOut, Menu as MenuIcon, Monitor, Moon, Play, Plane, Settings, Sun, User as UserIcon,
   Users, X,
 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
@@ -35,6 +35,7 @@ function useNavItems(): NavItem[] {
   if (me?.role === 'admin')
     items.push(
       { to: '/admin/users', label: 'Usuarios', icon: <Users /> },
+      { to: '/admin/providers', label: 'Proveedores', icon: <Activity /> },
       { to: '/settings', label: 'Ajustes', icon: <Settings /> },
       { to: '/debug', label: 'Diagnóstico', icon: <Bug /> },
     )

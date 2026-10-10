@@ -14,10 +14,25 @@ export interface Me extends User {
   notify_errors: boolean
 }
 
+export type Coverage = 'network' | 'probe' | 'universal'
+
 export interface ProviderMeta {
   key: string
   label: string
   color: string
+  coverage: Coverage
+  max_routes: number | null
+}
+
+/** Aeropuerto, ciudad, país o grupo (`app/places.py`). */
+export interface Place {
+  code: string
+  kind: 'airport' | 'city' | 'country' | 'group'
+  kind_label: string
+  label: string
+  detail: string
+  country: string
+  airports: string[]
 }
 
 export interface ChannelField {
@@ -38,6 +53,7 @@ export interface Meta {
   providers: ProviderMeta[]
   channel_kinds: ChannelKind[]
   avatar_max_bytes: number
+  max_pairs: number
 }
 
 export interface Status {
@@ -56,9 +72,29 @@ export interface Watch {
   discount_pct: number
   date_from: string | null
   date_to: string | null
+  /** 0 = solo directos; null = sin límite. */
+  max_stops: number | null
   enabled: boolean
   channel_ids: number[]
   created_at: string
+  origin_place: Place
+  destination_place: Place
+  coverage: WatchCoverage[]
+}
+
+/** Pares de aeropuertos que cubre cada proveedor de la vigilancia ("SVQ-TFN"). */
+export interface WatchCoverage {
+  key: string
+  routes: string[]
+  active: boolean
+  checked_at: string | null
+}
+
+/** Moneda original y escalas de un precio (el precio siempre va en euros). */
+export interface PriceExtras {
+  currency: string
+  orig_price: number | null
+  stops: number | null
 }
 
 export interface RunInfo {
@@ -68,7 +104,7 @@ export interface RunInfo {
   n_prices: number
 }
 
-export interface BestPrice {
+export interface BestPrice extends PriceExtras {
   flight_date: string
   price: number
   checked_at: string
@@ -86,6 +122,9 @@ export interface ProviderStat {
   base: number | null
   best: BestPrice | null
   run: RunInfo | null
+  active: boolean
+  routes: string[]
+  checked_at: string | null
   median?: number | null
   count?: number
 }
@@ -96,7 +135,7 @@ export interface WatchCard extends Watch {
   channels: string[]
 }
 
-export interface PriceRow {
+export interface PriceRow extends PriceExtras {
   provider: string
   flight_date: string
   price: number
@@ -188,4 +227,86 @@ export interface DebugFile {
   size_kb: number
   mtime: string
   image: boolean
+}
+
+export type CoverageStatus = 'ok' | 'none' | 'error' | 'timeout' | 'too_many'
+
+export interface RouteCheckProvider {
+  key: string
+  label: string
+  color: string
+  coverage: Coverage
+  status: CoverageStatus
+  ok: boolean
+  routes: string[]
+  reason: string
+  elapsed_ms: number
+}
+
+export interface RouteCheck {
+  origin: Place
+  destination: Place
+  pairs: string[]
+  providers: RouteCheckProvider[]
+}
+
+export type HealthStatus = 'ok' | 'empty' | 'blocked' | 'error' | 'timeout' | 'skipped'
+
+export interface HealthStep {
+  name: string
+  status: HealthStatus
+  detail: string
+  http_status: number | null
+  ms: number
+  route?: string
+}
+
+export interface ProviderInfo {
+  key: string
+  label: string
+  color: string
+  coverage: Coverage
+  coverage_label: string
+  needs_browser: boolean
+  max_routes: number | null
+  stops_filter: boolean
+  min_interval: number
+  health_route: string
+  verified: string | null
+  notes: string
+  last: { status: HealthStatus; detail: HealthStep[]; latency_ms: number; checked_at: string } | null
+}
+
+export interface Candidate {
+  key: string
+  label: string
+  url: string
+  notes: string
+}
+
+export interface ProvidersData {
+  providers: ProviderInfo[]
+  candidates: Candidate[]
+  status_labels: Record<string, string>
+}
+
+export interface HealthResult {
+  key: string
+  status: HealthStatus
+  route: string
+  steps: HealthStep[]
+  latency_ms: number
+  checked_at: string
+}
+
+export interface CandidateResult extends Candidate {
+  status: HealthStatus
+  steps: HealthStep[]
+  checked_at: string
+}
+
+export interface HealthRun {
+  results: HealthResult[]
+  fx: HealthStep | null
+  candidates: CandidateResult[]
 }

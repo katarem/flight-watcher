@@ -4,14 +4,23 @@ Para añadir una aerolínea nueva:
   1. Crea `app/providers/<nombre>.py` con una clase que herede de `ApiProvider` si la web
      expone un endpoint JSON accesible sin navegador (preferible: más rápido y estable) o de
      `CalendarProvider` si hay que recorrer la web con Playwright.
-  2. Regístrala en `app/providers/__init__.py`.
-El panel, el histórico, las gráficas y las notificaciones la reconocen automáticamente.
+  2. Declara su cobertura (`coverage`): «network» si publica su red de rutas (implementa `network`),
+     «probe» si hay que preguntarle por cada ruta (implementa `probe`) o «universal» si cubre cualquiera.
+  3. Regístrala en `app/providers/__init__.py`.
+El panel, el histórico, las gráficas, las notificaciones y la zona «Proveedores» la reconocen solos.
+
+Todas las peticiones de un proveedor pasan por `slot()`: una sola a la vez (aunque coincidan la ronda,
+la comprobación de una ruta y la prueba de acceso) y con una pausa entre ellas, para no acabar con la
+IP bloqueada como pasó con Binter.
 """
 from __future__ import annotations
 
 import json
+import random
+import threading
 import time
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -35,14 +44,38 @@ class ProviderError(RuntimeError):
     pass
 
 
+class ProviderBlocked(ProviderError):
+    """La web rechaza la consulta (403/429, anti-bot o CAPTCHA): no es un fallo nuestro ni de la ruta."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
 @dataclass
 class DayPrice:
     day: date
-    price: float
+    price: float  # en la moneda `currency`
     currency: str = "EUR"
     #: Aeropuertos reales del precio (útil con códigos de ciudad como TCI = TFN + TFS).
     origin: str = ""
     destination: str = ""
+    #: Escalas (0 = directo; None = desconocido, el proveedor ya aplicó el filtro de escalas).
+    stops: int | None = 0
+    #: Equivalente en euros (lo rellena el checker con el cambio del BCE).
+    price_eur: float | None = None
+
+
+# Turno por proveedor: un candado y la hora de la última petición (compartidos por todos los hilos).
+_locks: dict[str, threading.Lock] = {}
+_last_request: dict[str, float] = {}
+_locks_guard = threading.Lock()
+
+COVERAGE_LABELS = {
+    "network": "Red de rutas publicada",
+    "probe": "Pregunta por cada ruta",
+    "universal": "Cualquier ruta",
+}
 
 
 class Provider(ABC):
@@ -54,12 +87,55 @@ class Provider(ABC):
     #: Plantilla de enlace. Marcadores: {origin} {destination} {date} (AAAA-MM-DD)
     #: {date_dmy} (DD/MM/AAAA) {year} {month} {day}
     default_link_template: str = ""
+    #: Cómo se sabe qué rutas cubre: network | probe | universal (ver COVERAGE_LABELS).
+    coverage: str = "probe"
+    #: Pares de aeropuertos como máximo por vigilancia (None = los de places.MAX_PAIRS).
+    max_routes: int | None = None
+    #: True si `fetch_prices` acepta `max_stops` y filtra él mismo por escalas.
+    stops_filter: bool = False
+    #: Segundos mínimos entre dos peticiones (más un poco al azar) y una sola petición a la vez.
+    min_interval: float = 1.5
+    jitter: float = 1.0
+    #: Ruta para la prueba de acceso de la zona «Proveedores» (una que opere de verdad).
+    health_route: tuple[str, str] = ("MAD", "BCN")
+    #: Fecha en la que se comprobó que funciona contra la web real ("" = sin verificar todavía).
+    verified: str = ""
+    #: Nota para el administrador (de dónde salen los precios, límites conocidos…).
+    notes: str = ""
 
     @abstractmethod
     def fetch_prices(
         self, page, origin: str, destination: str, max_months: int, debug_dir: Path | None = None
     ) -> list[DayPrice]:
         """Devuelve el precio más bajo de cada día que tenga precio publicado."""
+
+    # ---- cobertura ------------------------------------------------------------------
+    def network(self, session, origin: str) -> set[str]:
+        """Destinos directos desde `origin` (proveedores «network»)."""
+        raise NotImplementedError
+
+    def probe(self, session, origin: str, destination: str) -> bool:
+        """¿Opera la ruta? (proveedores «probe»). Lanza ProviderError si no se puede saber."""
+        raise NotImplementedError
+
+    def new_session(self):
+        session = requests.Session()
+        session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
+        return session
+
+    @contextmanager
+    def slot(self):
+        """Turno del proveedor: espera a que no haya otra petición suya en curso y respeta la pausa."""
+        with _locks_guard:
+            lock = _locks.setdefault(self.key, threading.Lock())
+        with lock:
+            wait = _last_request.get(self.key, 0.0) + self.min_interval + random.uniform(0, self.jitter) - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                yield
+            finally:
+                _last_request[self.key] = time.monotonic()
 
     def build_link(self, template: str, origin: str, destination: str, day: date) -> str:
         tpl = (template or "").strip() or self.default_link_template
@@ -170,6 +246,10 @@ class CalendarProvider(Provider):
 
     # ---- orquestación --------------------------------------------------------------
     def fetch_prices(self, page, origin, destination, max_months, debug_dir=None):
+        with self.slot():
+            return self._browse(page, origin, destination, max_months, debug_dir)
+
+    def _browse(self, page, origin, destination, max_months, debug_dir=None):
         tag = f"{self.key}-{origin}-{destination}"
         hints = tuple(h.format(origin=origin, destination=destination) for h in self.url_hints)
         collector = JsonCollector(page, hints, strict=self.strict_url_hints)
@@ -177,8 +257,8 @@ class CalendarProvider(Provider):
         try:
             resp = page.goto(self.home_url, wait_until="domcontentloaded")
             if resp is not None and resp.status in (403, 429):
-                raise ProviderError(
-                    f"{self.label} bloquea el navegador automatizado (HTTP {resp.status}, anti-bot)"
+                raise ProviderBlocked(
+                    f"{self.label} bloquea el navegador automatizado (HTTP {resp.status}, anti-bot)", resp.status
                 )
             self.dismiss_cookies(page)
             self.choose_one_way(page)
@@ -220,13 +300,17 @@ class ApiProvider(Provider):
     def fetch_route(self, session: requests.Session, origin: str, destination: str,
                     start: date, max_months: int, debug_dir: Path | None) -> dict[date, float]: ...
 
-    def get_json(self, session: requests.Session, url: str, debug_dir: Path | None, tag: str, **params):
-        """GET con errores legibles; devuelve None si la API responde 404 (ruta no operada)."""
-        try:
-            r = session.get(url, params=params, timeout=self.timeout)
-        except requests.RequestException as exc:
-            raise ProviderError(f"{self.label}: sin conexión con la API ({type(exc).__name__})") from exc
-        if debug_dir:
+    def request(self, session: requests.Session, method: str, url: str, debug_dir: Path | None = None,
+                tag: str = "", **kw) -> requests.Response | None:
+        """Petición en el turno del proveedor, con errores legibles. None si la API responde 404."""
+        with self.slot():
+            try:
+                r = session.request(method, url, timeout=self.timeout, **kw)
+            except requests.Timeout as exc:
+                raise ProviderError(f"{self.label}: la API no responde (tiempo agotado)") from exc
+            except requests.RequestException as exc:
+                raise ProviderError(f"{self.label}: sin conexión con la API ({type(exc).__name__})") from exc
+        if debug_dir and tag:
             debug_dir.mkdir(parents=True, exist_ok=True)
             (debug_dir / f"{tag}.json").write_text(
                 json.dumps({"url": r.url, "status": r.status_code, "body": r.text[:3_000_000]}, ensure_ascii=False),
@@ -234,17 +318,46 @@ class ApiProvider(Provider):
             )
         if r.status_code == 404:
             return None
-        if r.status_code in (403, 429):
-            raise ProviderError(f"{self.label} rechaza la consulta (HTTP {r.status_code}, límite o anti-bot)")
+        if r.status_code in (403, 429) or looks_blocked(r):
+            raise ProviderBlocked(f"{self.label} rechaza la consulta (HTTP {r.status_code}, límite o anti-bot)",
+                                  r.status_code)
         if not r.ok:
             raise ProviderError(f"{self.label}: la API respondió HTTP {r.status_code}")
+        return r
+
+    def get_json(self, session: requests.Session, url: str, debug_dir: Path | None, tag: str, **params):
+        """GET de JSON; devuelve None si la API responde 404 (ruta no operada)."""
+        return self._json(self.request(session, "GET", url, debug_dir, tag, params=params))
+
+    def post_json(self, session: requests.Session, url: str, body, debug_dir: Path | None, tag: str, **params):
+        return self._json(self.request(session, "POST", url, debug_dir, tag, params=params, json=body))
+
+    def _json(self, r: requests.Response | None):
+        if r is None:
+            return None
         try:
             return r.json()
         except ValueError as exc:
             raise ProviderError(f"{self.label}: la API no devolvió JSON (¿ha cambiado?)") from exc
 
-    def fetch_prices(self, page, origin, destination, max_months, debug_dir=None):
-        with requests.Session() as session:
-            session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
-            found = self.fetch_route(session, origin, destination, date.today(), max_months, debug_dir)
-        return [DayPrice(d, p, origin=origin, destination=destination) for d, p in sorted(found.items())]
+    def fetch_prices(self, page, origin, destination, max_months, debug_dir=None, **kw):
+        """{fecha: precio} (en euros) o {fecha: DayPrice} (con moneda o escalas) desde `fetch_route`."""
+        with self.new_session() as session:
+            found = self.fetch_route(session, origin, destination, date.today(), max_months, debug_dir, **kw)
+        out = []
+        for d, p in sorted(found.items()):
+            if isinstance(p, DayPrice):
+                p.origin, p.destination = p.origin or origin, p.destination or destination
+                out.append(p)
+            else:
+                out.append(DayPrice(d, p, origin=origin, destination=destination))
+        return out
+
+
+def looks_blocked(r: requests.Response) -> bool:
+    """Página de anti-bot servida con un 200 o un 503 (Cloudflare, Akamai, CAPTCHA…)."""
+    if "json" in (r.headers.get("content-type") or "").lower():
+        return False
+    head = r.text[:4000].lower()
+    return any(m in head for m in ("just a moment", "cf-chl", "captcha", "access denied", "attention required",
+                                   "request unsuccessful. incapsula", "_incapsula_resource"))

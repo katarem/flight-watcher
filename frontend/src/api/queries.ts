@@ -4,8 +4,8 @@ import { useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 import { ApiError, get } from './client'
 import type {
-  AdminUser, Alert, Channel, ChannelDetail, Charts, DebugFile, Me, Meta, Run, Series, SettingsData, Status,
-  User, WatchCard, WatchDetail,
+  AdminUser, Alert, Channel, ChannelDetail, Charts, DebugFile, Me, Meta, Place, ProvidersData, Run, Series,
+  SettingsData, Status, User, WatchCard, WatchDetail,
 } from './types'
 
 export const keys = {
@@ -24,6 +24,8 @@ export const keys = {
   user: (id: number) => ['users', id] as const,
   settings: ['settings'] as const,
   debug: ['debug'] as const,
+  places: (q: string) => ['places', q] as const,
+  providers: ['providers'] as const,
 }
 
 export function useMe() {
@@ -49,7 +51,7 @@ export const useMeta = () =>
 export function useProviders() {
   const meta = useMeta().data
   const map = new Map((meta?.providers ?? []).map((p) => [p.key, p]))
-  return (key: string) => map.get(key) ?? { key, label: key, color: '#8892a6' }
+  return (key: string) => map.get(key) ?? { key, label: key, color: '#8892a6', coverage: 'probe' as const, max_routes: null }
 }
 
 /** Estado de la ronda: se consulta a menudo mientras corre y, al terminar, se refresca todo lo demás. */
@@ -122,3 +124,16 @@ export const useSettings = () => useQuery({ queryKey: keys.settings, queryFn: ()
 
 export const useDebugFiles = () =>
   useQuery({ queryKey: keys.debug, queryFn: async () => (await get<{ files: DebugFile[] }>('/debug/files')).files })
+
+/** Autocompletado de lugares (aeropuertos, ciudades, países y grupos). */
+export const usePlaces = (q: string) =>
+  useQuery({
+    queryKey: keys.places(q),
+    queryFn: async () => (await get<{ places: Place[] }>(`/places?q=${encodeURIComponent(q)}&limit=8`)).places,
+    enabled: q.trim().length > 0,
+    staleTime: Infinity,
+    placeholderData: keepPreviousData,
+  })
+
+export const useProvidersAdmin = () =>
+  useQuery({ queryKey: keys.providers, queryFn: () => get<ProvidersData>('/providers') })

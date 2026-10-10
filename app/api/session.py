@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
-from .. import __version__, auth, avatars, checker, db, notify, scheduler
+from .. import __version__, auth, avatars, checker, db, notify, places, scheduler
 from ..providers import PROVIDERS
 from .deps import Invalid, current_user, public, start_session
 
@@ -54,7 +54,9 @@ def meta():
     """Lo que el panel necesita conocer del servidor: versión, webs y tipos de canal."""
     return {
         "version": __version__,
-        "providers": [{"key": p.key, "label": p.label, "color": p.color} for p in PROVIDERS.values()],
+        "providers": [{"key": p.key, "label": p.label, "color": p.color, "coverage": p.coverage,
+                       "max_routes": p.max_routes} for p in PROVIDERS.values()],
+        "max_pairs": places.MAX_PAIRS,
         "channel_kinds": [
             {"key": key, "label": k["label"],
              "fields": [{"key": f, "label": label, "secret": secret, "placeholder": ph}

@@ -4,7 +4,7 @@ import { useProviders } from '@/api/queries'
 import type { PriceRow } from '@/api/types'
 import { buildCalendar } from '@/lib/calendar'
 import { cn } from '@/lib/cn'
-import { fmtDay, fmtPrice, fmtPriceShort } from '@/lib/format'
+import { fmtDay, fmtPrice, fmtPriceShort, priceExtras } from '@/lib/format'
 
 const WEEKDAYS: [string, string][] = [
   ['L', 'lunes'], ['M', 'martes'], ['X', 'miércoles'], ['J', 'jueves'], ['V', 'viernes'], ['S', 'sábado'], ['D', 'domingo'],
@@ -51,7 +51,9 @@ export function PriceCalendar({ rows, selected, onSelectDay }: {
                           <span className="block pt-1">{c.day}</span>
                         </td>
                       )
-                    const summary = c.prices.map((p) => `${provider(p.provider).label} ${fmtPrice(p.price)}${p.deal ? ' (chollo)' : ''}`).join(', ')
+                    const summary = c.prices
+                      .map((p) => `${provider(p.provider).label} ${fmtPrice(p.price)}${priceExtras(p) ? ` (${priceExtras(p)})` : ''}${p.deal ? ' (chollo)' : ''}`)
+                      .join(', ')
                     return (
                       <td
                         key={di}
@@ -82,7 +84,8 @@ export function PriceCalendar({ rows, selected, onSelectDay }: {
                                 // En móvil solo cabe el más barato de cada día (el resto, en el resumen del día).
                                 pi === 0 ? 'inline-flex font-semibold' : 'hidden font-normal sm:inline-flex',
                               )}
-                              aria-label={`${provider(p.provider).label}: ${fmtPrice(p.price)} el ${fmtDay(c.date)}${p.route ? ` (${p.route})` : ''} (se abre en otra pestaña)`}
+                              aria-label={`${provider(p.provider).label}: ${fmtPrice(p.price)}${priceExtras(p) ? `, ${priceExtras(p)}` : ''} el ${fmtDay(c.date)}${p.route ? ` (${p.route})` : ''} (se abre en otra pestaña)`}
+                              title={priceExtras(p) || undefined}
                             >
                               <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full" style={{ background: provider(p.provider).color }} />
                               {fmtPriceShort(p.price)}

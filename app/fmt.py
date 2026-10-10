@@ -26,3 +26,16 @@ def fmt_price(value) -> str:
     if abs(p - round(p)) < 0.005:
         return f"{p:.0f} €"
     return f"{p:.2f}".replace(".", ",") + " €"
+
+
+def fmt_money(value, currency: str) -> str:
+    """Importe en otra moneda: «12.990 HUF», «45,50 GBP»."""
+    p = float(value)
+    text = f"{p:,.0f}" if abs(p - round(p)) < 0.005 else f"{p:,.2f}"
+    return text.replace(",", "X").replace(".", ",").replace("X", ".") + f" {currency}"
+
+
+def fmt_stops(stops) -> str:
+    if stops is None:
+        return ""
+    return "directo" if stops == 0 else f"{stops} escala" + ("s" if stops > 1 else "")
