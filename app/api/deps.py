@@ -72,6 +72,14 @@ def own_watch(con, wid: int, user: dict) -> dict:
     return w
 
 
+def own_trip(con, tid: int, user: dict) -> dict:
+    """Como `own_watch`: un viaje solo existe para su dueño."""
+    t = db.get_trip(con, tid)
+    if not t or t["user_id"] != user["id"]:
+        raise HTTPException(404, "No existe ese viaje")
+    return t
+
+
 def own_channel_ids(user: dict, raw: list[int]) -> list[int]:
     """Los ids marcados que de verdad son canales del usuario (el resto se ignora)."""
     with db.connect() as con:

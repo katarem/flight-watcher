@@ -3,9 +3,16 @@ import { useProviders } from '@/api/queries'
 import type { Series } from '@/api/types'
 import { fmtDay, fmtPrice, fmtShortDay } from '@/lib/format'
 
-/** Una línea por web. `labels` son fechas ISO; los huecos (null) se unen. */
-export function PriceChart({ data, height = 260, label }: { data: Series; height?: number; label: string }) {
-  const provider = useProviders()
+/** Una línea por web (o por serie de `names`). `labels` son fechas ISO; los huecos (null) se unen. */
+export function PriceChart({ data, height = 260, label, names }: {
+  data: Series
+  height?: number
+  label: string
+  /** Nombre y color de series que no son webs (p. ej. el total de un viaje). */
+  names?: Record<string, { label: string; color: string }>
+}) {
+  const providers = useProviders()
+  const provider = (k: string) => names?.[k] ?? providers(k)
   const keys = Object.keys(data.series)
   const rows = data.labels.map((l, i) => ({ l, ...Object.fromEntries(keys.map((k) => [k, data.series[k][i]])) }))
   const many = rows.length > 40
@@ -26,6 +33,8 @@ export function PriceChart({ data, height = 260, label }: { data: Series; height
             formatter={(v, name) => [fmtPrice(Number(v)), provider(String(name)).label]}
             contentStyle={{ background: 'var(--fw-surface)', border: '1px solid var(--fw-line)', borderRadius: 12, fontSize: 13 }}
             labelStyle={{ color: 'var(--fw-fg)', fontWeight: 600 }}
+            // El texto, en el color del tema: el de cada web no siempre da el contraste AA (la línea ya lo lleva).
+            itemStyle={{ color: 'var(--fw-fg)' }}
           />
           {keys.length > 1 && <Legend formatter={(k) => provider(String(k)).label} wrapperStyle={{ fontSize: 12 }} />}
           {keys.map((k) => (

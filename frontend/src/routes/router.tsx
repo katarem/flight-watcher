@@ -5,6 +5,8 @@ import { DashboardPage } from '@/pages/DashboardPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { ProfilePage } from '@/pages/ProfilePage'
+import { TripFormPage } from '@/pages/TripFormPage'
+import { TripsPage } from '@/pages/TripsPage'
 import { WatchFormPage } from '@/pages/WatchFormPage'
 import { RequireAdmin, RequireAuth } from './guards'
 
@@ -36,6 +38,10 @@ export const router = createBrowserRouter([
       { path: 'watches/new', element: <WatchFormPage /> },
       { path: 'watches/:id', ...page(() => import('@/pages/WatchDetailPage'), 'WatchDetailPage') },
       { path: 'watches/:id/edit', element: <WatchFormPage /> },
+      { path: 'trips', element: <TripsPage /> },
+      { path: 'trips/new', element: <TripFormPage /> },
+      { path: 'trips/:id', ...page(() => import('@/pages/TripDetailPage'), 'TripDetailPage') },
+      { path: 'trips/:id/edit', element: <TripFormPage /> },
       { path: 'runs', ...page(() => import('@/pages/RunsPage'), 'RunsPage') },
       { path: 'profile', element: <ProfilePage /> },
       { path: 'profile/channels/new', element: <ChannelFormPage /> },

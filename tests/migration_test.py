@@ -3,7 +3,7 @@
 Crea una BD SQLite en la revisión 0003 con usuarios, vigilancias (CSV de proveedores), canales, precios,
 avisos y ejecuciones; aplica las migraciones pendientes como la app (`db.init`) y comprueba que no se
 pierde nada (el ON DELETE CASCADE al recrear tablas en SQLite) y que los datos se convierten bien.
-Después baja a 0003 y vuelve a subir.
+Después crea un viaje (0005), baja a 0003 y vuelve a subir.
 """
 import os
 import sqlite3
@@ -69,7 +69,16 @@ def main():
         check(db.latest_snapshot(con, 1, "vueling")[0]["orig_price"] is None, "los precios antiguos quedan en euros")
     check(c.execute("PRAGMA foreign_key_check").fetchall() == [] and c.execute("PRAGMA integrity_check").fetchone()[0] == "ok",
           "claves foráneas e integridad")
+    with db.connect() as con:
+        tid = db.create_trip(con, 1, {"name": "Viaje", "outbound_id": 1, "return_id": 2, "min_nights": 2, "max_nights": 4,
+                                      "date_from": None, "date_to": None, "max_total": None, "discount_pct": 30,
+                                      "enabled": True})
+        check(db.get_trip(con, tid)["outbound_id"] == 1 and counts() == before, "0005: viajes sobre las vigilancias existentes")
 
+    migrate("0004", down=True)
+    tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    check(counts() == before and not tables & {"trips", "trip_channels", "trip_quotes", "trip_alerts"},
+          "downgrade a 0004 quita los viajes sin tocar lo demás")
     migrate("0003", down=True)
     check(counts() == before and dict(c.execute("SELECT id, providers FROM watches").fetchall())
           == {1: "ryanair,vueling", 2: "vueling"}, "downgrade a 0003 recupera el CSV sin perder filas")

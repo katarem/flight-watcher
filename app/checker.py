@@ -1,5 +1,5 @@
 """Orquesta una ronda de comprobaciones: por cada vigilancia y proveedor consulta precios,
-los guarda, aplica las reglas de aviso y notifica."""
+los guarda, aplica las reglas de aviso y notifica. Al final evalúa los viajes cuyos tramos se han comprobado."""
 from __future__ import annotations
 
 import logging
@@ -9,7 +9,7 @@ from contextlib import contextmanager, nullcontext
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from . import db, fx, notify, places
+from . import db, fx, notify, places, trips
 from .config import DEBUG_DIR
 from .providers import PROVIDERS, DayPrice, ProviderBlocked, link_for, ordered
 
@@ -181,8 +181,10 @@ def _check_one(browser, settings, tz, watch, prov, pairs, trigger) -> dict:
     return {"deals": deals, "base": base, "error": error, "started": started}
 
 
-def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int | None = None) -> str:
-    """Ejecuta una ronda (de todos los usuarios, o solo de `user_id`).
+def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int | None = None,
+               trip_id: int | None = None) -> str:
+    """Ejecuta una ronda (de todos los usuarios, o solo de `user_id`; de una vigilancia o de los dos tramos
+    de un viaje, aunque estén en pausa).
 
     Devuelve 'busy' si ya hay otra en marcha, 'empty' si no hay nada que hacer."""
     if not _lock.acquire(blocking=False):
@@ -193,10 +195,19 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
         with db.connect() as con:
             users = {u["id"]: u for u in db.list_users(con)}
             user_channels = {uid: db.list_channels(con, uid, only_enabled=True) for uid in users}
+            trip = db.get_trip(con, trip_id) if trip_id else None
+            if trip_id and not trip:
+                return "empty"
+            only = {trip["outbound_id"], trip["return_id"]} if trip else {watch_id} if watch_id else None
             # Las vigilancias de un usuario desactivado no se comprueban (ni se avisa a nadie).
             watches = [w for w in db.list_watches(con, user_id)
                        if users.get(w["user_id"], {}).get("enabled")
-                       and (w["id"] == watch_id if watch_id else w["enabled"])]
+                       and (w["id"] in only if only else w["enabled"])]
+            # Viajes: el pedido o los activos con algún tramo en esta ronda.
+            checked = {w["id"] for w in watches}
+            trip_list = [trip] if trip else [t for t in db.list_trips(con, user_id) if t["enabled"]
+                                             and {t["outbound_id"], t["return_id"]} & checked]
+            trip_list = [t for t in trip_list if users.get(t["user_id"], {}).get("enabled")]
         if not watches:
             return "empty"
 
@@ -232,6 +243,11 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
                     if sent:  # solo se marcan como avisadas si llegaron a algún canal
                         with db.connect() as con:
                             db.add_alerts(con, w["id"], all_deals, last_started)
+
+        for t in trip_list:
+            STATE["current"] = f"Viaje {t['name']}"
+            errs = trips.evaluate(t, settings, datetime.now(tz).replace(tzinfo=None), user_channels[t["user_id"]])
+            problems.setdefault(t["user_id"], []).extend(f"{t['name']}: {e}" for e in errs)
 
         if trigger == "cron":
             for uid, items in problems.items():

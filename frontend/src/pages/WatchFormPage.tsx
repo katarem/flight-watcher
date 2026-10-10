@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ArrowLeftRight, CheckCircle2, Clock, RefreshCw, Trash2, XCircle } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
-import { ApiError, del, errorList, post, put } from '@/api/client'
+import { ApiError, del, errorList, get, post, put } from '@/api/client'
 import { keys, useChannels, useMeta, useWatch } from '@/api/queries'
 import type { Place, ProviderMeta, RouteCheck, RouteCheckProvider, Watch } from '@/api/types'
 import { Button, buttonClass } from '@/components/ui/button'
@@ -92,7 +92,14 @@ function ProviderOption({ p, checked, onChange, result, checking, kept }: {
   )
 }
 
-function WatchForm({ initial, watchId }: { initial: FormState; watchId?: number }) {
+function WatchForm({ initial, watchId, trips = [], forTrip }: {
+  initial: FormState
+  watchId?: number
+  /** Viajes de los que es tramo (se borran con ella). */
+  trips?: { id: number; name: string }[]
+  /** Vigilancia de ida de un viaje en preparación: al crear esta (la vuelta), se vuelve al viaje. */
+  forTrip?: string | null
+}) {
   const isNew = watchId == null
   const meta = useMeta().data
   const channelData = useChannels('').data
@@ -155,7 +162,7 @@ function WatchForm({ initial, watchId }: { initial: FormState; watchId?: number 
       toast.success(isNew ? 'Vigilancia creada' : 'Cambios guardados', {
         description: isNew ? 'Pulsa «Comprobar ahora» para traer los primeros precios.' : undefined,
       })
-      navigate(`/watches/${watch.id}`)
+      navigate(isNew && forTrip ? `/trips/new?outbound=${forTrip}&return=${watch.id}` : `/watches/${watch.id}`)
     },
     onError: (e) => {
       setErrors(errorList(e))
@@ -186,7 +193,7 @@ function WatchForm({ initial, watchId }: { initial: FormState; watchId?: number 
     <form onSubmit={submit} className="space-y-5" noValidate>
       <div ref={errorRef}><ErrorBox errors={errors} /></div>
 
-      <FormSection title="Ruta" description="Solo ida. Para ida y vuelta, crea dos vigilancias.">
+      <FormSection title="Ruta" description="Solo ida. Para ida y vuelta, crea también la vuelta y júntalas en un viaje.">
         <Field label="Nombre (opcional)">
           {(id) => <Input id={id} value={f.name} onChange={(e) => set('name', e.target.value)} placeholder="Sevilla → Tenerife" maxLength={200} />}
         </Field>
@@ -207,6 +214,10 @@ function WatchForm({ initial, watchId }: { initial: FormState; watchId?: number 
         <p className="text-xs text-muted">
           Una ciudad, un país o un grupo buscan en todos sus aeropuertos a la vez (p. ej. <code className="font-mono">TCI</code> =
           Tenerife Norte y Sur) y se quedan con el más barato de cada día. Como mucho {meta?.max_pairs ?? 60} combinaciones de aeropuertos.
+        </p>
+        <p className="text-xs text-muted">
+          ¿Ida y vuelta? Crea las dos vigilancias y júntalas en un{' '}
+          <Link to="/trips/new" className="text-accent underline underline-offset-2">viaje</Link>: te avisa por el precio total.
         </p>
       </FormSection>
 
@@ -300,7 +311,9 @@ function WatchForm({ initial, watchId }: { initial: FormState; watchId?: number 
             <ConfirmDialog
               trigger={<Button variant="ghost" className="text-danger"><Trash2 /> Eliminar</Button>}
               title="¿Eliminar esta vigilancia?"
-              description="Se borrará también todo su histórico de precios, avisos y ejecuciones. No se puede deshacer."
+              description={`Se borrará también todo su histórico de precios, avisos y ejecuciones${trips.length
+                ? `, y ${trips.length === 1 ? 'el viaje' : 'los viajes'} que la usa${trips.length === 1 ? '' : 'n'}: ${trips.map((t) => `«${t.name}»`).join(', ')}`
+                : ''}. No se puede deshacer.`}
               onConfirm={() => remove.mutate()}
               loading={remove.isPending}
             />
@@ -316,15 +329,33 @@ const BLANK: FormState = {
   discount_pct: '30', date_from: '', date_to: '', max_stops: '0', enabled: true, channel_ids: [],
 }
 
+/** Lugar por código (para precargar el formulario); null si no existe. */
+const fetchPlace = (code: string) =>
+  code ? get<{ place: Place }>(`/places/${encodeURIComponent(code)}`).then((r) => r.place, () => null) : Promise.resolve(null)
+
 export function WatchFormPage() {
   const params = useParams()
+  const [search] = useSearchParams()
   const id = params.id ? Number(params.id) : undefined
   const existing = useWatch(id ?? 0)
+  // ?origin=…&destination=… precargan la ruta (p. ej. «Crear la vigilancia de vuelta» desde un viaje).
+  const pre = { origin: search.get('origin') ?? '', destination: search.get('destination') ?? '' }
+  const prefill = useQuery({
+    queryKey: ['prefill', pre.origin, pre.destination],
+    queryFn: async () => ({ origin: await fetchPlace(pre.origin), destination: await fetchPlace(pre.destination) }),
+    enabled: id == null && !!(pre.origin || pre.destination),
+    staleTime: Infinity,
+  })
   useTitle(id ? 'Editar vigilancia' : 'Nueva vigilancia')
 
   if (id != null && existing.isPending) return <PageLoading />
   if (id != null && existing.isError) return <LoadError error={existing.error} />
-  const initial = id != null && existing.data ? fromWatch(existing.data.watch) : BLANK
+  if (prefill.isLoading) return <PageLoading />
+  const initial = id != null && existing.data ? fromWatch(existing.data.watch)
+    : prefill.data ? {
+      ...BLANK, origin: prefill.data.origin?.code ?? '', destination: prefill.data.destination?.code ?? '',
+      originPlace: prefill.data.origin, destinationPlace: prefill.data.destination,
+    } : BLANK
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -332,7 +363,7 @@ export function WatchFormPage() {
         title={id ? 'Editar vigilancia' : 'Nueva vigilancia'}
         description={id ? existing.data?.watch.name : 'Elige la ruta, las webs y cuándo quieres que te avisemos.'}
       />
-      <WatchForm key={id ?? 'new'} initial={initial} watchId={id} />
+      <WatchForm key={id ?? 'new'} initial={initial} watchId={id} trips={existing.data?.trips} forTrip={search.get('for_trip')} />
     </div>
   )
 }

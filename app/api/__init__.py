@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from . import account, admin, session, watches
+from . import account, admin, session, trips, watches
 from .deps import require_login
 
 API_PREFIX = "/api/v1"
@@ -16,6 +16,6 @@ router = APIRouter(prefix=API_PREFIX)
 router.include_router(session.public_router)
 
 private = APIRouter(dependencies=[Depends(require_login)])
-for module in (session, watches, account, admin):
+for module in (session, watches, trips, account, admin):
     private.include_router(module.router)
 router.include_router(private)

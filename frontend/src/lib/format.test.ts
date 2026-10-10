@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { fmtAgo, fmtDateTime, fmtDay, fmtMoney, fmtPrice, fmtPriceShort, fmtShortDay, priceExtras, stopsRule } from './format'
+import {
+  fmtAgo, fmtDateTime, fmtDay, fmtMoney, fmtNights, fmtNightsRange, fmtPrice, fmtPriceShort, fmtShortDay, priceExtras, stopsRule,
+} from './format'
 
 describe('format', () => {
+  it('noches de un viaje como en los avisos', () => {
+    expect(fmtNights(1)).toBe('1 noche')
+    expect(fmtNights(4)).toBe('4 noches')
+    expect(fmtNightsRange(3, 3)).toBe('3 noches')
+    expect(fmtNightsRange(3, 5)).toBe('3–5 noches')
+  })
+
   it('fechas como en los avisos', () => {
     expect(fmtDay('2026-10-24')).toBe('sáb 24/10/2026')
     expect(fmtShortDay('2026-10-24')).toBe('24/10/26')

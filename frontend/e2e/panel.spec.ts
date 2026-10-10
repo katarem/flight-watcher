@@ -123,6 +123,95 @@ test.describe('panel', () => {
   })
 })
 
+test.describe('viajes', () => {
+  test.beforeEach(async ({ page }) => login(page))
+
+  test('lista y detalle de un viaje: el total más barato con un enlace por tramo', async ({ page }) => {
+    await page.getByRole('link', { name: 'Viajes' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Viajes' })).toBeVisible()
+    const card = page.getByRole('region', { name: 'Tenerife ida y vuelta' })
+    await expect(card.getByText('Viaje más barato ahora')).toBeVisible()
+    await expect(card.getByRole('link', { name: /^Vueling \d+ €/ }).first()).toHaveAttribute('href', /tickets\.vueling\.com/)
+    await expectAccessible(page)
+
+    await card.getByRole('link', { name: 'Tenerife ida y vuelta' }).click()
+    await expect(page).toHaveURL(/\/trips\/\d+$/)
+    const combos = page.getByRole('region', { name: 'Combinaciones más baratas' })
+    await expect(combos.locator('tbody tr').nth(5)).toBeVisible()
+    const nights = page.getByRole('region', { name: 'Todas las noches de una fecha de ida' })
+    await expect(nights.locator('tbody tr').first()).toBeVisible()
+    await nights.getByLabel('Fecha de ida').selectOption({ index: 4 })
+    await expect(nights.locator('tbody tr').first()).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Total por fecha de ida' }).locator('figure svg').first()).toBeVisible()
+    await expectAccessible(page)
+  })
+
+  test('crear, validar, editar y eliminar un viaje', async ({ page }) => {
+    await page.goto('/trips/new')
+    await expect(page.getByRole('heading', { level: 1, name: 'Nuevo viaje' })).toBeVisible()
+    await page.getByRole('button', { name: 'Crear viaje' }).click()
+    await expect(page.getByRole('alert')).toContainText('Elige la vigilancia de ida')
+
+    const name = `Escapada ${Date.now() % 100000}` // el servidor puede reutilizarse entre ejecuciones
+    await page.getByLabel('Nombre (opcional)').fill(name)
+    await page.getByLabel('Vigilancia de ida').selectOption({ label: 'Sevilla → Tenerife (SVQ → TCI)' })
+    // Se propone sola la vigilancia de la ruta al revés.
+    await expect(page.getByLabel('Vigilancia de vuelta')).toHaveValue('2')
+    await page.getByLabel('Noches como mínimo').fill('6')
+    await page.getByLabel('Noches como máximo').fill('2')
+    await expectAccessible(page)
+    await page.getByRole('button', { name: 'Crear viaje' }).click()
+    await expect(page.getByRole('alert')).toContainText('no pueden ser más que las máximas')
+    await page.getByLabel('Noches como máximo').fill('8')
+    await page.getByLabel('Si el total cuesta como mucho (€)').fill('150')
+    await page.getByRole('button', { name: 'Crear viaje' }).click()
+
+    await expect(page.getByRole('heading', { level: 1 })).toContainText(name)
+    await expect(page.getByText(/6–8 noches · avisa si el total ≤ 150 €/)).toBeVisible()
+
+    await page.getByRole('link', { name: 'Editar' }).click()
+    await page.getByRole('button', { name: 'Eliminar' }).click()
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Eliminar' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Viajes' })).toBeVisible()
+    await expect(page.getByRole('link', { name })).toHaveCount(0)
+  })
+
+  test('sin vigilancia de vuelta se ofrece crearla y se vuelve al viaje con los dos tramos', async ({ page }) => {
+    const suffix = Date.now() % 100000
+    await page.goto('/watches/new')
+    await page.getByLabel('Nombre (opcional)').fill(`Ida a Budapest ${suffix}`)
+    await page.getByRole('combobox', { name: 'Origen' }).fill('BCN')
+    await page.getByRole('option', { name: /Barcelona \(BCN\)/ }).click()
+    await page.getByRole('combobox', { name: 'Destino' }).fill('BUD')
+    await page.getByRole('option', { name: /Budapest \(BUD\)/ }).click()
+    await expect(page.getByRole('group', { name: 'Webs a vigilar' }).getByRole('checkbox', { name: 'Wizz Air' })).toBeChecked()
+    await page.getByRole('button', { name: 'Crear vigilancia' }).click()
+    await expect(page.getByRole('heading', { level: 1 })).toContainText(`Ida a Budapest ${suffix}`)
+    const outId = page.url().split('/').pop()!
+
+    await page.goto('/trips/new')
+    await page.getByLabel('Vigilancia de ida').selectOption({ label: `Ida a Budapest ${suffix} (BCN → BUD)` })
+    await page.getByRole('link', { name: 'Crear la vigilancia de vuelta' }).click()
+    await expect(page.getByRole('combobox', { name: 'Origen' })).toHaveValue('Budapest (BUD)')
+    await expect(page.getByRole('combobox', { name: 'Destino' })).toHaveValue('Barcelona (BCN)')
+    await expect(page.getByRole('group', { name: 'Webs a vigilar' }).getByRole('checkbox', { name: 'Wizz Air' })).toBeChecked()
+    await page.getByRole('button', { name: 'Crear vigilancia' }).click()
+
+    await expect(page.getByRole('heading', { level: 1, name: 'Nuevo viaje' })).toBeVisible()
+    await expect(page.getByLabel('Vigilancia de ida')).toHaveValue(outId)
+    await expect(page.getByLabel('Vigilancia de vuelta')).not.toHaveValue('')
+    await page.getByRole('button', { name: 'Crear viaje' }).click()
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('BCN ⇄ BUD')
+
+    // Borrar la ida avisa de que se lleva el viaje.
+    await page.goto(`/watches/${outId}/edit`)
+    await page.getByRole('button', { name: 'Eliminar' }).click()
+    await expect(page.getByRole('alertdialog')).toContainText('y el viaje que la usa: «BCN ⇄ BUD»')
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Eliminar' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Panel' })).toBeVisible()
+  })
+})
+
 test.describe('perfil y canales', () => {
   test.beforeEach(async ({ page }) => login(page))
 
@@ -209,7 +298,7 @@ test.describe('proveedores', () => {
 test('en el móvil el menú lleva a todas las secciones y nada se sale de la pantalla @movil', async ({ page, isMobile }) => {
   test.skip(!isMobile, 'solo en móvil')
   await login(page)
-  for (const path of ['/', '/watches/1', '/watches/new', '/profile', '/admin/users', '/admin/providers', '/settings', '/runs']) {
+  for (const path of ['/', '/watches/1', '/watches/new', '/trips', '/trips/1', '/trips/new', '/profile', '/admin/users', '/admin/providers', '/settings', '/runs']) {
     await page.goto(path)
     await page.waitForLoadState('networkidle')
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)

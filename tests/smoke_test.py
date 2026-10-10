@@ -3,7 +3,8 @@
 Sustituye el navegador y los proveedores por datos simulados y comprueba de extremo a extremo:
 guardado de precios, reglas de aviso, enlaces con fecha, mensajes, la API del panel (sesión, permisos,
 vigilancias, gráficas, canales, usuarios, ajustes), lugares y cobertura de rutas, escalas y monedas, la
-revalidación semanal, la prueba de acceso a los proveedores y que el servidor entrega el panel compilado.
+revalidación semanal, la prueba de acceso a los proveedores, los viajes de ida y vuelta y que el servidor
+entrega el panel compilado.
 """
 import base64
 import os
@@ -28,7 +29,7 @@ os.environ["WEB_DIR"] = str(WEB)
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
-from app import checker, config, coverage, db, fx, places  # noqa: E402
+from app import checker, config, coverage, db, fx, places, trips  # noqa: E402
 from app.main import app  # noqa: E402
 from app.providers import PROVIDERS, DayPrice  # noqa: E402
 from app.providers.base import Provider  # noqa: E402
@@ -289,6 +290,112 @@ def users_flow(admin: Api, admin_id: int):
     check(n == 0 and not avatar_path.exists(), "…con su histórico y su avatar")
     check(admin.delete("/session").status_code == 204 and admin.get("/me").status_code == 401, "cerrar sesión")
     check(admin.login("admin", "clave-de-prueba-1").status_code == 200, "volver a entrar")
+
+
+def trips_flow(admin: Api, admin_chan: int):
+    # Vigilancias iniciales: 1 = SVQ→TCI, 2 = TCI→SVQ. Los dobles dan precio los días +10, +11 y +12; el más
+    # barato de cada día entre Vueling y Ryanair es 55, 30 y 70 € en los dos sentidos.
+    d10, d11, d12 = ((TODAY + timedelta(days=n)).isoformat() for n in (10, 11, 12))
+    bad = admin.post("/trips", {})
+    check(bad.status_code == 422 and "vigilancia de ida" in errors(bad) and "vigilancia de vuelta" in errors(bad),
+          "viaje: hay que elegir las dos vigilancias")
+    bad = admin.post("/trips", {"outbound_id": 1, "return_id": 1, "min_nights": "5", "max_nights": "2"})
+    check("distintas" in errors(bad) and "no pueden ser más" in errors(bad), "viaje: tramos distintos y noches coherentes")
+    bad = admin.post("/trips", {"outbound_id": 1, "return_id": 2, "min_nights": "0", "max_nights": "99"})
+    check("entre 1 y 60" in errors(bad), "viaje: noches fuera de rango")
+    r = admin.post("/trips", {"outbound_id": 1, "return_id": "2", "min_nights": 1, "max_nights": 2, "max_total": "90",
+                              "channel_ids": [admin_chan]})
+    trip = r.json()["trip"]
+    check(r.status_code == 201 and trip["name"] == "SVQ ⇄ TCI" and trip["warnings"] == []
+          and trip["outbound"]["origin"] == "SVQ" and trip["return"]["origin"] == "TCI", "crear un viaje con dos vigilancias")
+    tid = trip["id"]
+
+    # --- combinaciones con los precios actuales (sin consultar ninguna web)
+    card = {t["id"]: t for t in admin.get("/trips").json()["trips"]}[tid]
+    best = card["best"]
+    check(best["out_date"] == d10 and best["ret_date"] == d11 and best["nights"] == 1 and best["total"] == 85
+          and best["deal"] == "fixed" and best["out"]["provider"] == "vueling" and best["out"]["route"] == "SVQ→TFN"
+          and "d=TFN" in best["out"]["link"] and card["n_dates"] == 2, "el viaje más barato: ida + vuelta con sus enlaces")
+    detail = admin.get(f"/trips/{tid}").json()
+    check([(q["out_date"], q["nights"], q["total"]) for q in detail["quotes"]] == [(d10, 1, 85), (d11, 1, 100)],
+          "la combinación más barata de cada fecha de ida")
+    opts = admin.get(f"/trips/{tid}/options", params={"date": d10}).json()["options"]
+    check([(o["nights"], o["total"]) for o in opts] == [(1, 85), (2, 125)], "todas las noches de una fecha de ida")
+    with db.connect() as con:
+        future = trips.local_now(db.get_settings()) + timedelta(days=trips.STALE_DAYS + 1)
+        check(trips.legs_by_day(con, db.get_settings(), db.get_watch(con, 2), future) == {},
+              "los precios viejos de un tramo no cuentan")
+
+    # --- aviso del viaje: total, fechas y un enlace por tramo; una sola vez
+    SENT.clear()
+    checker.run_checks(trip_id=tid, trigger="manual")
+    msgs = ["\n".join(m[0]) for m in SENT if "🧳" in m[0][0]]
+    check(len(msgs) == 1 and "**85 €**" in msgs[0] and "1 noche" in msgs[0] and "ida [Vueling 55 € (SVQ→TFN)]" in msgs[0]
+          and "vuelta [Vueling 30 € (TFN→SVQ)]" in msgs[0] and "100 €" not in msgs[0],
+          "aviso del viaje con el total y un enlace por tramo (solo lo que cumple la regla)")
+    html_msg = "\n".join(next(m[1] for m in SENT if "🧳" in m[0][0]))
+    check('ida <a href="' in html_msg and "&amp;" in html_msg, "aviso del viaje en HTML para Telegram")
+    with db.connect() as con:
+        n_quotes = con.execute(text("SELECT count(*) FROM trip_quotes WHERE trip_id = :t"), {"t": tid}).scalar()
+    check(n_quotes == 2, "se guarda la combinación más barata de cada fecha de ida")
+    SENT.clear()
+    checker.run_checks(trip_id=tid, trigger="manual")
+    check(not any("🧳" in m[0][0] for m in SENT), "no repite el aviso de un viaje")
+
+    # --- regla relativa sobre la mediana de los totales
+    with db.connect() as con:
+        old = (datetime.now() - timedelta(days=3)).isoformat(timespec="seconds")
+        db.insert_trip_quotes(con, tid, old, [{"out_date": d12, "ret_date": d12, "total": 300, "out": {"price": 150},
+                                                "ret": {"price": 150}}] * 40)
+    form = {"outbound_id": 1, "return_id": 2, "min_nights": 1, "max_nights": 2, "max_total": "", "discount_pct": "50",
+            "channel_ids": [admin_chan], "name": "Tenerife"}
+    check(admin.put(f"/trips/{tid}", form).json()["trip"]["max_total"] is None, "editar el viaje")
+    SENT.clear()
+    checker.run_checks(trip_id=tid, trigger="manual")
+    msgs = ["\n".join(m[0]) for m in SENT if "🧳" in m[0][0]]
+    check(len(msgs) == 1 and "habitual ≈ 300 €" in msgs[0] and "**100 €**" in msgs[0] and "85 €" not in msgs[0],
+          "regla relativa: avisa de la nueva fecha (la ya avisada no se repite)")
+    check(admin.get(f"/trips/{tid}").json()["base"] == 300, "total habitual del viaje")
+
+    # --- en las rondas: los viajes activos con algún tramo comprobado; los pausados, no
+    def quotes():
+        with db.connect() as con:
+            return con.execute(text("SELECT count(*) FROM trip_quotes WHERE trip_id = :t"), {"t": tid}).scalar()
+    before = quotes()
+    checker.run_checks(watch_id=2, trigger="manual")
+    check(quotes() == before + 2, "comprobar un tramo recalcula el viaje")
+    check(admin.post(f"/trips/{tid}/toggle").json()["trip"]["enabled"] is False, "pausar un viaje")
+    before = quotes()
+    checker.run_checks(trigger="manual")
+    check(quotes() == before, "un viaje en pausa no se recalcula en las rondas")
+    admin.post(f"/trips/{tid}/toggle")
+    detail = admin.get(f"/trips/{tid}").json()
+    check(detail["trend"] and detail["alerts"][0]["total"] == 100, "evolución del total y avisos enviados")
+
+    # --- tramos que no encajan, en pausa o borrados
+    a = admin.post("/watches", {"origin": "MAD", "destination": "BCN", "providers": ["mockweb"]}).json()["watch"]
+    other = admin.post("/trips", {"outbound_id": 1, "return_id": a["id"], "min_nights": 3, "max_nights": 3}).json()["trip"]
+    check(len(other["warnings"]) == 2 and "La vuelta sale de MAD" in other["warnings"][0], "aviso si los tramos no encajan")
+    admin.post(f"/watches/{a['id']}/toggle")
+    check(any("en pausa" in w for w in admin.get(f"/trips/{other['id']}").json()["trip"]["warnings"]), "aviso si un tramo está en pausa")
+    check(admin.get(f"/watches/{a['id']}").json()["trips"] == [{"id": other["id"], "name": "SVQ ⇄ TCI"}],
+          "el detalle de una vigilancia dice de qué viajes es tramo")
+    admin.delete(f"/watches/{a['id']}")
+    check(admin.get(f"/trips/{other['id']}").status_code == 404, "borrar una vigilancia borra los viajes que la usan")
+
+    # --- solo para su dueño
+    admin.post("/users", {"username": "berta", "password": "clave-de-berta-1", "role": "user"})
+    berta = Api()
+    berta.login("berta", "clave-de-berta-1")
+    check(not berta.get("/trips").json()["trips"], "no ve viajes ajenos")
+    for method, path in (("GET", f"/trips/{tid}"), ("GET", f"/trips/{tid}/options?date={d10}"), ("PUT", f"/trips/{tid}"),
+                         ("DELETE", f"/trips/{tid}"), ("POST", f"/trips/{tid}/toggle"), ("POST", f"/trips/{tid}/run")):
+        check(berta.req(method, path, json=form if method == "PUT" else None).status_code == 404, f"{method} {path} ajeno → 404")
+    bad = berta.post("/trips", {"outbound_id": 1, "return_id": 2})
+    check(bad.status_code == 422 and "entre las tuyas" in errors(bad), "no se pueden usar vigilancias ajenas")
+    with db.connect() as con:
+        db.delete_user(con, db.get_user_by_username(con, "berta")["id"])
+    return tid
 
 
 def providers_flow(admin: Api, admin_id: int, admin_chan: int):
@@ -618,8 +725,11 @@ def main():
         check(st["running"] is False and st["current"] == "" and st["next_run"], "estado de ejecución y próxima ronda")
         check(sum(1 for r in client.get("/runs").json()["runs"] if r["ok"]) >= 2, "historial de ejecuciones")
 
+        tid = trips_flow(client, admin_chan)
         providers_flow(client, admin_id, admin_chan)
         users_flow(client, admin_id)
+        with db.connect() as con:
+            check(db.get_trip(con, tid) is not None, "el viaje sigue ahí tras las demás pruebas")
 
     # --- extractor genérico
     out = {}

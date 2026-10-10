@@ -1,5 +1,17 @@
 # Cambios
 
+## 1.5.0 — 2026-10-10
+
+### Añadido
+- **Viajes de ida y vuelta** (`/trips`): juntan una vigilancia de ida y otra de vuelta con un rango de noches y una ventana de fechas de ida opcional. Para cada fecha de ida y cada número de noches, el total es el vuelo de ida más barato más el de vuelta más barato (entre todas las webs de cada tramo, en euros), sin hacer peticiones nuevas a las webs.
+- Avisos de viajes por el **total**: precio máximo o un % por debajo de lo habitual (mediana de los totales guardados del viaje). Cada ronda avisa solo de las 5 fechas de ida más baratas, con las fechas, las noches y un enlace por tramo, y de cada fecha una sola vez (salvo que baje). Canales propios por viaje.
+- Panel: lista de viajes con el más barato ahora, detalle con las combinaciones más baratas, todas las noches de una fecha de ida, el total por fecha de ida y su evolución, y formulario que propone la vigilancia de vuelta (o ayuda a crearla y vuelve al viaje).
+- El detalle de una vigilancia indica de qué viajes es tramo, y al borrarla se avisa de que se borran con ella.
+- Migración `0005` (solo tablas nuevas: `trips`, `trip_channels`, `trip_quotes`, `trip_alerts`).
+
+### Corregido
+- El texto del tooltip de las gráficas usa el color del tema: el de algunas webs no daba el contraste mínimo (WCAG AA).
+
 ## 1.4.0 — 2026-10-10
 
 ### Añadido
