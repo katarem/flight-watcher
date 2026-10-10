@@ -1,11 +1,9 @@
-"""Formateadores compartidos por plantillas y notificaciones."""
+"""Formateo de fechas y precios para los avisos (el panel usa el mismo criterio en `frontend/src/lib/format.ts`)."""
 from __future__ import annotations
 
 from datetime import date, datetime
 
 DIAS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
-MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
-         "septiembre", "octubre", "noviembre", "diciembre"]
 
 
 def to_date(value) -> date:
@@ -28,16 +26,3 @@ def fmt_price(value) -> str:
     if abs(p - round(p)) < 0.005:
         return f"{p:.0f} €"
     return f"{p:.2f}".replace(".", ",") + " €"
-
-
-def fmt_price_short(value) -> str:
-    """Precio redondeado al euro, para huecos estrechos (calendario)."""
-    return "—" if value is None else f"{round(float(value))} €"
-
-
-def fmt_dt(value) -> str:
-    if not value:
-        return "—"
-    if isinstance(value, str):
-        value = datetime.fromisoformat(value)
-    return value.strftime("%d/%m/%Y %H:%M")

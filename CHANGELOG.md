@@ -1,5 +1,18 @@
 # Cambios
 
+## 1.3.0 — 2026-10-10
+
+### Cambiado
+- **Panel nuevo en React** (Vite + TypeScript, carpeta `frontend/`), separado del servidor: diseño renovado con tema claro/oscuro (sigue al sistema o se elige en el menú de usuario), animaciones (que se desactivan si el sistema pide reducir el movimiento), menú adaptado al móvil, avisos emergentes y diálogos de confirmación accesibles. Mismas pantallas y mismas URL (los enlaces de los avisos siguen funcionando).
+- El servidor pasa a ser una **API JSON** (`/api/v1`, documentación interactiva en `/api/v1/docs`) más el panel ya compilado. Las plantillas Jinja y `static/` desaparecen.
+- La imagen Docker compila el panel en una etapa de Node y sigue siendo un único contenedor con un único proceso.
+
+### Añadido
+- Minigráfica de la tendencia del precio mínimo en cada vigilancia del panel.
+- Calendario de precios usable en el móvil (el precio más barato de cada día; el resto, en el resumen accesible del día).
+- Protección CSRF: toda petición que cambia algo exige la cabecera `X-Requested-With` (además de la cookie `SameSite=Lax`).
+- Pruebas del panel en navegador (Playwright) contra la app real con datos simulados, con revisión de accesibilidad WCAG 2.1 AA (axe) en claro, oscuro y móvil, y tests unitarios (Vitest). La CI las ejecuta en cada PR.
+
 ## 1.2.0 — 2026-10-09
 
 ### Añadido

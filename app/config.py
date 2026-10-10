@@ -12,6 +12,8 @@ DEBUG_DIR = DATA_DIR / "debug"
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 AVATAR_DIR = DATA_DIR / "avatars"
 AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+#: Panel React compilado (`frontend/` → `npm run build`). En Docker lo copia la etapa de Node.
+WEB_DIR = Path(os.getenv("WEB_DIR") or BASE_DIR / "web")
 
 
 def _secret_key() -> str:

@@ -1,0 +1,121 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+
+/* Modo oscuro por atributo (lo pone index.html y el selector de tema), no solo por media query. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+:root {
+  --fw-bg: #f5f6fa;
+  --fw-surface: #ffffff;
+  --fw-surface-2: #f0f2f8;
+  --fw-line: #e2e6ef;
+  --fw-fg: #111827;
+  --fw-muted: #5a6478;
+  --fw-accent: #3b5bdb;
+  --fw-accent-fg: #ffffff;
+  --fw-accent-soft: #e8edfd;
+  --fw-deal: #036b48;
+  --fw-danger: #b02a23;
+  --fw-warn: #8f5207;
+  --fw-shadow: 0 1px 2px rgb(16 24 40 / 0.05), 0 6px 24px -8px rgb(16 24 40 / 0.08);
+  --fw-ring: color-mix(in srgb, var(--fw-accent) 55%, transparent);
+  color-scheme: light;
+}
+
+[data-theme='dark'] {
+  --fw-bg: #0a0e16;
+  --fw-surface: #111726;
+  --fw-surface-2: #172034;
+  --fw-line: #233049;
+  --fw-fg: #e8ecf5;
+  --fw-muted: #9aa6bf;
+  --fw-accent: #8ba4ff;
+  --fw-accent-fg: #0a1020;
+  --fw-accent-soft: #1b2645;
+  --fw-deal: #3ddc97;
+  --fw-danger: #ff7b72;
+  --fw-warn: #f5b84b;
+  --fw-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--fw-bg);
+  --color-surface: var(--fw-surface);
+  --color-surface-2: var(--fw-surface-2);
+  --color-line: var(--fw-line);
+  --color-fg: var(--fw-fg);
+  --color-muted: var(--fw-muted);
+  --color-accent: var(--fw-accent);
+  --color-accent-fg: var(--fw-accent-fg);
+  --color-accent-soft: var(--fw-accent-soft);
+  --color-deal: var(--fw-deal);
+  --color-danger: var(--fw-danger);
+  --color-warn: var(--fw-warn);
+  --shadow-card: var(--fw-shadow);
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-bg text-fg font-sans antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  :focus-visible {
+    outline: 2px solid var(--fw-ring);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--fw-accent) 25%, transparent);
+  }
+}
+
+@layer components {
+  /* Calendario de precios: nivel 1 (de los más baratos) a 4 (de los más caros) y borde para los chollos. */
+  .cal-lvl1 {
+    background: color-mix(in srgb, var(--fw-deal) 20%, transparent);
+  }
+  .cal-lvl2 {
+    background: color-mix(in srgb, var(--fw-deal) 9%, transparent);
+  }
+  .cal-lvl3 {
+    background: color-mix(in srgb, var(--fw-warn) 10%, transparent);
+  }
+  .cal-lvl4 {
+    background: color-mix(in srgb, var(--fw-danger) 13%, transparent);
+  }
+  .cal-deal {
+    box-shadow: inset 0 0 0 2px var(--fw-deal);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}

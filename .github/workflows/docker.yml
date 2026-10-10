@@ -1,6 +1,6 @@
 name: CI/CD
 
-# - Pull request y push a main: pasa los tests y construye la imagen (en main también la publica como `latest`).
+# - Pull request y push a main: pasa los tests (API y panel) y construye la imagen (en main también la publica como `latest`).
 # - Etiqueta vX.Y.Z: publica la imagen versionada (X.Y.Z, X.Y y latest) en ghcr.io.
 on:
   push:
@@ -42,8 +42,51 @@ jobs:
           code="$(python -c 'from app import __version__; print(__version__)')"
           test "v${code}" = "${GITHUB_REF_NAME}" || { echo "La etiqueta ${GITHUB_REF_NAME} no coincide con app/__init__.py (${code})"; exit 1; }
 
+  panel:
+    # Panel React: lint, tipos, tests unitarios, build y pruebas en navegador (con axe) contra la app real.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Instalar dependencias
+        run: |
+          npm ci
+          pip install -r ../requirements.txt
+      - name: Lint y tipos
+        run: |
+          npm run lint
+          npm run typecheck
+      - name: Tests unitarios
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Pruebas en navegador (Playwright + axe)
+        run: |
+          npx playwright install --with-deps chromium
+          npm run e2e
+      - name: Informe de Playwright
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          retention-days: 7
+
   docker:
-    needs: test
+    needs: [test, panel]
     runs-on: ubuntu-latest
     permissions:
       contents: read

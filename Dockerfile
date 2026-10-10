@@ -1,3 +1,13 @@
+# Etapa 1: compila el panel (React + Vite) a estáticos.
+FROM node:22-slim AS web
+WORKDIR /src/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ ./
+# vite.config.ts escribe el build en ../app/web
+RUN npm run build
+
+# Etapa 2: la app de Python (API + planificador) sirve el panel ya compilado.
 FROM python:3.12-slim
 
 ARG VERSION=dev
@@ -17,6 +27,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt && playwright install --with-deps chromium
 
 COPY app ./app
+COPY --from=web /src/app/web ./app/web
 
 VOLUME /data
 EXPOSE 8000
