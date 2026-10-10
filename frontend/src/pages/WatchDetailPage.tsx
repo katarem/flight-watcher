@@ -34,7 +34,7 @@ export function WatchDetailPage() {
 
   if (detail.isPending) return <PageLoading />
   if (detail.isError) return <LoadError error={detail.error} />
-  const { watch: w, stats, checks, alerts } = detail.data
+  const { watch: w, stats, checks, alerts, trips } = detail.data
   const shown = filter ? rows.filter((r) => r.provider === filter) : rows
 
   const selectDay = (d: string) => {
@@ -71,6 +71,18 @@ export function WatchDetailPage() {
           </>
         }
       />
+
+      {trips.length > 0 && (
+        <p className="-mt-3 mb-4 text-sm text-muted">
+          Tramo de {trips.length === 1 ? 'un viaje' : 'los viajes'}:{' '}
+          {trips.map((t, i) => (
+            <span key={t.id}>
+              {i > 0 && ', '}
+              <Link to={`/trips/${t.id}`} className="text-fg underline underline-offset-2">{t.name}</Link>
+            </span>
+          ))}
+        </p>
+      )}
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {stats.map((s) => <ProviderTile key={s.key} stat={s} detail className="bg-surface shadow-card" />)}

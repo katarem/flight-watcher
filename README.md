@@ -154,6 +154,14 @@ No se repite el aviso de la misma fecha salvo que el precio baje aún más. Si n
 
 Puedes limitar cada vigilancia a un rango de fechas; sin límites se comprueban todas las que tengan precio desde hoy.
 
+## Viajes de ida y vuelta
+
+Un **viaje** junta dos de tus vigilancias (la de ida y la de vuelta) con un rango de noches (p. ej. de 3 a 5) y, opcionalmente, una ventana de fechas de ida. No consulta ninguna web por su cuenta: usa los precios de la última comprobación de cada tramo, así que se recalcula solo cuando se comprueba alguna de sus vigilancias.
+
+Para cada fecha de ida y cada número de noches permitido, el total es el vuelo de ida más barato de ese día más el de vuelta más barato del día de regreso (entre todas las webs de cada vigilancia, en euros). Se avisa si el **total ≤ el máximo** que marques **o** si es un **X % inferior a lo habitual** (mediana de los totales guardados de ese viaje). Para no llenarte de mensajes, cada ronda avisa solo de las **5 fechas de ida más baratas** que cumplen una regla, con las fechas, las noches y un enlace por tramo, y de cada fecha una sola vez (salvo que baje más).
+
+Los precios de un tramo con más de 3 días no cuentan (p. ej. si su vigilancia está en pausa o la web ha dejado de responder). Borrar una vigilancia borra los viajes que la usan.
+
 ## Panel
 
 Aplicación React (carpeta `frontend/`) que habla con la API JSON del servidor (`/api/v1`). Tema claro u oscuro (sigue al sistema o se elige en el menú de usuario), pensado para móvil y accesible (navegable con teclado, revisado con axe contra WCAG 2.1 AA).
@@ -163,6 +171,7 @@ Aplicación React (carpeta `frontend/`) que habla con la API JSON del servidor (
   - **Calendario de precios** de la última comprobación: color según lo barato que sale cada día, borde para los chollos, filtro por web. Pulsar un precio abre esa fecha en la web; pulsar el día muestra su historial.
   - Gráficas de la **evolución del precio mínimo** por web, del **precio actual por fecha de vuelo** y del **historial de una fecha concreta**.
   - Historial de comprobaciones y avisos enviados.
+- **Viajes:** el viaje más barato ahora con el enlace de cada tramo, las combinaciones más baratas, todas las noches de una fecha de ida y la evolución del total. Desde el formulario de un viaje se puede crear la vigilancia de vuelta que falte.
 - **Ejecuciones** y **Diagnóstico** para ver qué pasó en cada comprobación.
 - **Proveedores** (administradores): prueba de acceso a cada web, ver «Prueba de acceso» arriba.
 
@@ -217,10 +226,11 @@ Para añadir otra ciudad (como `TCI`) o un grupo (como `canarias`), añádelo a 
 app/
   __init__.py     versión (__version__)
   main.py         servidor: API, avatares, protección CSRF y el panel compilado (app/web)
-  api/            API JSON /api/v1: sesión, vigilancias, perfil y canales, administración
+  api/            API JSON /api/v1: sesión, vigilancias, viajes, perfil y canales, administración
   auth.py         contraseñas (scrypt), validación de usuarios y freno de intentos de login
   avatars.py      guardado y validación de avatares
   checker.py      ronda de comprobaciones + reglas de aviso
+  trips.py        viajes de ida y vuelta: combinaciones, histórico y avisos
   coverage.py     cobertura de rutas por proveedor, comprobación al crear y revalidación semanal
   health.py       prueba de acceso a los proveedores (zona Proveedores)
   places.py       catálogo de aeropuertos, ciudades, países y grupos (datos en app/data)
@@ -243,6 +253,7 @@ Pruebas de Python (necesitan además `pip install httpx`): `python -m tests.smok
 
 ## Limitaciones conocidas
 
-- Solo ida por vigilancia (para ida y vuelta, crea dos vigilancias, como en tu configuración inicial).
+- Solo ida por vigilancia: para ida y vuelta, crea dos vigilancias y júntalas en un viaje.
+- Los viajes no tienen en cuenta horarios: cuentan noches por fecha de vuelo.
 - Los precios del calendario son «desde» y no incluyen equipaje facturado.
 - La regla «habitual» compara con la mediana de la ruta, no con la de esa misma fecha.

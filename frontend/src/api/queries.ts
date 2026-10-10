@@ -5,7 +5,7 @@ import { toast } from 'sonner'
 import { ApiError, get } from './client'
 import type {
   AdminUser, Alert, Channel, ChannelDetail, Charts, DebugFile, Me, Meta, Place, ProvidersData, Run, Series,
-  SettingsData, Status, User, WatchCard, WatchDetail,
+  SettingsData, Status, TripCard, TripCombo, TripDetail, User, WatchCard, WatchDetail,
 } from './types'
 
 export const keys = {
@@ -16,6 +16,9 @@ export const keys = {
   watch: (id: number) => ['watches', id] as const,
   charts: (id: number) => ['watches', id, 'charts'] as const,
   dateHistory: (id: number, date: string) => ['watches', id, 'date', date] as const,
+  trips: ['trips'] as const,
+  trip: (id: number) => ['trips', id] as const,
+  tripOptions: (id: number, date: string) => ['trips', id, 'options', date] as const,
   alerts: ['alerts'] as const,
   runs: ['runs'] as const,
   channels: (base: string) => ['channels', base] as const,
@@ -67,6 +70,7 @@ export function useStatus() {
   useEffect(() => {
     if (wasRunning.current && !running) {
       qc.invalidateQueries({ queryKey: keys.watches })
+      qc.invalidateQueries({ queryKey: keys.trips })
       qc.invalidateQueries({ queryKey: keys.alerts })
       qc.invalidateQueries({ queryKey: keys.runs })
       toast.success('Comprobación terminada', { description: 'Precios, avisos y gráficas actualizados.' })
@@ -89,6 +93,21 @@ export const useDateHistory = (id: number, date: string) =>
   useQuery({
     queryKey: keys.dateHistory(id, date),
     queryFn: () => get<Series>(`/watches/${id}/date-history?date=${encodeURIComponent(date)}`),
+    enabled: !!date,
+    placeholderData: keepPreviousData,
+  })
+
+export const useTrips = () =>
+  useQuery({ queryKey: keys.trips, queryFn: async () => (await get<{ trips: TripCard[] }>('/trips')).trips })
+
+export const useTrip = (id: number) =>
+  useQuery({ queryKey: keys.trip(id), queryFn: () => get<TripDetail>(`/trips/${id}`), enabled: id > 0 })
+
+/** Todas las noches posibles para una fecha de ida. */
+export const useTripOptions = (id: number, date: string) =>
+  useQuery({
+    queryKey: keys.tripOptions(id, date),
+    queryFn: async () => (await get<{ options: TripCombo[] }>(`/trips/${id}/options?date=${encodeURIComponent(date)}`)).options,
     enabled: !!date,
     placeholderData: keepPreviousData,
   })

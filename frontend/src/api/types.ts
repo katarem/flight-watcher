@@ -169,6 +169,8 @@ export interface WatchDetail {
   prices: PriceRow[]
   checks: CheckSummary[]
   alerts: Alert[]
+  /** Viajes de los que esta vigilancia es tramo. */
+  trips: { id: number; name: string }[]
 }
 
 export interface Series {
@@ -309,4 +311,85 @@ export interface HealthRun {
   results: HealthResult[]
   fx: HealthStep | null
   candidates: CandidateResult[]
+}
+
+/** Tramo de un viaje: una vigilancia del usuario. */
+export interface TripLeg {
+  id: number
+  name: string
+  origin: string
+  destination: string
+  enabled: boolean
+}
+
+export interface Trip {
+  id: number
+  name: string
+  outbound_id: number
+  return_id: number
+  min_nights: number
+  max_nights: number
+  date_from: string | null
+  date_to: string | null
+  max_total: number | null
+  discount_pct: number
+  enabled: boolean
+  channel_ids: number[]
+  created_at: string
+  outbound: TripLeg
+  return: TripLeg
+  /** Avisos que no impiden guardar (tramos en pausa o que no encajan). */
+  warnings: string[]
+}
+
+/** Vuelo más barato de un tramo para un día (en euros, con su web y su enlace). */
+export interface TripPrice extends PriceExtras {
+  flight_date: string
+  price: number
+  provider: string
+  route: string | null
+  link: string
+  checked_at: string
+}
+
+/** Una combinación ida + vuelta: fecha de ida, noches y total. */
+export interface TripCombo {
+  out_date: string
+  ret_date: string
+  nights: number
+  total: number
+  deal: 'fixed' | 'relative' | null
+  out: TripPrice
+  ret: TripPrice
+}
+
+export interface TripTrend {
+  d: string
+  p: number
+}
+
+export interface TripCard extends Trip {
+  base: number | null
+  best: TripCombo | null
+  n_dates: number
+  trend: TripTrend[]
+  channels: string[]
+}
+
+export interface TripAlert {
+  id: number
+  trip_id: number
+  out_date: string
+  ret_date: string
+  total: number
+  sent_at: string
+}
+
+export interface TripDetail {
+  trip: Trip
+  base: number | null
+  /** La combinación más barata de cada fecha de ida. */
+  quotes: TripCombo[]
+  trend: TripTrend[]
+  alerts: TripAlert[]
 }

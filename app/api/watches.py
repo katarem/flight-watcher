@@ -156,6 +156,39 @@ def parse_route(origin_raw: str, destination_raw: str, errors: list[str]) -> tup
     return origin, destination
 
 
+def parse_number(value, label: str, errors: list[str], default=None, lo=0.0, hi=100000.0) -> float | None:
+    """Número con coma o punto decimal en (lo, hi]; vacío → `default`."""
+    text = str(value if value is not None else "").strip().replace(",", ".")
+    if not text:
+        return default
+    try:
+        v = float(text)
+    except ValueError:
+        errors.append(f"{label} no es un número válido.")
+        return default
+    if not lo < v <= hi:
+        errors.append(f"{label} fuera de rango.")
+    return v
+
+
+def parse_dates(date_from, date_to, errors: list[str]) -> tuple[str | None, str | None]:
+    """Ventana de fechas «Desde»/«Hasta» opcional (ISO)."""
+    def iso(value, label):
+        text = (value or "").strip()
+        if not text:
+            return None
+        try:
+            return date.fromisoformat(text).isoformat()
+        except ValueError:
+            errors.append(f"{label} no es una fecha válida.")
+            return None
+
+    d_from, d_to = iso(date_from, "«Desde»"), iso(date_to, "«Hasta»")
+    if d_from and d_to and d_from > d_to:
+        errors.append("«Desde» no puede ser posterior a «Hasta».")
+    return d_from, d_to
+
+
 def parse_watch(body: WatchIn) -> dict:
     """Datos listos para guardar o `Invalid` con todos los errores encontrados."""
     errors = []
@@ -171,34 +204,9 @@ def parse_watch(body: WatchIn) -> dict:
         else:
             errors.append("El máximo de escalas debe ser 0 (solo directos), 1, 2 o vacío (sin límite).")
 
-    def number(value, label, default=None, lo=0.0, hi=100000.0):
-        text = str(value if value is not None else "").strip().replace(",", ".")
-        if not text:
-            return default
-        try:
-            v = float(text)
-        except ValueError:
-            errors.append(f"{label} no es un número válido.")
-            return default
-        if not lo < v <= hi:
-            errors.append(f"{label} fuera de rango.")
-        return v
-
-    def iso(value, label):
-        text = (value or "").strip()
-        if not text:
-            return None
-        try:
-            return date.fromisoformat(text).isoformat()
-        except ValueError:
-            errors.append(f"{label} no es una fecha válida.")
-            return None
-
-    max_p = number(body.max_price, "El precio máximo")
-    disc = number(body.discount_pct, "El descuento", default=30.0, lo=-1.0, hi=95.0)
-    d_from, d_to = iso(body.date_from, "«Desde»"), iso(body.date_to, "«Hasta»")
-    if d_from and d_to and d_from > d_to:
-        errors.append("«Desde» no puede ser posterior a «Hasta».")
+    max_p = parse_number(body.max_price, "El precio máximo", errors)
+    disc = parse_number(body.discount_pct, "El descuento", errors, default=30.0, lo=-1.0, hi=95.0)
+    d_from, d_to = parse_dates(body.date_from, body.date_to, errors)
     if errors:
         raise Invalid(errors)
     return {
@@ -232,7 +240,7 @@ def create_watch(body: WatchIn, user: dict = Depends(current_user)):
 @router.get("/watches/{wid}")
 def get_watch(wid: int, user: dict = Depends(current_user)):
     """Todo lo del detalle salvo las gráficas: resumen por web, precios de la última comprobación,
-    historial de comprobaciones y avisos enviados."""
+    historial de comprobaciones, avisos enviados y viajes de los que es tramo."""
     s = db.get_settings()
     with db.connect() as con:
         w = own_watch(con, wid, user)
@@ -240,6 +248,7 @@ def get_watch(wid: int, user: dict = Depends(current_user)):
         return {
             "watch": watch_view(w), "stats": stats, "prices": rows,
             "checks": db.checks_summary(con, wid, 40), "alerts": db.list_alerts(con, 15, wid),
+            "trips": [{"id": t["id"], "name": t["name"]} for t in db.list_trips(con, watch_id=wid)],
         }
 
 

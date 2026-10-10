@@ -1,4 +1,4 @@
-"""Capa de acceso a datos con SQLAlchemy Core: ajustes, vigilancias, precios, alertas y ejecuciones.
+"""Capa de acceso a datos con SQLAlchemy Core: ajustes, vigilancias, viajes, precios, alertas y ejecuciones.
 
 El motor se elige con DB_ENGINE (sqlite, postgres, mysql, mariadb). Las consultas devuelven dicts,
 así que el resto de la app no sabe qué base de datos hay debajo.
@@ -179,6 +179,61 @@ alerts = Table(
     Column("link", Text),
     Column("sent_at", ISO, nullable=False),
     Index("idx_alerts", "watch_id", "provider", "flight_date"),
+    **_TABLE_OPTS,
+)
+
+# Viajes: ida y vuelta formados por dos vigilancias del mismo usuario (sus tramos). El precio de un viaje
+# es la suma del más barato de cada tramo para cada fecha de ida y cada número de noches permitido.
+trips = Table(
+    "trips", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("name", String(200), nullable=False),
+    Column("outbound_id", Integer, ForeignKey("watches.id", ondelete="CASCADE"), nullable=False),  # vigilancia de ida
+    Column("return_id", Integer, ForeignKey("watches.id", ondelete="CASCADE"), nullable=False),    # vigilancia de vuelta
+    Column("min_nights", Integer, nullable=False),
+    Column("max_nights", Integer, nullable=False),
+    Column("date_from", String(10)),  # ventana de fechas de ida (NULL = sin límite)
+    Column("date_to", String(10)),
+    Column("max_total", Double),      # precio total máximo (ida + vuelta, en euros)
+    Column("discount_pct", Double, nullable=False, server_default="30"),
+    Column("enabled", Integer, nullable=False, server_default="1"),
+    Column("created_at", ISO, nullable=False),
+    Index("idx_trips_user", "user_id"),
+    **_TABLE_OPTS,
+)
+
+trip_channels = Table(
+    "trip_channels", metadata,
+    Column("trip_id", Integer, ForeignKey("trips.id", ondelete="CASCADE"), primary_key=True),
+    Column("channel_id", Integer, ForeignKey("channels.id", ondelete="CASCADE"), primary_key=True),
+    **_TABLE_OPTS,
+)
+
+# Histórico de un viaje: en cada comprobación, la combinación más barata de cada fecha de ida (en euros).
+trip_quotes = Table(
+    "trip_quotes", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("trip_id", Integer, ForeignKey("trips.id", ondelete="CASCADE"), nullable=False),
+    Column("checked_at", ISO, nullable=False),
+    Column("out_date", String(10), nullable=False),
+    Column("ret_date", String(10), nullable=False),
+    Column("total", Double, nullable=False),
+    Column("out_price", Double, nullable=False),
+    Column("ret_price", Double, nullable=False),
+    Index("idx_trip_quotes", "trip_id", "checked_at"),
+    **_TABLE_OPTS,
+)
+
+trip_alerts = Table(
+    "trip_alerts", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("trip_id", Integer, ForeignKey("trips.id", ondelete="CASCADE"), nullable=False),
+    Column("out_date", String(10), nullable=False),
+    Column("ret_date", String(10), nullable=False),
+    Column("total", Double, nullable=False),
+    Column("sent_at", ISO, nullable=False),
+    Index("idx_trip_alerts", "trip_id", "out_date"),
     **_TABLE_OPTS,
 )
 
@@ -641,6 +696,108 @@ def list_alerts(con, limit=10, watch_id=None, user_id=None):
     return _all(con, stmt.order_by(alerts.c.sent_at.desc(), alerts.c.id.desc()).limit(limit))
 
 
+# ------------------------------------------------------------------------ viajes
+def _trip_values(data: dict) -> dict:
+    return {k: data[k] for k in ("name", "outbound_id", "return_id", "min_nights", "max_nights", "date_from",
+                                 "date_to", "max_total", "discount_pct")} | {"enabled": int(data["enabled"])}
+
+
+def _with_trip_channels(con, ts: list[dict]) -> list[dict]:
+    ids: dict[int, list[int]] = {}
+    if ts:
+        for tid, cid in con.execute(select(trip_channels.c.trip_id, trip_channels.c.channel_id)
+                                    .where(trip_channels.c.trip_id.in_([t["id"] for t in ts]))
+                                    .order_by(trip_channels.c.channel_id)).all():
+            ids.setdefault(tid, []).append(cid)
+    for t in ts:
+        t["channel_ids"] = ids.get(t["id"], [])
+    return ts
+
+
+def list_trips(con, user_id: int | None = None, watch_id: int | None = None) -> list[dict]:
+    """Viajes (de un usuario y/o que usan una vigilancia como tramo) con `channel_ids`."""
+    stmt = select(trips).order_by(trips.c.id)
+    if user_id is not None:
+        stmt = stmt.where(trips.c.user_id == user_id)
+    if watch_id is not None:
+        stmt = stmt.where((trips.c.outbound_id == watch_id) | (trips.c.return_id == watch_id))
+    return _with_trip_channels(con, _all(con, stmt))
+
+
+def get_trip(con, trip_id: int) -> dict | None:
+    t = _one(con, select(trips).where(trips.c.id == trip_id))
+    return _with_trip_channels(con, [t])[0] if t else None
+
+
+def create_trip(con, user_id: int, data: dict) -> int:
+    return con.execute(insert(trips).values(
+        **_trip_values(data), user_id=user_id, created_at=datetime.now().isoformat(timespec="seconds"),
+    )).inserted_primary_key[0]
+
+
+def update_trip(con, trip_id: int, data: dict):
+    con.execute(update(trips).where(trips.c.id == trip_id).values(**_trip_values(data)))
+
+
+def delete_trip(con, trip_id: int):
+    con.execute(delete(trips).where(trips.c.id == trip_id))
+
+
+def toggle_trip(con, trip_id: int):
+    con.execute(update(trips).where(trips.c.id == trip_id).values(enabled=1 - trips.c.enabled))
+
+
+def set_trip_channels(con, trip_id: int, channel_ids: list[int]):
+    """Sustituye los canales del viaje. El llamador garantiza que son del dueño."""
+    con.execute(delete(trip_channels).where(trip_channels.c.trip_id == trip_id))
+    if channel_ids:
+        con.execute(insert(trip_channels), [{"trip_id": trip_id, "channel_id": c} for c in sorted(set(channel_ids))])
+
+
+def insert_trip_quotes(con, trip_id: int, checked_at: str, quotes: list[dict]):
+    if quotes:
+        con.execute(insert(trip_quotes), [
+            {"trip_id": trip_id, "checked_at": checked_at, "out_date": q["out_date"], "ret_date": q["ret_date"],
+             "total": q["total"], "out_price": q["out"]["price"], "ret_price": q["ret"]["price"]}
+            for q in quotes
+        ])
+
+
+def trip_baseline(con, trip_id: int, before_iso: str, min_samples: int) -> float | None:
+    """Mediana de los totales guardados antes de `before_iso` (None si hay pocas muestras)."""
+    q = trip_quotes.c
+    values = con.execute(select(q.total).where(q.trip_id == trip_id, q.checked_at < before_iso)
+                         .order_by(q.checked_at.desc()).limit(20000)).scalars().all()
+    return median(values) if len(values) >= min_samples else None
+
+
+def trip_trend(con, trip_id: int) -> list[dict]:
+    """Total más barato de cada día de comprobación: [{"d", "p"}]."""
+    q = trip_quotes.c
+    day = func.substr(q.checked_at, 1, 10)
+    return _all(con, select(day.label("d"), func.min(q.total).label("p"))
+                .where(q.trip_id == trip_id).group_by(day).order_by(day))
+
+
+def trip_already_alerted(con, trip_id: int, out_date: str, total: float) -> bool:
+    """Ya se avisó de esa fecha de ida por un total igual o menor (sea cual sea la vuelta)."""
+    a = trip_alerts.c
+    return con.execute(select(exists().where(a.trip_id == trip_id, a.out_date == out_date, a.total <= total))).scalar()
+
+
+def add_trip_alerts(con, trip_id: int, quotes: list[dict], sent_at: str):
+    if quotes:
+        con.execute(insert(trip_alerts), [
+            {"trip_id": trip_id, "out_date": q["out_date"], "ret_date": q["ret_date"], "total": q["total"],
+             "sent_at": sent_at} for q in quotes
+        ])
+
+
+def list_trip_alerts(con, trip_id: int, limit: int = 15) -> list[dict]:
+    a = trip_alerts.c
+    return _all(con, select(trip_alerts).where(a.trip_id == trip_id).order_by(a.sent_at.desc(), a.id.desc()).limit(limit))
+
+
 # ------------------------------------------------------------------ ejecuciones
 def start_run(con, watch_id, provider, trigger, started_at) -> int:
     return con.execute(insert(runs).values(
@@ -672,6 +829,8 @@ def purge(con, retention_days: int):
     con.execute(delete(prices).where(prices.c.checked_at < cutoff))
     con.execute(delete(runs).where(runs.c.started_at < cutoff))
     con.execute(delete(alerts).where(alerts.c.sent_at < cutoff))
+    con.execute(delete(trip_quotes).where(trip_quotes.c.checked_at < cutoff))
+    con.execute(delete(trip_alerts).where(trip_alerts.c.sent_at < cutoff))
 
 
 # ------------------------------------------------------------ cobertura de rutas

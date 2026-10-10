@@ -39,3 +39,12 @@ def fmt_stops(stops) -> str:
     if stops is None:
         return ""
     return "directo" if stops == 0 else f"{stops} escala" + ("s" if stops > 1 else "")
+
+
+def fmt_nights(n: int) -> str:
+    return f"{n} noche" + ("s" if n != 1 else "")
+
+
+def fmt_nights_range(lo: int, hi: int) -> str:
+    """«4 noches» o «3–5 noches»."""
+    return fmt_nights(lo) if lo == hi else f"{lo}–{hi} noches"

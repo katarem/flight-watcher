@@ -91,3 +91,13 @@ export function stopsRule(maxStops: number | null): string {
   if (maxStops == null) return 'con o sin escalas'
   return maxStops === 0 ? 'solo directos' : `hasta ${maxStops} ${maxStops === 1 ? 'escala' : 'escalas'}`
 }
+
+/** «1 noche», «3 noches». */
+export function fmtNights(n: number): string {
+  return `${n} ${n === 1 ? 'noche' : 'noches'}`
+}
+
+/** «4 noches» o «3–5 noches» (el mismo criterio que `fmt_nights_range` de los avisos). */
+export function fmtNightsRange(lo: number, hi: number): string {
+  return lo === hi ? fmtNights(lo) : `${lo}–${hi} noches`
+}

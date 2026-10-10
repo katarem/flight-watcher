@@ -1,4 +1,4 @@
-"""Notificaciones por Discord (webhook) y Telegram (bot). Cada aviso incluye enlace por fecha."""
+"""Notificaciones por Discord (webhook) y Telegram (bot). Cada aviso incluye enlace por fecha (y por tramo en los viajes)."""
 from __future__ import annotations
 
 import html
@@ -7,7 +7,7 @@ import re
 
 import requests
 
-from .fmt import fmt_day, fmt_money, fmt_price, fmt_stops
+from .fmt import fmt_day, fmt_money, fmt_nights, fmt_nights_range, fmt_price, fmt_stops
 from .providers import PROVIDERS, ordered
 
 log = logging.getLogger("notify")
@@ -150,4 +150,37 @@ def send_deals(channels: list[dict], watch: dict, deals: list[dict], baselines: 
         link = f"{panel}/watches/{watch['id']}"
         d_lines += ["", f"📊 [Historial y gráficas](<{link}>)"]
         t_lines += ["", f'📊 <a href="{html.escape(link, quote=True)}">Historial y gráficas</a>']
+    return send(channels, {"markdown": d_lines, "html": t_lines})
+
+
+def _leg_text(leg: dict) -> str:
+    """«Vueling 40 €», con el par de aeropuertos real si difiere de la vigilancia («Ryanair 55 € (TFS→SVQ)»)."""
+    prov = PROVIDERS.get(leg["provider"])
+    text = f"{prov.label if prov else leg['provider']} {fmt_price(leg['price'])}"
+    return text + (f" ({leg['route']})" if leg.get("route") else "")
+
+
+def send_trip_deals(channels: list[dict], trip: dict, outbound: dict, ret: dict, deals: list[dict], base: float | None,
+                    panel_url: str = "") -> tuple[list[str], list[str]]:
+    """Un mensaje por viaje: cada combinación con su total, sus fechas y un enlace por tramo."""
+    route = f"{outbound['origin']}⇄{outbound['destination']}"
+    head = f"({route} · {fmt_nights_range(trip['min_nights'], trip['max_nights'])})"
+    extra = f" · habitual ≈ {fmt_price(base)}" if base else ""
+    d_lines = [f"🧳 **{trip['name']}** {head}{extra}"]
+    t_lines = [f"🧳 <b>{html.escape(trip['name'])}</b> {head}{extra}"]
+    for q in sorted(deals, key=lambda q: q["total"]):
+        when = f"{fmt_day(q['out_date'])} → {fmt_day(q['ret_date'])} · {fmt_nights(q['nights'])}"
+        total = fmt_price(q["total"])
+        o, r = q["out"], q["ret"]
+        d_lines += [f"• {when}: **{total}**",
+                    f"  ida [{_leg_text(o)}](<{o['link']}>) · vuelta [{_leg_text(r)}](<{r['link']}>)"]
+        t_lines += [f"• {when}: <b>{total}</b>",
+                    f'  ida <a href="{html.escape(o["link"], quote=True)}">{html.escape(_leg_text(o))}</a> · '
+                    f'vuelta <a href="{html.escape(r["link"], quote=True)}">{html.escape(_leg_text(r))}</a>']
+
+    panel = (panel_url or "").rstrip("/")
+    if panel:
+        link = f"{panel}/trips/{trip['id']}"
+        d_lines += ["", f"📊 [Todas las combinaciones](<{link}>)"]
+        t_lines += ["", f'📊 <a href="{html.escape(link, quote=True)}">Todas las combinaciones</a>']
     return send(channels, {"markdown": d_lines, "html": t_lines})

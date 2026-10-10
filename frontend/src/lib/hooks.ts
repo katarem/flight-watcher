@@ -14,9 +14,18 @@ export function useTitle(title: string | undefined) {
 
 /** Lanza una comprobación (de una vigilancia o de todas las del usuario) y marca la ronda como en curso. */
 export function useRunNow() {
+  return useRun((watchId?: number) => (watchId ? `/watches/${watchId}/run` : '/run'))
+}
+
+/** Comprueba los dos tramos de un viaje y después recalcula el viaje. */
+export function useRunTrip() {
+  return useRun((tripId: number) => `/trips/${tripId}/run`)
+}
+
+function useRun<T>(path: (arg: T) => string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (watchId?: number) => post<{ started: boolean }>(watchId ? `/watches/${watchId}/run` : '/run'),
+    mutationFn: (arg: T) => post<{ started: boolean }>(path(arg)),
     onSuccess: ({ started }) => {
       if (!started) {
         toast.info('Ya hay una comprobación en marcha.')
