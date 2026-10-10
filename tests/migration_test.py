@@ -3,7 +3,7 @@
 Crea una BD SQLite en la revisión 0003 con usuarios, vigilancias (CSV de proveedores), canales, precios,
 avisos y ejecuciones; aplica las migraciones pendientes como la app (`db.init`) y comprueba que no se
 pierde nada (el ON DELETE CASCADE al recrear tablas en SQLite) y que los datos se convierten bien.
-Después crea un viaje (0005), baja a 0003 y vuelve a subir.
+Después crea un viaje (0005) y un proveedor propio (0006), baja a 0005, a 0004 y a 0003 y vuelve a subir.
 """
 import os
 import sqlite3
@@ -74,7 +74,15 @@ def main():
                                       "date_from": None, "date_to": None, "max_total": None, "discount_pct": 30,
                                       "enabled": True})
         check(db.get_trip(con, tid)["outbound_id"] == 1 and counts() == before, "0005: viajes sobre las vigilancias existentes")
-
+        db.save_provider_script(con, "propio", {"label": "Propio", "color": "#000000", "coverage": "universal",
+                                                "max_routes": None, "health_origin": "SVQ", "health_destination": "TFN",
+                                                "link_template": "", "notes": "", "min_interval": 1.5,
+                                                "code": "def fetch_route(*a):\n    return {}\n", "enabled": 1}, "admin")
+    migrate("0005", down=True)
+    tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    check(counts() == before and "provider_scripts" not in tables and "trips" in tables,
+          "downgrade a 0005 quita los proveedores propios sin tocar lo demás")
+    migrate("head")
     migrate("0004", down=True)
     tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     check(counts() == before and not tables & {"trips", "trip_channels", "trip_quotes", "trip_alerts"},

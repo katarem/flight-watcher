@@ -14,6 +14,7 @@ services:
       PANEL_USER: ${PANEL_USER:-}
       PANEL_PASSWORD: ${PANEL_PASSWORD:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-}
+      PROVIDER_SCRIPTS: ${PROVIDER_SCRIPTS:-1}
       # Base de datos: sqlite (archivo en la carpeta de datos), postgres, mysql o mariadb.
       DB_ENGINE: ${DB_ENGINE:-sqlite}
       DB_HOST: ${DB_HOST:-}

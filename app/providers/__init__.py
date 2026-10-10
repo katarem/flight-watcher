@@ -1,4 +1,8 @@
-"""Registro de proveedores. Para añadir uno: importa la clase y añádela a la tupla."""
+"""Registro de proveedores. Para añadir uno: importa la clase y añádela a la tupla.
+
+Los proveedores propios (scripts guardados desde el panel) se añaden detrás de los de serie al arrancar y
+cada vez que se guardan (`scripted.reload()`), en este mismo diccionario.
+"""
 from __future__ import annotations
 
 from datetime import date

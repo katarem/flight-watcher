@@ -34,6 +34,7 @@ from app.main import app  # noqa: E402
 from app.providers import PROVIDERS, DayPrice  # noqa: E402
 from app.providers.base import Provider  # noqa: E402
 from app.providers.extract import parse_day, parse_price, walk_json  # noqa: E402
+from app.providers import scripted  # noqa: E402
 from app.providers.google import parse_response, request_body  # noqa: E402
 
 from . import fakes  # noqa: E402
@@ -117,6 +118,8 @@ def users_flow(admin: Api, admin_id: int):
     check(ana_c.post("/users", {"username": "x1x", "password": "12345678"}).status_code == 403, "crear usuarios prohibido")
     check(ana_c.put("/settings", {"schedule_hours": "1"}).status_code == 403, "cambiar ajustes prohibido")
     check(ana_c.post("/providers/health", {}).status_code == 403, "probar proveedores, solo admin")
+    check(ana_c.get("/providers/scripts").status_code == 403 and ana_c.post("/providers/scripts/test", {}).status_code == 403,
+          "proveedores propios, solo admin")
     watches = ana_c.get("/watches").json()["watches"]
     check(not watches, "no ve vigilancias ajenas")
     me = ana_c.get("/me").json()["user"]
@@ -575,6 +578,195 @@ def providers_flow(admin: Api, admin_id: int, admin_chan: int):
     check(fx.parse(xml) == {"date": "2026-10-09", "rates": {"USD": 1.1012, "HUF": 398.5}}, "lectura del XML del BCE")
     check(fx.to_eur(110, "USD") == 100 and fx.to_eur(5, "EUR") == 5, "conversión a euros")
 
+# Web simulada para los proveedores propios: {url: (estado, cuerpo JSON)}; el resto responde 404.
+HTTP: dict = {}
+
+
+class FakeHttp:
+    """Sustituye a requests.Session en los scripts: sin red, con las respuestas de HTTP."""
+    headers: dict = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def request(self, method, url, timeout=None, params=None, json=None):
+        status, body = HTTP.get(url, (404, {"error": "no existe"}))
+
+        class Resp:
+            pass
+        r = Resp()
+        r.url, r.status_code, r.ok = url, status, status < 400
+        r.headers = {"content-type": "application/json"}
+        r.text = __import__("json").dumps(body)
+        r.json = lambda: body
+        return r
+
+
+SCRIPT = """
+BASE = "https://api.prueba.test"
+
+
+def network(api, origin):
+    data = api.get_json(f"{BASE}/rutas/{origin}")
+    return [] if data is None else data["destinos"]
+
+
+def fetch_route(api, origin, destination, start, max_months):
+    data = api.get_json(f"{BASE}/precios/{origin}/{destination}", meses=max_months)
+    if data is None:
+        return {}
+    api.log("días recibidos:", len(data["dias"]))
+    return [DayPrice(date.fromisoformat(d["fecha"]), d["precio"], currency=d.get("moneda", "EUR"))
+            for d in data["dias"]]
+"""
+
+
+def scripts_flow(admin: Api, admin_chan: int):
+    scripted.ScriptedProvider.new_session = lambda self: FakeHttp()
+    days = [(TODAY + timedelta(days=10 + i)).isoformat() for i in range(3)]
+    HTTP.update({
+        "https://api.prueba.test/rutas/SVQ": (200, {"destinos": ["TFN", "BCN"]}),
+        "https://api.prueba.test/precios/SVQ/TFN": (200, {"dias": [
+            {"fecha": days[0], "precio": 20}, {"fecha": days[1], "precio": 15, "moneda": "GBP"},
+            {"fecha": days[2], "precio": 0}]}),
+    })
+    r = admin.get("/providers/scripts").json()
+    check(r["enabled"] and r["scripts"] == [] and "def fetch_route" in r["template"], "proveedores propios: lista vacía y plantilla")
+    base = {"key": "miaero", "label": "Mi Aerolínea", "color": "#0EA5E9", "coverage": "network", "health_origin": "svq",
+            "health_destination": "tfn", "min_interval": "0", "code": SCRIPT,
+            "link_template": "https://www.miaero.test/vuelos?o={origin}&d={destination}&f={date}"}
+
+    # --- validación y confirmación de la contraseña antes de ejecutar código
+    bad = admin.post("/providers/scripts", {**base, "key": "Mal clave", "color": "rojo", "health_origin": "TCI",
+                                            "link_template": "ftp://x", "code": ""})
+    check(bad.status_code == 422 and all(t in errors(bad) for t in ("La clave", "hexadecimal", "aeropuerto", "https://", "Falta el código")),
+          "validación del formulario del proveedor propio")
+    check("Ya hay un proveedor" in errors(admin.post("/providers/scripts", {**base, "key": "vueling", "password": "clave-de-prueba-1"})),
+          "la clave no puede ser la de un proveedor de serie")
+    r = admin.post("/providers/scripts", base)
+    check(r.status_code == 403 and "Confirma tu contraseña" in errors(r), "guardar un script activo pide la contraseña")
+    r = admin.post("/providers/scripts", {**base, "password": "mala"})
+    check(r.status_code == 403 and "no es correcta" in errors(r), "contraseña incorrecta")
+    r = admin.post("/providers/scripts", {**base, "password": "clave-de-prueba-1", "code": "def fetch_route(api,\n"})
+    check(r.status_code == 422 and "Error de sintaxis en la línea" in errors(r), "error de sintaxis con su línea")
+    r = admin.post("/providers/scripts", {**base, "password": "clave-de-prueba-1", "code": SCRIPT.replace("def network", "def red")})
+    check(r.status_code == 422 and "Falta definir `network`" in errors(r), "el contrato exige la función de su cobertura")
+    check(admin.get("/providers/scripts").json()["scripts"] == [], "nada se guarda si no carga")
+
+    # --- probar sin guardar: carga, cobertura, precios (con su moneda) y mensajes del script
+    r = admin.post("/providers/scripts/test", {**base, "password": "clave-de-prueba-1"})
+    res = r.json()["result"]
+    check(r.status_code == 200 and res["status"] == "ok" and res["route"] == "SVQ→TFN"
+          and "2 destinos directos desde SVQ (incluye TFN)" in res["steps"][0]["detail"], "prueba del borrador: cobertura")
+    check(res["n_prices"] == 2 and res["sample"][1] == {"day": days[1], "price": 15, "currency": "GBP", "origin": "SVQ",
+                                                        "destination": "TFN", "stops": 0}
+          and res["logs"] == ["días recibidos: 3"], "prueba del borrador: precios (sin los días a 0) y log del script")
+    with db.connect() as con:
+        check("miaero" not in db.list_health(con), "la prueba de un borrador no se guarda como prueba de acceso")
+    r = admin.post("/providers/scripts/test", {**base, "password": "clave-de-prueba-1", "origin": "SVQ", "destination": "BCN",
+                                               "code": SCRIPT.replace('data["dias"]]', 'data["días"]]')})
+    check(r.json()["result"]["steps"][1]["status"] == "empty", "una ruta sin precios en la prueba")
+    HTTP["https://api.prueba.test/precios/SVQ/BCN"] = (200, {"dias": [{"fecha": days[0]}]})
+    r = admin.post("/providers/scripts/test", {**base, "password": "clave-de-prueba-1", "origin": "SVQ", "destination": "BCN"})
+    step = r.json()["result"]["steps"][1]
+    check(step["status"] == "error" and "KeyError: 'precio'" in step["detail"] and "línea 15 del script" in step["detail"],
+          "un fallo del script dice qué falló y en qué línea")
+    HTTP["https://api.prueba.test/precios/SVQ/BCN"] = (429, {})
+    r = admin.post("/providers/scripts/test", {**base, "password": "clave-de-prueba-1", "origin": "SVQ", "destination": "BCN"})
+    check(r.json()["result"]["status"] == "blocked", "un 429 de la web es «bloqueado», como en los de serie")
+    r = admin.post("/providers/scripts/test", {**base, "password": "clave-de-prueba-1", "code": "x = 1/0\ndef fetch_route(*a): pass"})
+    check(r.json()["result"]["steps"][0]["name"] == "Carga del script" and "ZeroDivisionError" in r.json()["result"]["steps"][0]["detail"],
+          "un script que falla al cargar")
+    check(admin.post("/providers/scripts/test", {**base, "password": "mala"}).status_code == 403, "probar también pide la contraseña")
+
+    # --- guardado: entra en el registro y lo usan vigilancias, ronda, avisos y enlaces
+    r = admin.post("/providers/scripts", {**base, "password": "clave-de-prueba-1"})
+    s = r.json()["script"]
+    check(r.status_code == 201 and s["loaded"] and s["updated_by"] == "admin" and s["color"] == "#0ea5e9"
+          and s["health_origin"] == "SVQ" and "miaero" in PROVIDERS, "crear proveedor propio")
+    check("miaero" in {p["key"] for p in admin.get("/meta").json()["providers"]}
+          and any(p["key"] == "miaero" and p["scripted"] for p in admin.get("/providers").json()["providers"]),
+          "aparece en el panel y en la zona Proveedores")
+    r = admin.post("/watches", {"name": "Script", "origin": "SVQ", "destination": "TFN", "providers": ["miaero"],
+                                "max_price": "30", "channel_ids": [admin_chan]})
+    w = r.json()["watch"]
+    check(r.status_code == 201 and w["coverage"][0]["routes"] == ["SVQ-TFN"], "vigilancia con el proveedor propio (cobertura del script)")
+    SENT.clear()
+    checker.run_checks(watch_id=w["id"], trigger="manual")
+    with db.connect() as con:
+        snap = db.latest_snapshot(con, w["id"], "miaero")
+    check(len(snap) == 2 and snap[0]["currency"] == "GBP" and snap[0]["orig_price"] == 15 and round(snap[0]["price"], 2) == 17.65,
+          "la ronda guarda sus precios (en euros y en la moneda original)")
+    msg = "\n".join(SENT[0][0]) if SENT else ""
+    check("**Mi Aerolínea**" in msg and f"https://www.miaero.test/vuelos?o=SVQ&d=TFN&f={days[1]}" in msg,
+          "el aviso lleva su nombre y su plantilla de enlace")
+    check(admin.get("/providers/scripts").json()["scripts"][0]["n_watches"] == 1, "cuántas vigilancias lo usan")
+
+    # --- cambios: la contraseña solo se pide si se va a ejecutar código nuevo
+    r = admin.put("/providers/scripts/miaero", {**base, "label": "Mi Aerolínea 2"})
+    check(r.status_code == 200 and PROVIDERS["miaero"].label == "Mi Aerolínea 2", "cambiar el nombre no pide contraseña")
+    r = admin.put("/providers/scripts/miaero", {**base, "code": SCRIPT + "\n# cambio\n"})
+    check(r.status_code == 403, "cambiar el código pide la contraseña")
+    with db.connect() as con:
+        cached = len(db.cached_routes(con, "miaero", [("SVQ", "TFN")], "2000-01-01"))
+    r = admin.put("/providers/scripts/miaero", {**base, "code": SCRIPT + "\n# cambio\n", "password": "clave-de-prueba-1"})
+    with db.connect() as con:
+        check(r.status_code == 200 and cached == 1 and not db.cached_routes(con, "miaero", [("SVQ", "TFN")], "2000-01-01"),
+              "al cambiar el código se olvida la cobertura que dio el script anterior")
+    r = admin.put("/providers/scripts/miaero", {**base, "enabled": False})
+    check(r.status_code == 200 and "miaero" not in PROVIDERS and not r.json()["script"]["loaded"],
+          "desactivarlo lo saca del registro sin pedir contraseña")
+    check(admin.get(f"/watches/{w['id']}").status_code == 200, "la vigilancia sigue funcionando sin él")
+    r = admin.put(f"/watches/{w['id']}", {"name": "Script", "origin": "SVQ", "destination": "TFN", "providers": ["google"],
+                                          "max_price": "30", "channel_ids": [admin_chan]})
+    with db.connect() as con:
+        kept = db.get_watch(con, w["id"])["coverage"]
+    check(r.status_code == 200 and set(kept) == {"google", "miaero"} and kept["miaero"]["routes"] == [("SVQ", "TFN")],
+          "editar la vigilancia mientras está desactivado no se lo quita")
+    check(admin.put("/providers/scripts/miaero", base).status_code == 403, "reactivarlo pide la contraseña")
+    r = admin.put("/providers/scripts/miaero", {**base, "password": "clave-de-prueba-1"})
+    check(r.status_code == 200 and "miaero" in PROVIDERS, "reactivado")
+
+    # --- un script guardado que deja de cargar no tumba el servidor
+    with db.connect() as con:
+        db.save_provider_script(con, "roto", {**{k: v for k, v in base.items() if k != "key"}, "health_origin": "SVQ",
+                                              "health_destination": "TFN", "max_routes": None, "notes": "", "min_interval": 0,
+                                              "enabled": 1, "code": "import modulo_que_no_existe\n"}, "admin")
+    scripted.reload()
+    roto = {x["key"]: x for x in admin.get("/providers/scripts").json()["scripts"]}["roto"]
+    check(not roto["loaded"] and "ModuleNotFoundError" in roto["error"] and "roto" not in PROVIDERS and "miaero" in PROVIDERS,
+          "un script que no carga se marca con su error y los demás siguen")
+    check(admin.delete("/providers/scripts/roto").status_code == 204, "eliminar el script roto")
+
+    # --- una aerolínea en estudio con proveedor propio deja de salir «en estudio»
+    r = admin.post("/providers/scripts", {**base, "key": "easyjet", "label": "easyJet", "coverage": "universal",
+                                          "max_routes": "4", "password": "clave-de-prueba-1"})
+    check(r.status_code == 201 and PROVIDERS["easyjet"].max_routes == 4, "proveedor propio de cobertura universal")
+    check("easyjet" not in {c["key"] for c in admin.get("/providers").json()["candidates"]}, "…y ya no sale «en estudio»")
+    admin.delete("/providers/scripts/easyjet")
+
+    # --- interruptor general
+    scripted.ENABLED = False
+    check(admin.post("/providers/scripts/test", {**base, "password": "clave-de-prueba-1"}).status_code == 403,
+          "PROVIDER_SCRIPTS=0: no se puede probar ni guardar")
+    scripted.reload()
+    check("miaero" not in PROVIDERS, "PROVIDER_SCRIPTS=0: no se carga ninguno")
+    scripted.ENABLED = True
+    scripted.reload()
+
+    # --- eliminar: se quita de las vigilancias, el histórico se conserva
+    check(admin.delete("/providers/scripts/miaero").status_code == 204 and "miaero" not in PROVIDERS, "eliminar proveedor propio")
+    detail = admin.get(f"/watches/{w['id']}")
+    check(detail.status_code == 200 and detail.json()["watch"]["providers"] == ["google"], "la vigilancia ya no lo tiene")
+    with db.connect() as con:
+        kept = con.execute(text("SELECT count(*) FROM prices WHERE provider = 'miaero'")).scalar()
+    check(kept == 2 and admin.get(f"/watches/{w['id']}/charts").status_code == 200, "sus precios se conservan como histórico")
+    check(admin.get("/providers/scripts/miaero").status_code == 404, "ya no existe")
+    admin.delete(f"/watches/{w['id']}")
+
 
 def main():
     with TestClient(app) as raw:
@@ -727,6 +919,7 @@ def main():
 
         tid = trips_flow(client, admin_chan)
         providers_flow(client, admin_id, admin_chan)
+        scripts_flow(client, admin_chan)
         users_flow(client, admin_id)
         with db.connect() as con:
             check(db.get_trip(con, tid) is not None, "el viaje sigue ahí tras las demás pruebas")

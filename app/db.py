@@ -143,6 +143,28 @@ provider_health = Table(
     **_TABLE_OPTS,
 )
 
+# Proveedores propios: un script de Python escrito desde el panel (solo administradores) que cumple el
+# contrato de `app/providers/scripted.py`. La clave no cambia nunca (la usan precios, avisos y vigilancias).
+provider_scripts = Table(
+    "provider_scripts", metadata,
+    Column("key", String(50), primary_key=True),
+    Column("label", String(100), nullable=False),
+    Column("color", String(7), nullable=False),
+    Column("coverage", String(20), nullable=False),  # network | probe | universal
+    Column("max_routes", Integer),
+    Column("health_origin", IATA, nullable=False),
+    Column("health_destination", IATA, nullable=False),
+    Column("link_template", Text, nullable=False),
+    Column("notes", Text, nullable=False),
+    Column("min_interval", Double, nullable=False, server_default="1.5"),
+    Column("code", Text, nullable=False),
+    Column("enabled", Integer, nullable=False, server_default="1"),
+    Column("created_at", ISO, nullable=False),
+    Column("updated_at", ISO, nullable=False),
+    Column("updated_by", String(32), nullable=False),  # usuario que lo guardó por última vez
+    **_TABLE_OPTS,
+)
+
 # Qué canales avisan por cada vigilancia (solo del dueño de la vigilancia).
 watch_channels = Table(
     "watch_channels", metadata,
@@ -846,6 +868,10 @@ def cached_routes(con, provider: str, pairs, since_iso: str) -> dict[tuple[str, 
     return {(o, d): bool(op) for o, d, op in rows if (o, d) in wanted}
 
 
+def forget_routes(con, provider: str):
+    con.execute(delete(provider_routes).where(provider_routes.c.provider == provider))
+
+
 def save_routes(con, provider: str, results: dict[tuple[str, str], bool], checked_at: str):
     if not results:
         return
@@ -868,3 +894,40 @@ def save_health(con, provider: str, status: str, detail: list[dict], latency_ms:
 
 def list_health(con) -> dict[str, dict]:
     return {r["provider"]: {**r, "detail": json.loads(r["detail"])} for r in _all(con, select(provider_health))}
+
+
+# ---------------------------------------------------------- proveedores propios
+def list_provider_scripts(con) -> list[dict]:
+    return _all(con, select(provider_scripts).order_by(provider_scripts.c.created_at, provider_scripts.c.key))
+
+
+def get_provider_script(con, key: str) -> dict | None:
+    return _one(con, select(provider_scripts).where(provider_scripts.c.key == key))
+
+
+def save_provider_script(con, key: str, values: dict, username: str):
+    """Crea o actualiza el script de un proveedor propio."""
+    now = datetime.now().isoformat(timespec="seconds")
+    values = {**values, "updated_at": now, "updated_by": username}
+    if get_provider_script(con, key):
+        con.execute(update(provider_scripts).where(provider_scripts.c.key == key).values(**values))
+    else:
+        con.execute(insert(provider_scripts).values(key=key, created_at=now, **values))
+
+
+def delete_provider_script(con, key: str):
+    """Borra el proveedor y lo que lo ata a las vigilancias (cobertura, caché, prueba y plantilla de enlace).
+
+    Los precios y avisos ya guardados se conservan como histórico.
+    """
+    con.execute(delete(provider_scripts).where(provider_scripts.c.key == key))
+    con.execute(delete(watch_providers).where(watch_providers.c.provider == key))
+    forget_routes(con, key)
+    con.execute(delete(provider_health).where(provider_health.c.provider == key))
+    con.execute(delete(settings_t).where(settings_t.c.key == f"link_{key}"))
+
+
+def provider_usage(con, key: str) -> int:
+    """Vigilancias que tienen asignado el proveedor."""
+    return con.execute(select(func.count()).select_from(watch_providers)
+                       .where(watch_providers.c.provider == key)).scalar() or 0

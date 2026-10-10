@@ -76,6 +76,15 @@ def _network(prov, session, origin: str, fresh: bool = False) -> set[str]:
     return dests
 
 
+def forget(key: str):
+    """Olvida la cobertura guardada de un proveedor (en BD y en memoria): al cambiar el script de uno propio."""
+    with _networks_lock:
+        for k in [k for k in _networks if k[0] == key]:
+            del _networks[k]
+    with db.connect() as con:
+        db.forget_routes(con, key)
+
+
 def check(key: str, pairs: list[tuple[str, str]], max_age_days: float | None = CACHE_DAYS) -> Result:
     """Qué pares opera el proveedor. `max_age_days=None` ignora la caché (revalidación semanal)."""
     started = time.monotonic()

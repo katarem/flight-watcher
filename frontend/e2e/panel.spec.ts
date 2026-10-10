@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { expectAccessible, login } from './helpers'
+import { ADMIN, expectAccessible, login } from './helpers'
 
 test.describe('sesión', () => {
   test('sin sesión lleva al login recordando a dónde ibas @movil', async ({ page }) => {
@@ -293,12 +293,57 @@ test.describe('proveedores', () => {
     await expect(page.getByRole('region', { name: 'Cambio de divisas (BCE)' }).getByText('Accesible', { exact: true })).toBeVisible()
     await expectAccessible(page)
   })
+
+  test('crear, probar y eliminar un proveedor propio (script)', async ({ page }) => {
+    const key = `e2e${Date.now() % 100_000}`
+    const name = `Aerolínea ${key}`
+    await page.goto('/admin/providers')
+    await page.getByRole('link', { name: 'Nuevo proveedor' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Nuevo proveedor propio' })).toBeVisible()
+    await expect(page.getByLabel('Código', { exact: true })).toHaveValue(/def fetch_route/)
+    await expectAccessible(page)
+
+    await page.getByLabel('Clave', { exact: true }).fill(key)
+    await page.getByLabel('Nombre', { exact: true }).fill(name)
+    await page.getByLabel('Cobertura', { exact: true }).selectOption('universal')
+    await page.getByLabel('Ruta de prueba: origen').fill('svq')
+    await page.getByLabel('Ruta de prueba: destino').fill('bcn')
+    await page.getByLabel('Código', { exact: true }).fill([
+      'def fetch_route(api, origin, destination, start, max_months):',
+      '    api.log("ruta", origin, destination)',
+      '    return {start + timedelta(days=d): 40 + d for d in range(5, 9)}',
+    ].join('\n'))
+
+    const testCard = page.getByRole('region', { name: 'Probar sin guardar' })
+    await testCard.getByRole('button', { name: 'Probar el script' }).click()
+    await expect(testCard.getByRole('alert')).toContainText('Confirma tu contraseña')
+    await page.getByLabel('Tu contraseña').fill(ADMIN.password)
+    await testCard.getByRole('button', { name: 'Probar el script' }).click()
+    await expect(testCard.getByText('Accesible', { exact: true })).toBeVisible({ timeout: 20_000 })
+    await expect(testCard.getByText(/4 días con precio para SVQ→BCN; el más barato, 45 EUR/)).toBeVisible()
+    await expect(testCard.getByRole('table')).toContainText('SVQ→BCN')
+    await expect(testCard.getByLabel('Mensajes del script')).toHaveText('ruta SVQ BCN')
+    await expectAccessible(page)
+
+    await page.getByRole('button', { name: 'Crear proveedor' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: `Editar ${name}` })).toBeVisible()
+    await page.getByRole('link', { name: 'Proveedores', exact: true }).first().click()
+    const card = page.getByRole('region', { name, exact: true })
+    await expect(card.getByText('Script propio')).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Proveedores propios' })).toContainText(key)
+
+    await card.getByRole('link', { name: `Editar el script de ${name}` }).click()
+    await page.getByRole('button', { name: 'Eliminar' }).click()
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Eliminar' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Proveedores' })).toBeVisible()
+    await expect(page.getByRole('region', { name, exact: true })).toHaveCount(0)
+  })
 })
 
 test('en el móvil el menú lleva a todas las secciones y nada se sale de la pantalla @movil', async ({ page, isMobile }) => {
   test.skip(!isMobile, 'solo en móvil')
   await login(page)
-  for (const path of ['/', '/watches/1', '/watches/new', '/trips', '/trips/1', '/trips/new', '/profile', '/admin/users', '/admin/providers', '/settings', '/runs']) {
+  for (const path of ['/', '/watches/1', '/watches/new', '/trips', '/trips/1', '/trips/new', '/profile', '/admin/users', '/admin/providers', '/admin/providers/new', '/settings', '/runs']) {
     await page.goto(path)
     await page.waitForLoadState('networkidle')
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)

@@ -1,6 +1,8 @@
 import { Checkbox as RCheckbox, Switch as RSwitch } from 'radix-ui'
 import { Check } from 'lucide-react'
-import { forwardRef, useId, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react'
+import {
+  forwardRef, useId, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes,
+} from 'react'
 import { cn } from '@/lib/cn'
 
 const control =
@@ -12,6 +14,12 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
   { className, ...rest }, ref,
 ) {
   return <input ref={ref} className={cn(control, className)} {...rest} />
+})
+
+export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(function Textarea(
+  { className, ...rest }, ref,
+) {
+  return <textarea ref={ref} className={cn(control, 'h-auto py-2 leading-relaxed', className)} {...rest} />
 })
 
 export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(function Select(
@@ -96,7 +104,7 @@ export function Checkbox({ checked, onChange, children, className, disabled, des
 /** Grupo de campos con título (en formularios largos). */
 export function FormSection({ title, description, children }: { title: string; description?: ReactNode; children: ReactNode }) {
   return (
-    <fieldset className="space-y-4 rounded-2xl border border-line bg-surface p-4 shadow-card sm:p-5">
+    <fieldset className="min-w-0 space-y-4 rounded-2xl border border-line bg-surface p-4 shadow-card sm:p-5">
       <legend className="sr-only">{title}</legend>
       <div aria-hidden="true">
         <h2 className="text-base font-semibold tracking-tight">{title}</h2>

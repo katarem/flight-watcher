@@ -224,6 +224,10 @@ def with_coverage(data: dict, current: dict | None = None) -> dict:
     cov, errors = coverage.coverage_for(data["providers"], data["origin"], data["destination"], keep)
     if errors:
         raise Invalid(errors)
+    if keep:
+        # Los que ahora no están cargados (un proveedor propio desactivado o roto) no salen en el formulario,
+        # pero la vigilancia los conserva para cuando vuelvan (si no cambia la ruta).
+        cov |= {k: c for k, c in keep.items() if k not in PROVIDERS}
     return {**data, "coverage": cov}
 
 

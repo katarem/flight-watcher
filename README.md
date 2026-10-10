@@ -173,7 +173,7 @@ Aplicación React (carpeta `frontend/`) que habla con la API JSON del servidor (
   - Historial de comprobaciones y avisos enviados.
 - **Viajes:** el viaje más barato ahora con el enlace de cada tramo, las combinaciones más baratas, todas las noches de una fecha de ida y la evolución del total. Desde el formulario de un viaje se puede crear la vigilancia de vuelta que falte.
 - **Ejecuciones** y **Diagnóstico** para ver qué pasó en cada comprobación.
-- **Proveedores** (administradores): prueba de acceso a cada web, ver «Prueba de acceso» arriba.
+- **Proveedores** (administradores): prueba de acceso a cada web, ver «Prueba de acceso» arriba, y los proveedores propios (ver «Añadir otra aerolínea»).
 
 ### Desarrollo del panel
 
@@ -191,6 +191,38 @@ Para `npm run dev`, arranca antes la API: `uvicorn app.main:app --port 8000` des
 La API tiene documentación interactiva en `/api/v1/docs` (solo con sesión iniciada en el panel). Las peticiones que cambian algo necesitan la cabecera `X-Requested-With`, así que desde ahí solo funcionan las de lectura.
 
 ## Añadir otra aerolínea
+
+### Sin tocar el código: proveedor propio
+
+En **Proveedores → Nuevo proveedor** (solo administradores) se escribe un script de Python que cumple el contrato de proveedor:
+
+```python
+def network(api, origin):                # cobertura «Red de rutas publicada»
+    data = api.get_json(f"https://www.ejemplo.com/api/rutas/{origin}")
+    return [] if data is None else [r["destino"] for r in data]
+
+
+def fetch_route(api, origin, destination, start, max_months):
+    out = {}
+    for i in range(max_months):
+        data = api.get_json(f"https://www.ejemplo.com/api/precios/{origin}/{destination}",
+                            mes=add_months(start, i).strftime("%Y-%m"))
+        if data is None:                 # 404: no opera la ruta
+            break
+        for dia in data["dias"]:
+            out[date.fromisoformat(dia["fecha"])] = dia["precio"]          # en euros
+            # o DayPrice(día, precio, currency="GBP", stops=1) con otra moneda o con escalas
+    return out
+```
+
+- `fetch_route` devuelve `{fecha: precio}`, `{fecha: DayPrice}` o una lista de `DayPrice` (`{}` si no opera la ruta). Con la cobertura «Pregunta por cada ruta» hay que definir `probe(api, origin, destination)` → `True`/`False`; con «Cualquier ruta», nada más.
+- `api.get_json`, `api.post_json` y `api.request` respetan el turno y las pausas del proveedor, convierten 403/429/anti-bot en «bloqueado» y un 404 en `None`, y guardan la respuesta en Diagnóstico si está activo. `api.log(...)` escribe en el log y en la prueba del editor.
+- **Probar el script** lo carga y hace la prueba de acceso sin guardar nada, con una muestra de precios y, si falla, el error con su línea.
+- Al guardarlo activo aparece en todo el panel como cualquier otro proveedor. Desactivado no se carga; al eliminarlo se quita de las vigilancias y sus precios se conservan como histórico.
+
+**Ojo:** el script se ejecuta dentro del servidor con todos sus permisos (puede leer la base de datos y los secretos de los canales). Por eso solo lo escriben administradores, hay que confirmar la contraseña para probarlo y para guardarlo si cambia el código o se activa, y se anota quién lo guardó. Con `PROVIDER_SCRIPTS=0` no se carga ninguno.
+
+### En el código
 
 1. Crea `app/providers/<nombre>.py`. Si la web tiene un endpoint JSON accesible, hereda de `ApiProvider` e implementa `fetch_route` (mira `vueling.py`, `ryanair.py` o `wizzair.py`). Declara su cobertura (`coverage = "network"` con `network()`, `"probe"` con `probe()` o `"universal"`), su ruta de prueba (`health_route`) y, si hace falta, una pausa mayor (`min_interval`). Las peticiones con `get_json`/`post_json` ya respetan el turno del proveedor. Si hay que recorrer la web:
 
@@ -218,6 +250,7 @@ Para añadir otra ciudad (como `TCI`) o un grupo (como `canarias`), añádelo a 
 - El acceso es con usuario y contraseña (sesión por cookie firmada, `SameSite=Lax`; además, toda petición que cambia algo exige la cabecera `X-Requested-With`, que un formulario de otra web no puede enviar). Las contraseñas se guardan con scrypt; cambiarla cierra las demás sesiones y varios fallos seguidos bloquean el inicio de sesión unos minutos. Si publicas el panel, ponlo tras HTTPS y define `COOKIE_SECURE=1`.
 - Los webhooks y tokens de los canales se guardan en la base de datos en texto plano (JSON): protege la BD y su copia de seguridad.
 - Solo se aceptan webhooks de Discord con la URL oficial y los campos secretos nunca se devuelven al navegador.
+- Los proveedores propios ejecutan código Python en el servidor: solo un administrador puede escribirlos, y hace falta su contraseña para probarlos o activarlos. Si nadie los va a usar, desactívalos con `PROVIDER_SCRIPTS=0`.
 - Respeta los términos de uso de cada aerolínea; una comprobación al día es una frecuencia razonable.
 
 ## Estructura
@@ -226,7 +259,7 @@ Para añadir otra ciudad (como `TCI`) o un grupo (como `canarias`), añádelo a 
 app/
   __init__.py     versión (__version__)
   main.py         servidor: API, avatares, protección CSRF y el panel compilado (app/web)
-  api/            API JSON /api/v1: sesión, vigilancias, viajes, perfil y canales, administración
+  api/            API JSON /api/v1: sesión, vigilancias, viajes, perfil y canales, administración, proveedores propios
   auth.py         contraseñas (scrypt), validación de usuarios y freno de intentos de login
   avatars.py      guardado y validación de avatares
   checker.py      ronda de comprobaciones + reglas de aviso
@@ -239,7 +272,8 @@ app/
   notify.py       tipos de canal (Discord / Telegram) y envío
   db.py           acceso a datos (SQLAlchemy Core: SQLite, PostgreSQL, MySQL, MariaDB)
   migrations/     migraciones de Alembic
-  providers/      base.py (abstracción), extract.py, vueling.py, ryanair.py, wizzair.py, google.py, candidates.py
+  providers/      base.py (abstracción), extract.py, vueling.py, ryanair.py, wizzair.py, google.py, candidates.py,
+                  scripted.py (proveedores propios: contrato, carga y registro)
 scripts/          build_places.py (regenera el catálogo de aeropuertos desde OurAirports)
 frontend/         panel React + Vite + TypeScript (src/pages, src/components, src/api) y pruebas e2e
 tests/

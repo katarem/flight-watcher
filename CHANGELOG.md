@@ -1,5 +1,17 @@
 # Cambios
 
+## 1.6.0 — 2026-10-10
+
+### Añadido
+- **Proveedores propios** (solo administradores): añadir una aerolínea sin tocar el código de la aplicación, desde **Proveedores → Nuevo proveedor**. Se escribe un script de Python que cumple el contrato de proveedor (`fetch_route` y, según la cobertura, `network` o `probe`), con nombre, color, cobertura, ruta de prueba, pausa entre peticiones y plantilla de enlace. Sus peticiones van por el mismo turno que las de los proveedores de serie (una a la vez, pausas, 403/429/anti-bot = bloqueado, copia en Diagnóstico).
+- **Probar sin guardar**: carga el script del formulario y hace la prueba de acceso (cobertura y precios de un mes) desde la IP del servidor, con una muestra de los precios, los mensajes de `api.log` y, si falla, el error con la línea del script.
+- Un proveedor propio activo aparece solo en los formularios, la comprobación de rutas, las rondas, las gráficas, los avisos, la zona Proveedores y las plantillas de enlace de Ajustes. Si una aerolínea en estudio pasa a tener proveedor propio, deja de salir «en estudio».
+- Migración `0006` (solo una tabla nueva: `provider_scripts`).
+
+### Seguridad
+- El script se ejecuta en el servidor con sus mismos permisos. Para probarlo, y para guardarlo si cambia el código o se activa, hay que confirmar la contraseña (con freno tras varios fallos); se anota quién lo guardó y el log registra cada cambio. `PROVIDER_SCRIPTS=0` los desactiva todos (ni se cargan).
+- Un script que deja de cargar (error de sintaxis, una importación que falta…) no tumba el servidor: se marca con su error y no se usa.
+
 ## 1.5.0 — 2026-10-10
 
 ### Añadido

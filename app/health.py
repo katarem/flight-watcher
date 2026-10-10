@@ -70,7 +70,8 @@ def _coverage_step(prov, origin, destination) -> dict:
     return _step("Cobertura", run)
 
 
-def _prices_step(prov, origin, destination, browser_factory=None) -> dict:
+def _prices_step(prov, origin, destination, browser_factory=None, sink: list | None = None) -> dict:
+    """Precios de un mes. Si se pasa `sink`, deja ahí los precios encontrados."""
     def run():
         kw = {"max_stops": 0} if prov.stops_filter else {}
         if prov.needs_browser:
@@ -81,6 +82,8 @@ def _prices_step(prov, origin, destination, browser_factory=None) -> dict:
                 found = prov.fetch_prices(page, origin, destination, 1, None)
         else:
             found = prov.fetch_prices(None, origin, destination, 1, None, **kw)
+        if sink is not None:
+            sink.extend(found)
         if not found:
             return "empty", f"Sin precios para {origin}→{destination} en el próximo mes (¿ruta sin vuelos ahora?)."
         cheapest = min(found, key=lambda p: p.price)
@@ -133,6 +136,40 @@ def run(keys=None, origin: str | None = None, destination: str | None = None, br
             db.save_health(con, k, "timeout", [step], res["latency_ms"], res["checked_at"])
         out.append(res)
     return out
+
+
+def check_draft(prov, origin: str, destination: str, timeout: float = TIMEOUT) -> dict:
+    """Prueba de un proveedor propio sin guardar (editor de scripts): mismos pasos, sin tocar `provider_health`.
+
+    Devuelve además una muestra de los precios y los mensajes de `api.log` del script.
+    """
+    found: list = []
+    prov.logs = []
+    started = time.monotonic()
+
+    def steps():
+        out = [_coverage_step(prov, origin, destination)]
+        if out[0]["status"] != "blocked":
+            out.append(_prices_step(prov, origin, destination, sink=found))
+        return out
+
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="script")
+    fut = pool.submit(steps)
+    wait([fut], timeout=timeout)
+    pool.shutdown(wait=False)
+    if fut.done():
+        result = fut.result()
+    else:
+        result = [{"name": "Prueba", "status": "timeout", "detail": f"El script no ha terminado en {int(timeout)} s.",
+                   "http_status": None, "ms": int(timeout * 1000)}]
+    route = f"{origin}→{destination}"
+    return {
+        "key": prov.key, "status": worst(result), "route": route, "steps": [{**s, "route": route} for s in result],
+        "latency_ms": int((time.monotonic() - started) * 1000), "checked_at": _now(),
+        "sample": [{"day": p.day.isoformat(), "price": p.price, "currency": p.currency, "origin": p.origin,
+                    "destination": p.destination, "stops": p.stops} for p in sorted(found, key=lambda p: p.day)[:62]],
+        "n_prices": len(found), "logs": list(prov.logs),
+    }
 
 
 def check_fx() -> dict:
