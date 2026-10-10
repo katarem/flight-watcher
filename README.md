@@ -58,9 +58,9 @@ Para añadir otro tipo de canal (Slack, correo…), añade una entrada a `KINDS`
 
 ## Versiones e imagen Docker
 
-La versión vive en `app/__init__.py` (`__version__`, hoy **1.1.0**; se ve en el pie del panel) y los cambios se anotan en [CHANGELOG.md](CHANGELOG.md).
+La versión vive en `app/__init__.py` (`__version__`, hoy **1.3.0**; se ve en el pie del panel) y los cambios se anotan en [CHANGELOG.md](CHANGELOG.md).
 
-El CI (`.github/workflows/docker.yml`) ejecuta el test de humo y comprueba que las migraciones están al día, y publica la imagen en **ghcr.io/katarem/flight-watcher** (`linux/amd64`):
+El CI (`.github/workflows/docker.yml`) ejecuta el test de humo, comprueba que las migraciones están al día, pasa el lint, los tests y las pruebas en navegador del panel, y publica la imagen en **ghcr.io/katarem/flight-watcher** (`linux/amd64`):
 
 | Evento | Etiquetas publicadas |
 |---|---|
@@ -114,13 +114,29 @@ Puedes limitar cada vigilancia a un rango de fechas; sin límites se comprueban 
 
 ## Panel
 
-- **Panel:** mejor precio actual por web y ruta, con enlace, etiqueta *chollo*, errores y últimos avisos.
+Aplicación React (carpeta `frontend/`) que habla con la API JSON del servidor (`/api/v1`). Tema claro u oscuro (sigue al sistema o se elige en el menú de usuario), pensado para móvil y accesible (navegable con teclado, revisado con axe contra WCAG 2.1 AA).
+
+- **Panel:** cada vigilancia con el mejor precio actual por web, enlace a esa fecha, etiqueta *chollo*, errores, minigráfica de tendencia, y los últimos avisos y ejecuciones.
 - **Detalle de una vigilancia:**
-  - Gráfica de la **evolución del precio mínimo** por web.
-  - Gráfica del **precio actual por fecha de vuelo** (qué días salen baratos en cada web).
-  - **Historial de una fecha concreta** (cómo cambia el precio del mismo vuelo con el tiempo).
-  - Tabla de mejores precios con enlace (filtrable por web), historial de comprobaciones y avisos enviados.
+  - **Calendario de precios** de la última comprobación: color según lo barato que sale cada día, borde para los chollos, filtro por web. Pulsar un precio abre esa fecha en la web; pulsar el día muestra su historial.
+  - Gráficas de la **evolución del precio mínimo** por web, del **precio actual por fecha de vuelo** y del **historial de una fecha concreta**.
+  - Historial de comprobaciones y avisos enviados.
 - **Ejecuciones** y **Diagnóstico** para ver qué pasó en cada comprobación.
+
+### Desarrollo del panel
+
+Necesita Node 22. El servidor de Python sirve el panel ya compilado desde `app/web` (la imagen Docker lo compila sola).
+
+```bash
+cd frontend
+npm ci
+npm run build          # compila a ../app/web (lo que sirve FastAPI)
+npm run dev            # Vite en :5173 con recarga en caliente; reenvía /api y /avatars a :8000
+```
+
+Para `npm run dev`, arranca antes la API: `uvicorn app.main:app --port 8000` desde la raíz. Comprobaciones: `npm run lint`, `npm run typecheck`, `npm test` (Vitest) y `npm run e2e` (Playwright contra la app real con datos simulados, `tests/e2e_server.py`; antes `npm run build` y `npx playwright install chromium`, o `FW_CHROMIUM=/ruta/chrome`).
+
+La API tiene documentación interactiva en `/api/v1/docs` (solo con sesión iniciada en el panel). Las peticiones que cambian algo necesitan la cabecera `X-Requested-With`, así que desde ahí solo funcionan las de lectura.
 
 ## Añadir otra aerolínea
 
@@ -147,7 +163,7 @@ Para añadir otro código de ciudad (como `TCI`), añádelo a `METRO_AREAS` en `
 
 ## Seguridad
 
-- El acceso es con usuario y contraseña (sesión por cookie firmada, `SameSite=Lax`). Las contraseñas se guardan con scrypt; cambiarla cierra las demás sesiones y varios fallos seguidos bloquean el inicio de sesión unos minutos. Si publicas el panel, ponlo tras HTTPS y define `COOKIE_SECURE=1`.
+- El acceso es con usuario y contraseña (sesión por cookie firmada, `SameSite=Lax`; además, toda petición que cambia algo exige la cabecera `X-Requested-With`, que un formulario de otra web no puede enviar). Las contraseñas se guardan con scrypt; cambiarla cierra las demás sesiones y varios fallos seguidos bloquean el inicio de sesión unos minutos. Si publicas el panel, ponlo tras HTTPS y define `COOKIE_SECURE=1`.
 - Los webhooks y tokens de los canales se guardan en la base de datos en texto plano (JSON): protege la BD y su copia de seguridad.
 - Solo se aceptan webhooks de Discord con la URL oficial y los campos secretos nunca se devuelven al navegador.
 - Respeta los términos de uso de cada aerolínea; una comprobación al día es una frecuencia razonable.
@@ -157,7 +173,8 @@ Para añadir otro código de ciudad (como `TCI`), añádelo a `METRO_AREAS` en `
 ```
 app/
   __init__.py     versión (__version__)
-  main.py         panel web, sesiones, perfil, administración de usuarios y API de gráficas
+  main.py         servidor: API, avatares, protección CSRF y el panel compilado (app/web)
+  api/            API JSON /api/v1: sesión, vigilancias, perfil y canales, administración
   auth.py         contraseñas (scrypt), validación de usuarios y freno de intentos de login
   avatars.py      guardado y validación de avatares
   checker.py      ronda de comprobaciones + reglas de aviso
@@ -166,13 +183,14 @@ app/
   db.py           acceso a datos (SQLAlchemy Core: SQLite, PostgreSQL, MySQL, MariaDB)
   migrations/     migraciones de Alembic
   providers/      base.py (abstracción), extract.py, vueling.py, ryanair.py
-  templates/, static/
+frontend/         panel React + Vite + TypeScript (src/pages, src/components, src/api) y pruebas e2e
 tests/
   smoke_test.py         extremo a extremo con datos simulados (sin red)
   browser_mock_test.py  Playwright real contra una web simulada
+  e2e_server.py         servidor con datos simulados para las pruebas del panel
 ```
 
-Pruebas (necesitan además `pip install httpx`): `python -m tests.smoke_test` y `python -m tests.browser_mock_test` (esta última necesita Chromium; con uno propio: `FW_CHROMIUM=/ruta/chromium`).
+Pruebas de Python (necesitan además `pip install httpx`): `python -m tests.smoke_test` y `python -m tests.browser_mock_test` (esta última necesita Chromium; con uno propio: `FW_CHROMIUM=/ruta/chromium`). Las del panel, en «Desarrollo del panel».
 
 ## Limitaciones conocidas
 

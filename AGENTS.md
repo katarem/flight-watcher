@@ -4,7 +4,8 @@ Panel web + bot multiusuario que vigila precios de vuelos (solo ida) en Vueling 
 
 ## Stack
 
-- Python 3.12, FastAPI + Jinja2 (server-side rendering), Chart.js en `app/static/charts.js`.
+- Python 3.12, FastAPI como **API JSON** (`/api/v1`, paquete `app/api/`) que además sirve el panel ya compilado (`app/web`).
+- Panel: **React 19 + Vite + TypeScript** en `frontend/` (React Router, TanStack Query, Tailwind CSS v4, primitivas accesibles de Radix, Motion para animaciones, Recharts para gráficas, sonner para avisos emergentes). `npm run build` escribe en `../app/web`; la imagen Docker lo compila en una etapa de Node.
 - SQLAlchemy **Core** (no ORM) en `app/db.py`: tablas declaradas con `Table` (fuente de verdad del esquema). Motor por `DB_ENGINE` (`sqlite` por defecto con WAL, `postgres` → psycopg, `mysql`/`mariadb` → pymysql).
 - Migraciones con **Alembic** en `app/migrations/` (dentro de `app/` porque el Dockerfile solo copia esa carpeta). `db.init()` ejecuta `upgrade head` al arrancar; no hay `create_all`.
 - APIs JSON públicas vía `requests` (Vueling, Ryanair) y Playwright/Chromium headless solo para proveedores sin API (hoy ninguno registrado; `CalendarProvider` queda como base y lo cubren los tests). El navegador solo se abre si algún proveedor de la ronda lo necesita.
@@ -16,7 +17,8 @@ Panel web + bot multiusuario que vigila precios de vuelos (solo ida) en Vueling 
 ```
 app/
   __init__.py    `__version__`: única fuente de la versión (pie del panel, User-Agent, imagen Docker, CI)
-  main.py        rutas FastAPI: login/sesión, panel, CRUD de vigilancias (por usuario), detalle, API de gráficas, perfil, administración de usuarios (admin), ajustes y diagnóstico (admin), ejecuciones
+  main.py        app FastAPI: middleware CSRF y de sesión, manejadores de error (JSON en castellano), /avatars, estáticos con huella (/assets) y el panel (cualquier otra ruta → index.html)
+  api/           API JSON /api/v1: deps.py (sesión, permisos, Invalid, vistas saneadas), session.py (entrar/salir, /me, /meta, /status, /run), watches.py (CRUD, detalle, gráficas, avisos, ejecuciones), account.py (perfil, avatar, contraseña, canales propios y de admin), admin.py (usuarios, ajustes, diagnóstico)
   auth.py        hash scrypt de contraseñas, validación de usuario/clave, LoginThrottle (en memoria)
   avatars.py     guardado de avatares en DATA_DIR/avatars (tipo por magic bytes, 2 MB, sin SVG)
   checker.py     ronda de comprobaciones (por vigilancia × proveedor) + reglas de aviso (deal_reason)
@@ -24,16 +26,24 @@ app/
   db.py          esquema (SQLAlchemy Core), motor/conexión, init() → Alembic, ajustes por defecto (DEFAULT_SETTINGS), consultas, bootstrap_admin(), seed_defaults()
   migrations/    Alembic: env.py (usa db.engine/db.metadata), versions/0001_esquema_inicial.py, 0002_usuarios.py, 0003_canales.py
   notify.py      tipos de canal en `KINDS` (campos, validación, envío; hoy Discord y Telegram) y `send*(channels, …)`: añadir un tipo = una entrada ahí
-  fmt.py         formateo de fechas/precios para plantillas y avisos
-  config.py      DATA_DIR, DEBUG_DIR, DB_ENGINE, DB_PATH (SQLite), DB_HOST/PORT/NAME/USER/PASSWORD
+  fmt.py         formateo de fechas/precios para los avisos (el panel tiene el mismo criterio en frontend/src/lib/format.ts)
+  config.py      DATA_DIR, DEBUG_DIR, WEB_DIR (panel compilado), DB_ENGINE, DB_PATH (SQLite), DB_HOST/PORT/NAME/USER/PASSWORD
   providers/
     base.py      Provider (abstracto), ApiProvider (JSON sin navegador), CalendarProvider (Playwright), DayPrice, ProviderError
     extract.py   parseo de precios para CalendarProvider: respuestas JSON de red (recursivo) + celdas del DOM
     vueling.py, ryanair.py  ApiProvider
     __init__.py  registro PROVIDERS, METRO_AREAS (TCI → TFN, TFS), routes(), link_for()
-  templates/, static/
+  web/           build del panel (generado, no versionado)
+frontend/
+  src/api/       client.ts (fetch + cabecera CSRF + 401 → login), queries.ts (TanStack Query y claves), types.ts (respuestas de la API)
+  src/components/ ui/ (botón, campos, tarjetas, diálogos y menús Radix…), layout/AppShell.tsx (cabecera, menú móvil, banner de ronda, pie), watch/ (tarjetas de web, calendario, gráficas, tablas), account/ (avatar, canales)
+  src/pages/     una por pantalla; src/routes/router.tsx (rutas, carga diferida de detalle y administración) y guards.tsx (RequireAuth/RequireAdmin)
+  src/lib/       format.ts, calendar.ts (+ tests Vitest), theme.ts, hooks.ts (useTitle, useRunNow)
+  e2e/           Playwright + axe contra la app real (tests/e2e_server.py)
 tests/
-  smoke_test.py         extremo a extremo con datos simulados, sin red
+  smoke_test.py         extremo a extremo con datos simulados, sin red (incluye la API y cómo se sirve el panel)
+  fakes.py              dobles compartidos: navegador, proveedores con precios simulados y envío de avisos
+  e2e_server.py         app real con BD temporal y datos simulados para las pruebas del panel
   browser_mock_test.py  Playwright real contra una web simulada
 ```
 
@@ -56,7 +66,7 @@ tests/
 
 ## Versiones y CI/CD
 
-`__version__` en `app/__init__.py` + entrada en `CHANGELOG.md` en cada versión. `.github/workflows/docker.yml`: tests (smoke + `alembic check`) y, si pasan, imagen `linux/amd64` a `ghcr.io/katarem/flight-watcher` (`latest`+sha en `main`; `X.Y.Z`/`X.Y`/`latest` con la etiqueta `vX.Y.Z`, que debe coincidir con `__version__`). El `docker-compose.yml` usa esa imagen (`FW_VERSION`) y conserva `build: .`.
+`__version__` en `app/__init__.py` + entrada en `CHANGELOG.md` en cada versión. `.github/workflows/docker.yml`: tests (smoke + `alembic check`), panel (lint, `tsc`, Vitest, build y Playwright + axe) y, si pasan, imagen `linux/amd64` a `ghcr.io/katarem/flight-watcher` (`latest`+sha en `main`; `X.Y.Z`/`X.Y`/`latest` con la etiqueta `vX.Y.Z`, que debe coincidir con `__version__`). El `docker-compose.yml` usa esa imagen (`FW_VERSION`) y conserva `build: .`.
 
 ## Cómo ejecutar
 
@@ -64,9 +74,13 @@ tests/
 cp .env.example .env && docker compose up -d --build   # panel en http://localhost:8000
 python -m tests.smoke_test                             # sin red
 python -m tests.browser_mock_test                      # necesita Chromium (FW_CHROMIUM=/ruta si usas el tuyo)
+cd frontend && npm ci && npm run build                 # panel → app/web
+npm run dev                                            # Vite :5173, reenvía /api y /avatars a uvicorn en :8000
+npm run lint && npm run typecheck && npm test          # ESLint, tsc, Vitest
+npm run e2e                                            # Playwright + axe (tras build; FW_CHROMIUM=/ruta opcional)
 ```
 
-Variables de entorno: `PANEL_USER` / `PANEL_PASSWORD` (credenciales del **admin inicial**, solo si aún no hay ningún admin; sin contraseña se genera una y se escribe en el log), `SECRET_KEY` (firma de cookies; si falta se crea `DATA_DIR/.secret_key`), `COOKIE_SECURE` (`1` con HTTPS), `DATA_DIR` (por defecto `./data`; en Docker es `/data` y la carpeta del host se elige con `DATA_PATH` en el compose), `DB_ENGINE` / `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD`, `SEED_DEFAULTS` (`1` por defecto; `0` desactiva las vigilancias iniciales), `FW_CHROMIUM`, `TZ`.
+Variables de entorno: `PANEL_USER` / `PANEL_PASSWORD` (credenciales del **admin inicial**, solo si aún no hay ningún admin; sin contraseña se genera una y se escribe en el log), `SECRET_KEY` (firma de cookies; si falta se crea `DATA_DIR/.secret_key`), `COOKIE_SECURE` (`1` con HTTPS), `DATA_DIR` (por defecto `./data`; en Docker es `/data` y la carpeta del host se elige con `DATA_PATH` en el compose), `DB_ENGINE` / `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD`, `SEED_DEFAULTS` (`1` por defecto; `0` desactiva las vigilancias iniciales), `WEB_DIR` (por defecto `app/web`), `FW_CHROMIUM`, `TZ`.
 
 ## Convenciones
 
@@ -74,10 +88,13 @@ Variables de entorno: `PANEL_USER` / `PANEL_PASSWORD` (credenciales del **admin 
 - Acceso a BD siempre con `with db.connect() as con:` (commit/rollback automáticos); las funciones de `db.py` reciben `con` y devuelven `dict` (nunca objetos de SQLAlchemy), así el resto de la app no sabe qué motor hay. Nada de SQL específico de un motor fuera de `db.py` (el upsert de `settings` elige dialecto ahí).
 - Los `except Exception` amplios llevan `# noqa: BLE001` y solo donde el fallo de un tercero (web, navegador) no debe tumbar la ronda.
 - Añadir una aerolínea: nueva clase en `app/providers/<nombre>.py` (preferir `ApiProvider` con el endpoint JSON que usa la web; `CalendarProvider` solo si no hay otra vía) y añadirla al dict `PROVIDERS` de `providers/__init__.py`. Formularios, gráficas, avisos y plantilla de enlace en Ajustes la recogen solos.
-- Los campos secretos (webhook, token) nunca se devuelven al navegador; el webhook de Discord se valida contra la URL oficial. A las plantillas solo llegan usuarios saneados con `_public()` y canales saneados con `_channel_rows()` (nunca el hash ni la `config` de un canal); en los formularios `notify.view_fields` solo indica si hay un secreto guardado y un secreto vacío al guardar conserva el actual.
-- **Usuarios y permisos:** autenticación por sesión (`SessionMiddleware`, cookie `fw_session`); `require_login` es dependencia global (salvo `/login`), `current_user` da el usuario y `require_admin` protege `/admin/users*`, `/settings` y `/debug`. Una vigilancia solo existe para su dueño: toda ruta con `wid` pasa por `_own_watch()` (404 para otro usuario, admin incluido). Cualquier consulta nueva de vigilancias/avisos/ejecuciones debe filtrar por `user_id`. **Canales:** `_channel_routes()` registra las mismas pantallas para el propio usuario (`/profile/channels…`) y para el admin sobre cualquier usuario (`/admin/users/{uid}/channels…`); un canal solo es accesible bajo su `user_id` (404 si no coincide) y al asignar canales a una vigilancia solo se aceptan los del dueño (`_own_channel_ids`).
-- Sin CSS/JS frameworks: plantillas Jinja + `style.css` + `charts.js`. En las plantillas, los estáticos se enlazan con `{{ asset['style.css'] }}` (URL con huella del contenido, calculada al arrancar, para que nunca se quede una versión vieja en caché del navegador o de un CDN); un estático nuevo se añade al dict `asset` de `main.py`.
-- Detalle de una vigilancia: el calendario de precios lo arma `_calendar()` en `main.py` (meses → semanas → días con precios de la última comprobación y nivel 1–4 por cuartil del mínimo del día).
+- Los campos secretos (webhook, token) nunca se devuelven al navegador; el webhook de Discord se valida contra la URL oficial. La API solo devuelve usuarios saneados con `deps.public()` y canales saneados con `deps.channel_rows()` (nunca el hash ni la `config` de un canal); al editar un canal, `notify.view_fields` solo indica si hay un secreto guardado y un secreto vacío al guardar conserva el actual.
+- **API:** todo bajo `/api/v1` (`app/api/__init__.py`). Solo `POST/DELETE /session` son públicas; el resto cuelga del router `private` con `require_login`. Respuestas JSON con objetos con nombre (`{"watch": …}`, `{"watches": [...]}`); los errores para el usuario se lanzan con `deps.Invalid(errores, status)` → `{"detail", "errors": [...]}` (422 por defecto) y se muestran tal cual en el panel, así que van en castellano. Los cuerpos se validan con modelos Pydantic de tipos laxos y la validación de verdad (con mensajes) está en funciones como `watches.parse_watch`.
+- **CSRF:** el middleware `csrf_guard` rechaza (403) cualquier petición no GET a `/api/` sin la cabecera `X-Requested-With`; el cliente del panel (`frontend/src/api/client.ts`) la pone siempre. Los tests usan la clase `Api` del smoke test, que también la pone.
+- **Usuarios y permisos:** autenticación por sesión (`SessionMiddleware`, cookie `fw_session`); `deps.require_login` carga el usuario, `current_user` lo da y `require_admin` protege el router de `api/admin.py` (usuarios, ajustes, diagnóstico). Una vigilancia solo existe para su dueño: toda ruta con `wid` pasa por `deps.own_watch()` (404 para otro usuario, admin incluido). Cualquier consulta nueva de vigilancias/avisos/ejecuciones debe filtrar por `user_id`. **Canales:** `account._channel_routes()` registra las mismas rutas para el propio usuario (`/channels…`) y para el admin sobre cualquier usuario (`/users/{uid}/channels…`); un canal solo es accesible bajo su `user_id` (404 si no coincide) y al asignar canales a una vigilancia solo se aceptan los del dueño (`deps.own_channel_ids`).
+- **Panel (frontend):** mismas URL que el panel anterior (`/watches/{id}` sale en los avisos). Cada pantalla en `src/pages`, datos con los hooks de `src/api/queries.ts` (claves en `keys`; tras una mutación se invalida la clave afectada) y mutaciones con `useMutation` + `toast`. Estilos solo con Tailwind y los colores del tema (variables `--fw-*` en `src/index.css`, que cambian con `data-theme`); no usar colores sueltos salvo los de cada proveedor/tipo de canal. Componentes interactivos sobre Radix (`src/components/ui`). Accesibilidad obligatoria: etiquetas en todos los controles (`Field`), `aria-label` en botones de solo icono, enlaces dentro de texto subrayados, contraste AA (lo comprueba axe en `npm run e2e`) y animaciones que respetan `prefers-reduced-motion` (`MotionConfig reducedMotion="user"` + CSS). Textos del panel en castellano de España.
+- El servidor sirve el build: `/assets/*` con caché inmutable (Vite pone la huella en el nombre), `index.html` con `no-cache` y cualquier ruta que no sea `api/`, `avatars/` ni `assets/` devuelve `index.html` (enrutado en el navegador). Las páginas pesadas (detalle con gráficas, administración) se cargan aparte con `lazy` en `router.tsx`.
+- Detalle de una vigilancia: `GET /watches/{id}` trae resumen por web, precios de la última comprobación, comprobaciones y avisos; el calendario lo arma `buildCalendar()` en `frontend/src/lib/calendar.ts` (meses → semanas → días, nivel 1–4 por cuartil del mínimo del día).
 
 ## Gotchas
 
@@ -99,7 +116,8 @@ Variables de entorno: `PANEL_USER` / `PANEL_PASSWORD` (credenciales del **admin 
 - Sesión: la cookie guarda `uid` y una huella del hash de la contraseña; el usuario se recarga de BD en cada petición, así que desactivar/borrar o cambiar la clave cierra las sesiones al instante. Un admin no puede cambiarse a sí mismo el rol ni desactivarse, y siempre debe quedar un admin activo.
 - `bootstrap_admin()` (en cada arranque): si no hay admin lo crea; también asigna al admin las vigilancias sin dueño y convierte los antiguos ajustes globales `discord_webhook`/`telegram_*` en canales del admin asignados a todas sus vigilancias (y `notify_errors` a su fila; los borra de `settings`). Es la vía de actualización de BD anteriores a los usuarios. `seed_defaults(user_id)` siembra las vigilancias iniciales para el admin.
 - **SQLite + Alembic + CASCADE:** Alembic cambia columnas recreando la tabla (DROP + copia) y con `foreign_keys=ON` el `ON DELETE CASCADE` borra los datos hijos (vigilancias, precios…). Por eso `db.init()` desactiva las claves foráneas durante las migraciones (el `PRAGMA` solo vale fuera de transacción) y las reactiva al terminar. Al añadir una migración que toque tablas padre, probarla sobre una BD **con datos** (BD en la revisión anterior con filas en `watches/prices/alerts/runs`) y comprobar que los recuentos no cambian. En las migraciones, las tablas ligeras (`sa.table`) no sirven para `inserted_primary_key`: declara `sa.Table` con su PK.
-- Los tests inician sesión con el admin de `PANEL_USER`/`PANEL_PASSWORD` y usan `TestClient` por usuario (cada cliente conserva su cookie).
+- Los tests inician sesión con el admin de `PANEL_USER`/`PANEL_PASSWORD` y usan un `Api` (envoltorio de `TestClient` con la cabecera CSRF) por usuario (cada cliente conserva su cookie). El smoke test crea un `WEB_DIR` falso para probar cómo se sirve el panel sin depender de Node.
+- Pruebas del panel (`frontend/e2e`): un único servidor (`tests/e2e_server.py`, puerto 8765) compartido por todas, en serie; fuera de CI se reutiliza si ya está arrancado, así que los datos que crean deben tener nombres únicos o borrarse al final. `expectAccessible()` espera a que acaben las animaciones antes de pasar axe.
 - Solo ida por vigilancia; para ida y vuelta se crean dos vigilancias.
 - Webhook y token se guardan en texto plano en la BD: no exponer el panel sin autenticación.
 - Multi-motor (verificado 2026-09-30 con el smoke test y `alembic check` contra postgres:16, mariadb:11 y mysql:8.4): precios en `Double` (en MySQL `Float` es precisión simple), fechas como texto ISO (`String`), tablas `utf8mb4`, `pool_pre_ping` porque MySQL corta conexiones inactivas, y `PRAGMA foreign_keys=ON` en cada conexión SQLite para que funcione el `CASCADE`. Las columnas `key` y `trigger` son palabras reservadas en MySQL: SQLAlchemy las entrecomilla, no escribir SQL crudo con ellas.

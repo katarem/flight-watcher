@@ -1,7 +1,0 @@
-{# Avatar redondo: la imagen subida o, si no hay, las iniciales sobre un color derivado del id.
-   width/height en el <img> limitan el tamaño aunque el CSS no haya cargado (o esté en caché una versión vieja). #}
-{% macro avatar(u, size='') %}
-{% set px = {'sm': 29, 'lg': 80}.get(size, 38) %}
-{% if u.avatar %}<img class="avatar {{ size }}" src="/avatars/{{ u.avatar }}" alt="" loading="lazy" width="{{ px }}" height="{{ px }}">
-{%- else %}<span class="avatar {{ size }}" style="--h: {{ ((u.id or 0) * 47) % 360 }}" aria-hidden="true">{{ (u.display_name or u.username or '?')[:1]|upper }}</span>{% endif %}
-{% endmacro %}
