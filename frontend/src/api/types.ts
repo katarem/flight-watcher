@@ -277,6 +277,8 @@ export interface ProviderInfo {
   verified: string | null
   notes: string
   last: { status: HealthStatus; detail: HealthStep[]; latency_ms: number; checked_at: string } | null
+  /** Proveedor propio (script guardado desde el panel). */
+  scripted: boolean
 }
 
 export interface Candidate {
@@ -305,6 +307,52 @@ export interface CandidateResult extends Candidate {
   status: HealthStatus
   steps: HealthStep[]
   checked_at: string
+}
+
+/** Proveedor propio: script de Python que cumple el contrato de app/providers/scripted.py. */
+export interface ProviderScript {
+  key: string
+  label: string
+  color: string
+  coverage: Coverage
+  max_routes: number | null
+  health_origin: string
+  health_destination: string
+  link_template: string
+  notes: string
+  min_interval: number
+  enabled: boolean
+  created_at: string
+  updated_at: string
+  updated_by: string
+  /** Cargado y en uso (activo y sin errores). */
+  loaded: boolean
+  /** Por qué no se pudo cargar (activo pero roto). */
+  error: string | null
+  n_watches: number
+  code?: string
+}
+
+export interface ProviderScriptsData {
+  scripts: ProviderScript[]
+  /** false si el servidor los desactiva (PROVIDER_SCRIPTS=0). */
+  enabled: boolean
+  template: string
+}
+
+export interface ScriptSample {
+  day: string
+  price: number
+  currency: string
+  origin: string
+  destination: string
+  stops: number | null
+}
+
+export interface ScriptTestResult extends HealthResult {
+  sample: ScriptSample[]
+  n_prices: number
+  logs: string[]
 }
 
 export interface HealthRun {

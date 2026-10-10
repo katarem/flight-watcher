@@ -212,6 +212,7 @@ def _provider_info(p, last: dict | None) -> dict:
         "max_routes": p.max_routes, "stops_filter": p.stops_filter, "min_interval": p.min_interval,
         "health_route": f"{p.health_route[0]}→{p.health_route[1]}", "verified": p.verified or None,
         "notes": p.notes, "last": last and {k: last[k] for k in ("status", "detail", "latency_ms", "checked_at")},
+        "scripted": bool(getattr(p, "scripted", False)),
     }
 
 
@@ -223,7 +224,7 @@ def list_providers():
     return {
         "providers": [_provider_info(p, last.get(p.key)) for p in PROVIDERS.values()],
         "candidates": [{"key": k, "label": c["label"], "url": c["url"], "notes": c["notes"]}
-                       for k, c in CANDIDATES.items()],
+                       for k, c in CANDIDATES.items() if k not in PROVIDERS],
         "status_labels": health.STATUS_LABELS,
     }
 
@@ -266,7 +267,7 @@ def providers_health(body: HealthIn):
     results = health.run(keys, origin, destination, factory)
     out = {"results": results, "fx": health.check_fx() if body.providers is None else None, "candidates": []}
     if body.candidates:
-        out["candidates"] = [health.check_candidate(k, factory) for k in CANDIDATES]
+        out["candidates"] = [health.check_candidate(k, factory) for k in CANDIDATES if k not in PROVIDERS]
     return out
 
 

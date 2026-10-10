@@ -1,61 +1,18 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import {
-  Activity, AlertTriangle, CheckCircle2, Clock, CircleSlash, ExternalLink, MinusCircle, RefreshCw, ShieldX, Stethoscope,
-} from 'lucide-react'
+import { Activity, Code2, ExternalLink, Pencil, Plus, RefreshCw, Stethoscope } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { toast } from 'sonner'
+import { Link } from 'react-router'
 import { errorList, post } from '@/api/client'
-import { keys, useProvidersAdmin } from '@/api/queries'
-import type { CandidateResult, HealthRun, HealthStatus, HealthStep, ProviderInfo } from '@/api/types'
-import { Button } from '@/components/ui/button'
+import { keys, useProviderScripts, useProvidersAdmin } from '@/api/queries'
+import type { CandidateResult, HealthRun, ProviderInfo } from '@/api/types'
+import { StatusBadge, Steps } from '@/components/provider/health'
+import { Button, buttonClass } from '@/components/ui/button'
 import { Badge, Card, CardHeader, PageHeader } from '@/components/ui/card'
 import { ErrorBox, LoadError, PageLoading } from '@/components/ui/feedback'
 import { Checkbox, Field, Input } from '@/components/ui/form'
 import { fmtAgo } from '@/lib/format'
 import { useTitle } from '@/lib/hooks'
-
-const LABELS: Record<HealthStatus, string> = {
-  ok: 'Accesible', empty: 'Accesible, sin precios', blocked: 'Bloqueado', error: 'Con errores', timeout: 'Sin respuesta',
-  skipped: 'Omitido',
-}
-
-const STATUS = {
-  ok: { tone: 'deal', icon: CheckCircle2 },
-  empty: { tone: 'warn', icon: MinusCircle },
-  blocked: { tone: 'danger', icon: ShieldX },
-  error: { tone: 'danger', icon: AlertTriangle },
-  timeout: { tone: 'warn', icon: Clock },
-  skipped: { tone: 'neutral', icon: CircleSlash },
-} as const
-
-function StatusBadge({ status }: { status: HealthStatus }) {
-  const s = STATUS[status]
-  return <Badge tone={s.tone}><s.icon aria-hidden="true" /> {LABELS[status]}</Badge>
-}
-
-function Steps({ steps }: { steps: HealthStep[] }) {
-  return (
-    <ul className="space-y-2">
-      {steps.map((st) => {
-        const Icon = STATUS[st.status].icon
-        return (
-          <li key={st.name} className="flex gap-2 text-sm">
-            <Icon className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden="true" />
-            <div className="min-w-0">
-              <p className="font-medium">
-                {st.name}: <span className="font-normal">{LABELS[st.status].toLowerCase()}</span>
-                <span className="ml-1.5 text-xs text-muted tabular-nums">
-                  {st.route && `${st.route} · `}{(st.ms / 1000).toFixed(1)} s{st.http_status ? ` · HTTP ${st.http_status}` : ''}
-                </span>
-              </p>
-              <p className="break-words text-muted">{st.detail}</p>
-            </div>
-          </li>
-        )
-      })}
-    </ul>
-  )
-}
 
 function ProviderCard({ p, onTest, testing, disabled }: {
   p: ProviderInfo
@@ -71,19 +28,27 @@ function ProviderCard({ p, onTest, testing, disabled }: {
           <div className="flex flex-wrap items-center gap-2">
             <h2 id={`prov-${p.key}`} className="text-base font-semibold tracking-tight">{p.label}</h2>
             {p.last ? <StatusBadge status={p.last.status} /> : <Badge>sin probar</Badge>}
+            {p.scripted && <Badge tone="accent"><Code2 aria-hidden="true" /> Script propio</Badge>}
           </div>
           <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
             <span>Cobertura: {p.coverage_label}{p.max_routes ? ` (máx. ${p.max_routes} pares)` : ''}</span>
             <span>{p.needs_browser ? 'Con navegador' : 'Sin navegador'}</span>
             <span>Pausa ≥ {p.min_interval} s entre peticiones</span>
-            <span>{p.verified ? `Verificado el ${p.verified}` : 'Sin verificar contra la web real'}</span>
+            {!p.scripted && <span>{p.verified ? `Verificado el ${p.verified}` : 'Sin verificar contra la web real'}</span>}
           </p>
           {p.notes && <p className="text-sm text-muted">{p.notes}</p>}
         </div>
-        <Button size="sm" variant="secondary" onClick={onTest} loading={testing} disabled={disabled}
-          aria-label={`Probar ${p.label}`}>
-          {!testing && <Stethoscope />} Probar
-        </Button>
+        <div className="flex gap-2">
+          {p.scripted && (
+            <Link to={`/admin/providers/${p.key}/edit`} className={buttonClass('ghost', 'sm')} aria-label={`Editar el script de ${p.label}`}>
+              <Pencil /> Editar
+            </Link>
+          )}
+          <Button size="sm" variant="secondary" onClick={onTest} loading={testing} disabled={disabled}
+            aria-label={`Probar ${p.label}`}>
+            {!testing && <Stethoscope />} Probar
+          </Button>
+        </div>
       </div>
       {p.last && (
         <div className="mt-4 space-y-2 border-t border-line pt-3">
@@ -113,6 +78,60 @@ function CandidateCard({ c }: { c: CandidateResult }) {
       <p className="text-sm text-muted">{c.notes}</p>
       <Steps steps={c.steps} />
     </li>
+  )
+}
+
+/** Proveedores propios: los activos ya salen arriba con los de serie; aquí todos, también los desactivados o rotos. */
+function ScriptsCard() {
+  const data = useProviderScripts()
+  return (
+    <Card aria-labelledby="propios" className="mt-4">
+      <CardHeader
+        id="propios"
+        title="Proveedores propios"
+        description="Aerolíneas añadidas con un script de Python que cumple el contrato de proveedor (rutas y precios por día). Se ejecutan en el servidor, como los de serie."
+        actions={data.data?.enabled && (
+          <Link to="/admin/providers/new" className={buttonClass('secondary', 'sm')}><Plus /> Nuevo proveedor</Link>
+        )}
+      />
+      {data.isPending ? (
+        <p className="text-sm text-muted" role="status">Cargando…</p>
+      ) : data.isError ? (
+        <ErrorBox errors={errorList(data.error)} />
+      ) : (
+        <>
+          {!data.data.enabled && (
+            <p className="mb-3 text-sm text-warn">
+              Desactivados en este servidor (variable <code>PROVIDER_SCRIPTS=0</code>): no se cargan ni se pueden guardar ni probar.
+            </p>
+          )}
+          {data.data.scripts.length === 0 ? (
+            <p className="text-sm text-muted">Todavía no hay ninguno.</p>
+          ) : (
+            <ul className="divide-y divide-line">
+              {data.data.scripts.map((sc) => (
+                <li key={sc.key} className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
+                  <div className="min-w-0 space-y-1">
+                    <p className="flex flex-wrap items-center gap-2 font-medium">
+                      <span aria-hidden="true" className="size-3 rounded-full" style={{ background: sc.color }} />
+                      {sc.label} <span className="font-mono text-xs text-muted">{sc.key}</span>
+                      {sc.error ? <Badge tone="danger">No carga</Badge> : sc.enabled ? <Badge tone="deal">Activo</Badge> : <Badge>Desactivado</Badge>}
+                    </p>
+                    {sc.error && <p className="break-words text-sm text-danger">{sc.error}</p>}
+                    <p className="text-xs text-muted">
+                      {sc.n_watches} {sc.n_watches === 1 ? 'vigilancia' : 'vigilancias'} · guardado {fmtAgo(sc.updated_at)} por @{sc.updated_by}
+                    </p>
+                  </div>
+                  <Link to={`/admin/providers/${sc.key}/edit`} className={buttonClass('ghost', 'sm')} aria-label={`Editar ${sc.label}`}>
+                    <Pencil /> Editar
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </Card>
   )
 }
 
@@ -204,6 +223,8 @@ export function ProvidersPage() {
           <ProviderCard key={p.key} p={p} testing={testing === p.key} disabled={testing != null} onTest={() => run.mutate(p.key)} />
         ))}
       </div>
+
+      <ScriptsCard />
 
       {lastRun?.fx && (
         <Card aria-labelledby="divisas" className="mt-4">
