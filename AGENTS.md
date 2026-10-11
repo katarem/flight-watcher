@@ -25,7 +25,7 @@ app/
   checker.py     ronda de comprobaciones (por vigilancia × proveedor activo × par de aeropuertos) + reglas de aviso (deal_reason); browser_page(); al final evalúa los viajes
   trips.py       viajes de ida y vuelta: legs_by_day() (mínimo por día de cada tramo), combinations(), best_per_day(), deal_reason() y evaluate() (histórico + avisos, top TOP_DEALS)
   coverage.py    cobertura de rutas: check() (caché provider_routes), check_many() (en paralelo con tiempo límite), coverage_for() (al guardar), revalidate() (semanal, avisa de aperturas/cierres)
-  health.py      prueba de acceso a proveedores (zona «Proveedores»): pasos cobertura + precios, estado ok/empty/blocked/error/timeout/skipped, BCE y check_draft() (script sin guardar: carga + cobertura + precios, contando cada paso en la consola `say`)
+  health.py      prueba de acceso a proveedores (zona «Proveedores»): pasos cobertura + precios, estado ok/empty/blocked/error/timeout/skipped, corte por inactividad (_watch: IDLE_TIMEOUT sin `Provider.pulse()` o MAX_TIME en total), BCE y check_draft() (script sin guardar: carga + cobertura + precios, contando cada paso en la consola `say`)
   places.py      catálogo de lugares: aeropuertos (app/data/airports.csv, OurAirports), CITIES, GROUPS, países (app/data/countries.csv); search(), routes(), MAX_PAIRS
   fx.py          cambio a euros con los tipos diarios del BCE (caché en DATA_DIR/ecb_rates.json)
   data/          airports.csv y countries.csv (generados con scripts/build_places.py; versionados)
@@ -154,6 +154,7 @@ Variables de entorno: `PANEL_USER` / `PANEL_PASSWORD` (credenciales del **admin 
 - El tooltip de `PriceChart` usa el color de texto del tema (`itemStyle`): el color de algunas webs no da el contraste AA.
 - OurAirports llega en `app/data/airports.csv` (solo `scheduled_service=yes`, con IATA, sin helipuertos ni hidroaviones). La copia actual se generó desde el paquete npm `ourairports-data-js` 1.0.3 (instantánea de feb. 2025, mismo contenido que el CSV oficial) porque la sesión no tenía acceso a ourairports.com; `python scripts/build_places.py` la regenera desde la web oficial.
 - `.gitignore` ignora solo `/data/` (la carpeta de datos de la raíz), no `app/data/`.
+- La prueba de acceso no tiene un límite fijo: `health._watch` la corta solo si el proveedor pasa `IDLE_TIMEOUT` (90 s + su pausa entre peticiones) sin señales de vida (`Provider.last_activity`, que actualizan `slot()` y `ScriptedProvider.trace`, o sea cada petición, traza y `api.log`) o al llegar a `MAX_TIME` (10 min). El resultado conserva los pasos terminados; en la del editor, `ScriptedProvider.stopped` impide más peticiones al script cortado. Si una operación nueva puede tardar más de ~60 s sin trazas, que llame a `pulse()`.
 - Las comprobaciones de cobertura y de salud corren en hilos (`ThreadPoolExecutor`, `shutdown(wait=False)`): un proveedor lento no retrasa al resto, y su respuesta queda en caché aunque haya pasado el tiempo límite. Los dobles ponen `min_interval = jitter = 0`.
 - Al cambiar `prices.price` recuerda que es **siempre euros**: baselines, chollos, gráficas y calendario no saben de monedas.
 - Webhook y token se guardan en texto plano en la BD: no exponer el panel sin autenticación.

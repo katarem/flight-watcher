@@ -134,7 +134,7 @@ Si alguna vigilancia antigua tenía `iberia` marcada, se ignora al comprobar; al
 
 ### Prueba de acceso (Proveedores)
 
-Los administradores tienen el apartado **Proveedores**, una especie de *healthcheck*: por cada proveedor, desde la IP del servidor, comprueba la cobertura (red de rutas o pregunta directa) y los precios de un mes de una ruta (la suya de prueba o la que indiques), y dice si es **accesible**, si **nos bloquea** (403/429/anti-bot), si **falla** o si **no responde**, con el código HTTP y el tiempo de cada paso. Guarda el último resultado de cada uno. También prueba el cambio de divisas del BCE y permite **revalidar las rutas** de todas las vigilancias en el momento.
+Los administradores tienen el apartado **Proveedores**, una especie de *healthcheck*: por cada proveedor, desde la IP del servidor, comprueba la cobertura (red de rutas o pregunta directa) y los precios de un mes de una ruta (la suya de prueba o la que indiques), y dice si es **accesible**, si **nos bloquea** (403/429/anti-bot), si **falla** o si **no responde**, con el código HTTP y el tiempo de cada paso. Un proveedor lento no se da por perdido mientras siga avanzando: la prueba solo se corta si pasa minuto y medio sin ninguna petición ni mensaje (más su pausa entre peticiones) o, en cualquier caso, a los 10 minutos. Guarda el último resultado de cada uno. También prueba el cambio de divisas del BCE y permite **revalidar las rutas** de todas las vigilancias en el momento.
 
 ### Escalas y monedas
 

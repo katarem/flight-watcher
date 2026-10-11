@@ -103,6 +103,13 @@ class Provider(ABC):
     verified: str = ""
     #: Nota para el administrador (de dónde salen los precios, límites conocidos…).
     notes: str = ""
+    #: Última señal de vida (`time.monotonic()`): turno, petición o traza. La prueba de acceso no corta a un
+    #: proveedor lento que sigue avanzando, solo al que lleva demasiado sin dar ninguna (ver health.py).
+    last_activity: float = 0.0
+
+    def pulse(self) -> None:
+        """Apunta que el proveedor sigue haciendo algo."""
+        self.last_activity = time.monotonic()
 
     @abstractmethod
     def fetch_prices(
@@ -129,14 +136,17 @@ class Provider(ABC):
         """Turno del proveedor: espera a que no haya otra petición suya en curso y respeta la pausa."""
         with _locks_guard:
             lock = _locks.setdefault(self.key, threading.Lock())
+        self.pulse()
         with lock:
             wait = _last_request.get(self.key, 0.0) + self.min_interval + random.uniform(0, self.jitter) - time.monotonic()
             if wait > 0:
                 time.sleep(wait)
+            self.pulse()
             try:
                 yield
             finally:
                 _last_request[self.key] = time.monotonic()
+                self.pulse()
 
     def build_link(self, template: str, origin: str, destination: str, day: date) -> str:
         tpl = (template or "").strip() or self.default_link_template

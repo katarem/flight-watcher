@@ -1,5 +1,11 @@
 # Cambios
 
+## 1.7.1 — 2026-10-11
+
+### Corregido
+- La **prueba de acceso** (la de la lista de Proveedores y la del editor) ya no da «Sin respuesta» a un proveedor lento que sigue respondiendo: antes se cortaba al minuto aunque cada petición fuera bien. Ahora solo se corta si pasa **minuto y medio sin ninguna señal de vida** (petición, traza de la consola o `api.log`/`print`), más la pausa entre peticiones del proveedor, con un tope de 10 minutos en total.
+- Al cortarse, el resultado conserva los pasos que ya habían terminado y dice en cuál se quedó, y el script de la prueba del editor deja de hacer peticiones (antes seguía en segundo plano).
+
 ## 1.7.0 — 2026-10-11
 
 ### Cambiado
