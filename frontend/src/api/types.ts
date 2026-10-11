@@ -221,7 +221,6 @@ export interface AdminUser extends User {
 
 export interface SettingsData {
   values: Record<string, string>
-  providers: { key: string; label: string; default_link_template: string }[]
 }
 
 export interface DebugFile {
@@ -263,58 +262,21 @@ export interface HealthStep {
   route?: string
 }
 
-export interface ProviderInfo {
+/** Último resultado de la prueba de acceso de un proveedor. */
+export interface ProviderLast {
+  status: HealthStatus
+  detail: HealthStep[]
+  latency_ms: number
+  checked_at: string
+}
+
+/** Proveedor: un script de Python que cumple el contrato de app/providers/scripted.py. */
+export interface Provider {
   key: string
   label: string
   color: string
   coverage: Coverage
   coverage_label: string
-  needs_browser: boolean
-  max_routes: number | null
-  stops_filter: boolean
-  min_interval: number
-  health_route: string
-  verified: string | null
-  notes: string
-  last: { status: HealthStatus; detail: HealthStep[]; latency_ms: number; checked_at: string } | null
-  /** Proveedor propio (script guardado desde el panel). */
-  scripted: boolean
-}
-
-export interface Candidate {
-  key: string
-  label: string
-  url: string
-  notes: string
-}
-
-export interface ProvidersData {
-  providers: ProviderInfo[]
-  candidates: Candidate[]
-  status_labels: Record<string, string>
-}
-
-export interface HealthResult {
-  key: string
-  status: HealthStatus
-  route: string
-  steps: HealthStep[]
-  latency_ms: number
-  checked_at: string
-}
-
-export interface CandidateResult extends Candidate {
-  status: HealthStatus
-  steps: HealthStep[]
-  checked_at: string
-}
-
-/** Proveedor propio: script de Python que cumple el contrato de app/providers/scripted.py. */
-export interface ProviderScript {
-  key: string
-  label: string
-  color: string
-  coverage: Coverage
   max_routes: number | null
   health_origin: string
   health_destination: string
@@ -325,19 +287,40 @@ export interface ProviderScript {
   created_at: string
   updated_at: string
   updated_by: string
+  /** Enlace del paquete del que se importó (null = escrito en el panel o importado de un archivo). */
+  source: string | null
   /** Cargado y en uso (activo y sin errores). */
   loaded: boolean
   /** Por qué no se pudo cargar (activo pero roto). */
   error: string | null
+  /** «Aplicar medidas anti-bot»: sus peticiones se hacen pasar por Chrome (app/providers/stealth.py). */
+  stealth: boolean
+  /** `fetch_route` acepta `max_stops` (filtra él mismo por escalas). */
+  stops_filter: boolean
   n_watches: number
+  last: ProviderLast | null
   code?: string
 }
 
-export interface ProviderScriptsData {
-  scripts: ProviderScript[]
-  /** false si el servidor los desactiva (PROVIDER_SCRIPTS=0). */
-  enabled: boolean
+export interface ProvidersData {
+  providers: Provider[]
+  /** false si el servidor no deja cambiar código desde el panel (PROVIDER_SCRIPTS=0). */
+  editable: boolean
   template: string
+  status_labels: Record<string, string>
+  /** Enlaces de los que ya se han importado proveedores. */
+  sources: string[]
+  /** Paquetes publicados con la aplicación. */
+  catalogs: { label: string; url: string }[]
+}
+
+export interface HealthResult {
+  key: string
+  status: HealthStatus
+  route: string
+  steps: HealthStep[]
+  latency_ms: number
+  checked_at: string
 }
 
 export interface ScriptSample {
@@ -352,13 +335,42 @@ export interface ScriptSample {
 export interface ScriptTestResult extends HealthResult {
   sample: ScriptSample[]
   n_prices: number
-  logs: string[]
+}
+
+export type ConsoleLevel = 'step' | 'info' | 'ok' | 'warn' | 'error' | 'http' | 'script'
+
+/** Una línea de la consola de la prueba del editor (llegan en streaming mientras se ejecuta). */
+export interface ConsoleEvent {
+  t: number
+  level: ConsoleLevel
+  text: string
 }
 
 export interface HealthRun {
   results: HealthResult[]
   fx: HealthStep | null
-  candidates: CandidateResult[]
+}
+
+export interface ImportItem {
+  key: string
+  label: string
+  color: string
+  coverage: string
+  coverage_label: string
+  notes: string
+  code: string
+  /** new = no existe; changed = sustituye a uno con cambios; same = igual que el guardado. */
+  status: 'new' | 'changed' | 'same'
+  changes: string[]
+  errors: string[]
+  n_watches: number
+  enabled: boolean | null
+}
+
+export interface ImportPreview {
+  source: string | null
+  text: string
+  providers: ImportItem[]
 }
 
 /** Tramo de un viaje: una vigilancia del usuario. */

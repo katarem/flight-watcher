@@ -2,20 +2,24 @@
 
     python -m tests.browser_mock_test
 
-Necesita un Chromium (el de `playwright install chromium`, o uno propio con FW_CHROMIUM=/ruta).
+Necesita un Chromium (el de `patchright install chromium`, o uno propio con FW_CHROMIUM=/ruta).
 Valida: cookies, «solo ida», autocompletado de aeropuertos, apertura del calendario, captura de
-respuestas JSON (XHR), lectura de celdas del DOM, avance de meses y volcado de diagnóstico.
+respuestas JSON (XHR), lectura de celdas del DOM, avance de meses y volcado de diagnóstico. También las peticiones
+desde Chrome de las medidas anti-bot (`browser.BrowserFetch`): abre la portada, coge su cookie (puesta con un reto
+de JavaScript, como un anti-bot) y hace el GET y el POST de la API con `fetch()` desde la página.
 NO valida los selectores de las webs reales de ninguna aerolínea.
 """
 import json
 import os
 import tempfile
+
+os.environ.setdefault("DATA_DIR", tempfile.mkdtemp(prefix="fw-browser-"))
 import threading
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from patchright.sync_api import sync_playwright
 
 from app.providers.base import CalendarProvider
 
@@ -80,7 +84,29 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    def _send(self, status, body: bytes, ctype: str):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        """API «protegida»: sin la cookie del reto, 403 como un anti-bot."""
+        size = int(self.headers.get("Content-Length") or 0)
+        sent = json.loads(self.rfile.read(size) or b"null")
+        if "reto=superado" not in (self.headers.get("Cookie") or ""):
+            return self._send(403, b"<html>Access Denied</html>", "text/html")
+        self._send(200, json.dumps({"recibido": sent, "metodo": "POST"}).encode(), "application/json")
+
     def do_GET(self):
+        if self.path.startswith("/antibot"):
+            # La portada pone la cookie con JavaScript (un cliente sin navegador no la tendría).
+            page = "<!doctype html><script>document.cookie = 'reto=superado; path=/';</script>Portada"
+            return self._send(200, page.encode(), "text/html; charset=utf-8")
+        if self.path.startswith("/api/protegida"):
+            if "reto=superado" not in (self.headers.get("Cookie") or ""):
+                return self._send(403, b"<html>Access Denied</html>", "text/html")
+            return self._send(200, json.dumps({"ruta": self.path}).encode(), "application/json")
         if self.path.startswith("/api/flightcalendar"):
             body, ctype = json.dumps(calendar_json()).encode(), "application/json"
         else:
@@ -123,6 +149,36 @@ def check(cond, msg):
         raise SystemExit(1)
 
 
+def browser_fetch():
+    """Medidas anti-bot: Chrome resuelve el «reto» de la portada y hace las peticiones de la API desde ella."""
+    from app import db
+    from app.providers.browser import BrowserFetch
+
+    db.init()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    site = f"http://127.0.0.1:{server.server_port}"
+    lines = []
+    fetcher = BrowserFetch("prueba", lambda level, text: lines.append(text))
+    try:
+        # La portada de esta web simulada es /antibot: se abre a mano (en una web real es «/»).
+        fetcher._open()
+        page = fetcher._ctx.new_page()
+        page.goto(site + "/antibot")
+        fetcher._pages[site] = page
+        r = fetcher.request(site, "GET", site + "/api/protegida", params={"o": "SVQ", "d": None})
+        check(r.status_code == 200 and r.json() == {"ruta": "/api/protegida?o=SVQ"}
+              and r.headers["content-type"] == "application/json", "GET desde Chrome con la cookie del reto")
+        r = fetcher.request(site, "POST", site + "/api/protegida", json={"a": 1})
+        check(r.status_code == 200 and r.json() == {"recibido": {"a": 1}, "metodo": "POST"}, "POST con cuerpo JSON desde Chrome")
+    finally:
+        fetcher.close()
+        server.shutdown()
+    from app import config
+    check((config.DATA_DIR / "navegador" / "prueba.json").is_file() and any("Chrome abierto" in line for line in lines),
+          "las cookies del navegador se guardan para la próxima vez")
+
+
 def main():
     dbg = Path(tempfile.mkdtemp(prefix="fw-dbg-"))
     # Variante A: el calendario no pinta celdas, los precios solo viajan por el XHR JSON
@@ -141,6 +197,7 @@ def main():
     finally:
         JsonCollector.prices = original
     check(got == {D1: 52.0, D2: 33.5, D3: 71.0}, f"lectura de celdas del DOM + avance de mes (sin JSON): {got}")
+    browser_fetch()
     print("\nTodo correcto.")
 
 

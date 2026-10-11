@@ -29,6 +29,7 @@ import requests
 
 from .. import __version__
 from .extract import JsonCollector, read_calendar_cells
+from .stealth import NETWORK_ERRORS, TIMEOUT_ERRORS
 
 #: User-Agent honesto para las APIs: no nos hacemos pasar por un navegador.
 USER_AGENT = f"flight-watcher/{__version__} (+alertas de precio personales)"
@@ -306,9 +307,9 @@ class ApiProvider(Provider):
         with self.slot():
             try:
                 r = session.request(method, url, timeout=self.timeout, **kw)
-            except requests.Timeout as exc:
+            except TIMEOUT_ERRORS as exc:
                 raise ProviderError(f"{self.label}: la API no responde (tiempo agotado)") from exc
-            except requests.RequestException as exc:
+            except NETWORK_ERRORS as exc:
                 raise ProviderError(f"{self.label}: sin conexión con la API ({type(exc).__name__})") from exc
         if debug_dir and tag:
             debug_dir.mkdir(parents=True, exist_ok=True)

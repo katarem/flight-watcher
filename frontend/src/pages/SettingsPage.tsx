@@ -50,7 +50,9 @@ function SettingsForm({ data }: { data: SettingsData }) {
         })}
         <p className="text-xs text-muted">
           Los canales de aviso (Discord, Telegram) los configura cada usuario en su{' '}
-          <Link to="/profile" className="text-accent underline underline-offset-2">perfil</Link>.
+          <Link to="/profile" className="text-accent underline underline-offset-2">perfil</Link>. El enlace de
+          cada fecha en los avisos lo da la plantilla de cada{' '}
+          <Link to="/admin/providers" className="text-accent underline underline-offset-2">proveedor</Link>.
         </p>
       </FormSection>
 
@@ -67,21 +69,9 @@ function SettingsForm({ data }: { data: SettingsData }) {
         </div>
       </FormSection>
 
-      <FormSection
-        title="Enlaces por fecha"
-        description="Marcadores: {origin} {destination} {date} (AAAA-MM-DD) {date_dmy} {year} {month} {day}. Vacío = el enlace por defecto."
-      >
-        {data.providers.map((p) => (
-          <Field key={p.key} label={`Plantilla de enlace de ${p.label}`}>
-            {(id) => <Input id={id} value={v[`link_${p.key}`] ?? ''} placeholder={p.default_link_template}
-              onChange={(e) => set(`link_${p.key}`, e.target.value)} className="font-mono text-xs" spellCheck={false} />}
-          </Field>
-        ))}
-      </FormSection>
-
       <FormSection title="Navegador y diagnóstico">
         <Switch checked={v.headless === '1'} onChange={(on) => set('headless', on ? '1' : '0')} label="Modo sin ventana (headless)"
-          description="Solo afecta a las webs que se consultan con navegador." />
+          description="Solo afecta cuando se usa Chrome (proveedores con medidas anti-bot ante un bloqueo). Con ventana se parece más a una persona; en Docker la ventana va en una pantalla virtual, así que no hace falta monitor." />
         <Switch checked={v.debug === '1'} onChange={(on) => set('debug', on ? '1' : '0')}
           label="Guardar capturas, HTML y JSON de cada comprobación"
           description={<>Se ven en <Link to="/debug" className="text-accent underline underline-offset-2">Diagnóstico</Link>.</>} />

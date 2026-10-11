@@ -54,7 +54,7 @@ def legs_by_day(con, settings: dict, watch: dict, now: datetime) -> dict[str, di
                 best[r["flight_date"]] = {**r, "provider": key}
     for day, r in best.items():
         o, d = r["origin"] or watch["origin"], r["destination"] or watch["destination"]
-        r["link"] = link_for(settings, r["provider"], o, d, fmt.to_date(day))
+        r["link"] = link_for(r["provider"], o, d, fmt.to_date(day))
         r["route"] = f"{o}→{d}" if (o, d) != (watch["origin"], watch["destination"]) else None
     return best
 

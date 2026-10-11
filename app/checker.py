@@ -41,14 +41,11 @@ def deal_reason(watch: dict, price: float, base: float | None) -> str | None:
 
 @contextmanager
 def browser_session(settings):
-    """Chromium headless compartido por toda la ronda (solo se abre si algún proveedor lo necesita)."""
-    from playwright.sync_api import sync_playwright
+    """Chrome (patchright) compartido por toda la ronda; solo se abre si algún proveedor lo necesita."""
+    from .providers.browser import launch, sync_playwright
 
     with sync_playwright() as pw:
-        kwargs = {"headless": settings["headless"] == "1"}
-        if settings.get("proxy_url"):
-            kwargs["proxy"] = {"server": settings["proxy_url"]}
-        browser = pw.chromium.launch(**kwargs)
+        browser = launch(pw, settings)
         try:
             yield browser
         finally:
@@ -173,7 +170,7 @@ def _check_one(browser, settings, tz, watch, prov, pairs, trigger) -> dict:
                         "provider": prov.key, "day": p.day, "price": p.price_eur, "reason": reason,
                         "origin": p.origin, "destination": p.destination, "stops": p.stops,
                         "currency": p.currency, "orig_price": p.price if p.currency != "EUR" else None,
-                        "link": link_for(settings, prov.key, p.origin or watch["origin"],
+                        "link": link_for(prov.key, p.origin or watch["origin"],
                                          p.destination or watch["destination"], p.day),
                     })
         db.finish_run(con, run_id, datetime.now(tz).replace(tzinfo=None).isoformat(timespec="seconds"),

@@ -1,11 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Activity, Code2, ExternalLink, Pencil, Plus, RefreshCw, Stethoscope } from 'lucide-react'
+import { Activity, Download, Pencil, Plus, RefreshCw, ShieldCheck, Stethoscope, Upload } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { toast } from 'sonner'
 import { Link } from 'react-router'
-import { errorList, post } from '@/api/client'
-import { keys, useProviderScripts, useProvidersAdmin } from '@/api/queries'
-import type { CandidateResult, HealthRun, ProviderInfo } from '@/api/types'
+import { API, errorList, post } from '@/api/client'
+import { keys, useProvidersAdmin } from '@/api/queries'
+import type { HealthRun, Provider } from '@/api/types'
 import { StatusBadge, Steps } from '@/components/provider/health'
 import { Button, buttonClass } from '@/components/ui/button'
 import { Badge, Card, CardHeader, PageHeader } from '@/components/ui/card'
@@ -14,43 +14,53 @@ import { Checkbox, Field, Input } from '@/components/ui/form'
 import { fmtAgo } from '@/lib/format'
 import { useTitle } from '@/lib/hooks'
 
-function ProviderCard({ p, onTest, testing, disabled }: {
-  p: ProviderInfo
+function ProviderCard({ p, onTest, testing, disabled, selected, onSelect }: {
+  p: Provider
   onTest: () => void
   testing: boolean
   disabled: boolean
+  selected: boolean
+  onSelect: (v: boolean) => void
 }) {
   return (
     <Card aria-labelledby={`prov-${p.key}`} className="relative overflow-hidden" style={{ '--c': p.color } as React.CSSProperties}>
       <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 bg-(--c)" />
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 id={`prov-${p.key}`} className="text-base font-semibold tracking-tight">{p.label}</h2>
-            {p.last ? <StatusBadge status={p.last.status} /> : <Badge>sin probar</Badge>}
-            {p.scripted && <Badge tone="accent"><Code2 aria-hidden="true" /> Script propio</Badge>}
+        <div className="flex min-w-0 gap-3">
+          <Checkbox checked={selected} onChange={onSelect} className="mt-1">
+            <span className="sr-only">Elegir {p.label} para exportar</span>
+          </Checkbox>
+          <div className="min-w-0 space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 id={`prov-${p.key}`} className="text-base font-semibold tracking-tight">{p.label}</h2>
+              <span className="font-mono text-xs text-muted">{p.key}</span>
+              {p.error ? <Badge tone="danger">No carga</Badge> : !p.enabled ? <Badge>Desactivado</Badge> : null}
+              {p.stealth && <Badge tone="accent"><ShieldCheck aria-hidden="true" /> Anti-bot</Badge>}
+              {p.loaded && (p.last ? <StatusBadge status={p.last.status} /> : <Badge>sin probar</Badge>)}
+            </div>
+            <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
+              <span>Cobertura: {p.coverage_label}{p.max_routes ? ` (máx. ${p.max_routes} pares)` : ''}</span>
+              {p.stops_filter && <span>Filtra por escalas</span>}
+              <span>Pausa ≥ {p.min_interval} s entre peticiones</span>
+              <span>{p.n_watches} {p.n_watches === 1 ? 'vigilancia' : 'vigilancias'}</span>
+              <span>Guardado {fmtAgo(p.updated_at)} por @{p.updated_by}</span>
+            </p>
+            {p.error && <p className="break-words text-sm text-danger">{p.error}</p>}
+            {p.notes && <p className="text-sm text-muted">{p.notes}</p>}
           </div>
-          <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
-            <span>Cobertura: {p.coverage_label}{p.max_routes ? ` (máx. ${p.max_routes} pares)` : ''}</span>
-            <span>{p.needs_browser ? 'Con navegador' : 'Sin navegador'}</span>
-            <span>Pausa ≥ {p.min_interval} s entre peticiones</span>
-            {!p.scripted && <span>{p.verified ? `Verificado el ${p.verified}` : 'Sin verificar contra la web real'}</span>}
-          </p>
-          {p.notes && <p className="text-sm text-muted">{p.notes}</p>}
         </div>
         <div className="flex gap-2">
-          {p.scripted && (
-            <Link to={`/admin/providers/${p.key}/edit`} className={buttonClass('ghost', 'sm')} aria-label={`Editar el script de ${p.label}`}>
-              <Pencil /> Editar
-            </Link>
+          <Link to={`/admin/providers/${p.key}/edit`} className={buttonClass('ghost', 'sm')} aria-label={`Editar ${p.label}`}>
+            <Pencil /> Editar
+          </Link>
+          {p.loaded && (
+            <Button size="sm" variant="secondary" onClick={onTest} loading={testing} disabled={disabled} aria-label={`Probar ${p.label}`}>
+              {!testing && <Stethoscope />} Probar
+            </Button>
           )}
-          <Button size="sm" variant="secondary" onClick={onTest} loading={testing} disabled={disabled}
-            aria-label={`Probar ${p.label}`}>
-            {!testing && <Stethoscope />} Probar
-          </Button>
         </div>
       </div>
-      {p.last && (
+      {p.loaded && p.last && (
         <div className="mt-4 space-y-2 border-t border-line pt-3">
           <p className="text-xs text-muted">
             Última prueba {fmtAgo(p.last.checked_at)} · {(p.last.latency_ms / 1000).toFixed(1)} s en total
@@ -62,94 +72,20 @@ function ProviderCard({ p, onTest, testing, disabled }: {
   )
 }
 
-function CandidateCard({ c }: { c: CandidateResult }) {
-  return (
-    <li className="space-y-2 rounded-xl border border-line p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="font-medium">
-          {c.label}{' '}
-          <a href={c.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 text-sm text-accent underline underline-offset-2">
-            {c.url.replace(/^https:\/\//, '')} <ExternalLink className="size-3.5" aria-hidden="true" />
-            <span className="sr-only">(se abre en otra pestaña)</span>
-          </a>
-        </p>
-        <StatusBadge status={c.status} />
-      </div>
-      <p className="text-sm text-muted">{c.notes}</p>
-      <Steps steps={c.steps} />
-    </li>
-  )
-}
-
-/** Proveedores propios: los activos ya salen arriba con los de serie; aquí todos, también los desactivados o rotos. */
-function ScriptsCard() {
-  const data = useProviderScripts()
-  return (
-    <Card aria-labelledby="propios" className="mt-4">
-      <CardHeader
-        id="propios"
-        title="Proveedores propios"
-        description="Aerolíneas añadidas con un script de Python que cumple el contrato de proveedor (rutas y precios por día). Se ejecutan en el servidor, como los de serie."
-        actions={data.data?.enabled && (
-          <Link to="/admin/providers/new" className={buttonClass('secondary', 'sm')}><Plus /> Nuevo proveedor</Link>
-        )}
-      />
-      {data.isPending ? (
-        <p className="text-sm text-muted" role="status">Cargando…</p>
-      ) : data.isError ? (
-        <ErrorBox errors={errorList(data.error)} />
-      ) : (
-        <>
-          {!data.data.enabled && (
-            <p className="mb-3 text-sm text-warn">
-              Desactivados en este servidor (variable <code>PROVIDER_SCRIPTS=0</code>): no se cargan ni se pueden guardar ni probar.
-            </p>
-          )}
-          {data.data.scripts.length === 0 ? (
-            <p className="text-sm text-muted">Todavía no hay ninguno.</p>
-          ) : (
-            <ul className="divide-y divide-line">
-              {data.data.scripts.map((sc) => (
-                <li key={sc.key} className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
-                  <div className="min-w-0 space-y-1">
-                    <p className="flex flex-wrap items-center gap-2 font-medium">
-                      <span aria-hidden="true" className="size-3 rounded-full" style={{ background: sc.color }} />
-                      {sc.label} <span className="font-mono text-xs text-muted">{sc.key}</span>
-                      {sc.error ? <Badge tone="danger">No carga</Badge> : sc.enabled ? <Badge tone="deal">Activo</Badge> : <Badge>Desactivado</Badge>}
-                    </p>
-                    {sc.error && <p className="break-words text-sm text-danger">{sc.error}</p>}
-                    <p className="text-xs text-muted">
-                      {sc.n_watches} {sc.n_watches === 1 ? 'vigilancia' : 'vigilancias'} · guardado {fmtAgo(sc.updated_at)} por @{sc.updated_by}
-                    </p>
-                  </div>
-                  <Link to={`/admin/providers/${sc.key}/edit`} className={buttonClass('ghost', 'sm')} aria-label={`Editar ${sc.label}`}>
-                    <Pencil /> Editar
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      )}
-    </Card>
-  )
-}
-
 export function ProvidersPage() {
   useTitle('Proveedores')
   const data = useProvidersAdmin()
   const qc = useQueryClient()
   const [origin, setOrigin] = useState('')
   const [destination, setDestination] = useState('')
-  const [browser, setBrowser] = useState(false)
-  const [candidates, setCandidates] = useState(true)
   const [errors, setErrors] = useState<string[]>([])
   const [testing, setTesting] = useState<string | null>(null)
   const [lastRun, setLastRun] = useState<HealthRun | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const run = useMutation({
     mutationFn: (key: string | null) => post<HealthRun>('/providers/health', {
-      providers: key ? [key] : null, origin, destination, browser, candidates: key ? false : candidates,
+      providers: key ? [key] : null, origin, destination,
     }),
     onMutate: (key) => {
       setErrors([])
@@ -175,27 +111,51 @@ export function ProvidersPage() {
   if (data.isPending) return <PageLoading />
   if (data.isError) return <LoadError error={data.error} />
 
+  const { providers, editable } = data.data
+  const chosen = providers.filter((p) => selected.has(p.key))
+  const toggle = (key: string, on: boolean) => setSelected((s) => {
+    const next = new Set(s)
+    if (on) next.add(key)
+    else next.delete(key)
+    return next
+  })
   const submit = (e: FormEvent) => {
     e.preventDefault()
     run.mutate(null)
   }
   const iata = (v: string) => v.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3)
+  const exportUrl = (keys: string[]) => `${API}/providers/export${keys.length ? `?keys=${encodeURIComponent(keys.join(','))}` : ''}`
 
   return (
     <>
       <PageHeader
         title="Proveedores"
-        description="Comprueba desde la IP de este servidor si cada web nos deja consultar sus rutas y precios, como un healthcheck. Cada proveedor hace una sola petición a la vez y con pausas, igual que en las rondas."
+        description="Cada proveedor es un script de Python que lee las rutas y los precios de una web. Puedes crearlos, editarlos, importarlos desde un enlace o un archivo y exportarlos para usarlos en otro panel."
         actions={
-          <Button variant="secondary" onClick={() => revalidate.mutate()} loading={revalidate.isPending}>
-            {!revalidate.isPending && <RefreshCw />} Revalidar rutas ahora
-          </Button>
+          <>
+            {editable && (
+              <>
+                <Link to="/admin/providers/new" className={buttonClass('primary')}><Plus /> Nuevo proveedor</Link>
+                <Link to="/admin/providers/import" className={buttonClass('secondary')}><Upload /> Importar</Link>
+              </>
+            )}
+            <Button variant="secondary" onClick={() => revalidate.mutate()} loading={revalidate.isPending}>
+              {!revalidate.isPending && <RefreshCw />} Revalidar rutas ahora
+            </Button>
+          </>
         }
       />
 
+      {!editable && (
+        <p className="mb-4 rounded-xl border border-warn/30 bg-warn/10 p-3 text-sm text-warn">
+          En este servidor no se puede crear, importar ni cambiar el código de los proveedores desde el panel
+          (variable <code>PROVIDER_SCRIPTS=0</code>). Los que hay siguen funcionando.
+        </p>
+      )}
+
       <Card aria-labelledby="probar-todos" className="mb-4">
         <CardHeader id="probar-todos" title="Probar el acceso"
-          description="Sin ruta, cada proveedor usa una que opera de verdad. Con ruta (aeropuertos IATA), se prueba esa en todos." />
+          description="Comprueba desde la IP de este servidor si cada web nos deja consultar sus rutas y precios, como un healthcheck. Sin ruta, cada proveedor usa la suya; con ruta (aeropuertos IATA), se prueba esa en todos." />
         <form onSubmit={submit} className="space-y-4" noValidate>
           <ErrorBox errors={errors} />
           <div className="grid gap-4 sm:grid-cols-2">
@@ -208,45 +168,55 @@ export function ProvidersPage() {
                 className="font-mono uppercase" autoComplete="off" spellCheck={false} />}
             </Field>
           </div>
-          <div className="space-y-2.5">
-            <Checkbox checked={candidates} onChange={setCandidates}>Probar también las aerolíneas en estudio (solo su portada)</Checkbox>
-            <Checkbox checked={browser} onChange={setBrowser}>Probar también con navegador (Chromium headless, más lento)</Checkbox>
-          </div>
-          <Button type="submit" loading={testing === '*'} disabled={testing != null}>
+          <Button type="submit" loading={testing === '*'} disabled={testing != null || !providers.some((p) => p.loaded)}>
             {testing !== '*' && <Activity />} Probar todos
           </Button>
         </form>
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        {data.data.providers.map((p) => (
-          <ProviderCard key={p.key} p={p} testing={testing === p.key} disabled={testing != null} onTest={() => run.mutate(p.key)} />
-        ))}
-      </div>
+      {providers.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3" role="group" aria-label="Exportar proveedores">
+          <Checkbox checked={chosen.length === providers.length}
+            onChange={(on) => setSelected(new Set(on ? providers.map((p) => p.key) : []))}>
+            Elegir todos ({chosen.length} de {providers.length})
+          </Checkbox>
+          <div className="flex flex-wrap gap-2">
+            {chosen.length ? (
+              <a href={exportUrl(chosen.map((p) => p.key))} download className={buttonClass('secondary', 'sm')}>
+                <Download aria-hidden="true" /> Exportar los elegidos ({chosen.length})
+              </a>
+            ) : (
+              <Button size="sm" variant="secondary" disabled><Download /> Exportar los elegidos</Button>
+            )}
+            <a href={exportUrl([])} download className={buttonClass('ghost', 'sm')}>
+              <Download aria-hidden="true" /> Exportar todos
+            </a>
+          </div>
+        </div>
+      )}
 
-      <ScriptsCard />
+      {providers.length === 0 ? (
+        <Card aria-labelledby="sin-proveedores">
+          <CardHeader id="sin-proveedores" title="No hay proveedores"
+            description="Sin proveedores no se consulta ninguna web. Importa los incluidos (Vueling y Ryanair) o crea uno." />
+          {editable && <Link to="/admin/providers/import" className={buttonClass('primary')}><Upload /> Importar proveedores</Link>}
+        </Card>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {providers.map((p) => (
+            <ProviderCard key={p.key} p={p} testing={testing === p.key} disabled={testing != null}
+              onTest={() => run.mutate(p.key)} selected={selected.has(p.key)} onSelect={(on) => toggle(p.key, on)} />
+          ))}
+        </div>
+      )}
 
       {lastRun?.fx && (
         <Card aria-labelledby="divisas" className="mt-4">
           <CardHeader id="divisas" title="Cambio de divisas (BCE)" actions={<StatusBadge status={lastRun.fx.status} />}
-            description="Para pasar a euros los precios en otras monedas (Wizz Air cobra en la moneda del aeropuerto de salida)." />
+            description="Para pasar a euros los precios en otras monedas (por ejemplo, Wizz Air cobra en la moneda del aeropuerto de salida)." />
           <Steps steps={[lastRun.fx]} />
         </Card>
       )}
-
-      <Card aria-labelledby="en-estudio" className="mt-4">
-        <CardHeader id="en-estudio" title="En estudio"
-          description="Aerolíneas que aún no son proveedores: la prueba solo pide su portada para ver si hay anti-bot antes de dedicarles un proveedor." />
-        {lastRun?.candidates.length ? (
-          <ul className="space-y-3">{lastRun.candidates.map((c) => <CandidateCard key={c.key} c={c} />)}</ul>
-        ) : (
-          <ul className="space-y-2 text-sm">
-            {data.data.candidates.map((c) => (
-              <li key={c.key}><span className="font-medium">{c.label}</span> <span className="text-muted">· {c.notes}</span></li>
-            ))}
-          </ul>
-        )}
-      </Card>
     </>
   )
 }

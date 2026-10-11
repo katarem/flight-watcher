@@ -32,8 +32,8 @@ def _route(w, row) -> str | None:
     return f"{o}→{d}" if (o, d) != (w["origin"], w["destination"]) else None
 
 
-def _link(settings, pk, w, row) -> str:
-    return link_for(settings, pk, row["origin"] or w["origin"], row["destination"] or w["destination"],
+def _link(pk, w, row) -> str:
+    return link_for(pk, row["origin"] or w["origin"], row["destination"] or w["destination"],
                     fmt.to_date(row["flight_date"]))
 
 
@@ -72,7 +72,7 @@ def _provider_stats(con, settings, w, detail: bool = False) -> tuple[list[dict],
         item = {
             "key": pk, "label": prov.label, "color": prov.color, "base": base,
             "active": cov["active"], "routes": [db.pair_key(p) for p in cov["routes"]], "checked_at": cov["checked_at"],
-            "best": best and {**best, **_money(best), "route": _route(w, best), "link": _link(settings, pk, w, best),
+            "best": best and {**best, **_money(best), "route": _route(w, best), "link": _link(pk, w, best),
                               "deal": checker.deal_reason(w, best["price"], base)},
             "run": _run_view(db.last_run(con, w["id"], pk)),
         }
@@ -80,7 +80,7 @@ def _provider_stats(con, settings, w, detail: bool = False) -> tuple[list[dict],
             item["median"] = statistics.median(r["price"] for r in snap) if snap else None
             item["count"] = len(snap)
             rows += [{"provider": pk, "flight_date": r["flight_date"], "price": r["price"], "route": _route(w, r),
-                      "link": _link(settings, pk, w, r), "deal": checker.deal_reason(w, r["price"], base), **_money(r)}
+                      "link": _link(pk, w, r), "deal": checker.deal_reason(w, r["price"], base), **_money(r)}
                      for r in snap]
         stats.append(item)
     rows.sort(key=lambda r: (r["price"], r["flight_date"]))

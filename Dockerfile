@@ -24,12 +24,19 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /srv
 COPY requirements.txt .
-RUN pip install -r requirements.txt && playwright install --with-deps chromium
+# patchright (Playwright parcheado) con Google Chrome, y Xvfb: una pantalla virtual para abrir Chrome «con ventana»
+# sin monitor (lo usan las medidas anti-bot de los proveedores; ver app/providers/browser.py).
+RUN pip install -r requirements.txt \
+    && patchright install --with-deps chrome \
+    && apt-get update && apt-get install -y --no-install-recommends xvfb \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY app ./app
 COPY --from=web /src/app/web ./app/web
 
 VOLUME /data
 EXPOSE 8000
+ENV DISPLAY=:99
+# La pantalla virtual en segundo plano y, con exec, uvicorn como proceso principal (recibe las señales de parada).
 # Un único worker: el planificador vive dentro del proceso.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp >/dev/null 2>&1 & exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"]
