@@ -20,7 +20,9 @@ y, según la cobertura elegida en el formulario:
     universal  nada más (cubre cualquier ruta)
 
 `api` (`ScriptApi`) hace las peticiones en el turno del proveedor: una a la vez y con pausas, 403/429/página
-anti-bot → bloqueado, 404 → None y copia en diagnóstico si está activo. En el espacio de nombres del script ya
+anti-bot → bloqueado, 404 → None y copia en diagnóstico si está activo. Una petición que no responde en 30 s se
+repite una vez (otra vez sin respuesta → `ProviderTimeout`); para una web lenta, `timeout=` en segundos
+(`api.post_json(url, body, timeout=60)`, `api.get_json(url, timeout=60, **params)`, `api.request(…, timeout=60)`). En el espacio de nombres del script ya
 están `date`, `datetime`, `timedelta`, `re`, `json`, `math`, `DayPrice`, `ProviderError`, `ProviderBlocked` y
 `add_months`. `api.log(…)` y `print(…)` escriben en el log del servidor y en la consola de la prueba del editor,
 que además muestra cada petición (URL, estado, tiempo, tamaño y forma del JSON) y en qué línea falla el script.
@@ -48,7 +50,7 @@ from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
 from . import stealth
-from .base import ApiProvider, DayPrice, ProviderBlocked, ProviderError, add_months
+from .base import ApiProvider, DayPrice, ProviderBlocked, ProviderError, ProviderTimeout, add_months
 
 log = logging.getLogger("scripts")
 
@@ -90,6 +92,7 @@ def fetch_route(api, origin, destination, start, max_months):
                             mes=month.strftime("%Y-%m"), moneda="EUR")
         if data is None:  # 404: no opera la ruta
             break
+        # Web lenta: api.get_json(url, timeout=60, …) espera 60 s en vez de 30.
         api.log("mes", month.strftime("%Y-%m"), "→", len(data.get("dias", [])), "días")
         for dia in data.get("dias", []):
             if not dia.get("precio"):
@@ -189,17 +192,27 @@ class ScriptApi:
         return f"{self._tag}-{self._n:02d}" if self.debug_dir else ""
 
     def request(self, method: str, url: str, **kw):
-        """`requests.Response`, o None si la web responde 404."""
+        """`requests.Response`, o None si la web responde 404. Sin respuesta a tiempo, se repite una vez.
+
+        `timeout=` (segundos) para esta petición; por defecto, 30.
+        """
         prov = self._prov
-        if prov.stopped:
-            raise ProviderError(f"{prov.label}: prueba cortada, no se hacen más peticiones")
-        prov.trace("http", f"{method.upper()} {_shown_url(url, kw.get('params'))}")
-        started = time.monotonic()
-        try:
-            r = prov.request(self.session, method, url, self.debug_dir, self._next(), **kw)
-        except ProviderError as exc:
-            prov.trace("error", f"  ✗ {exc}")
-            raise
+        for attempt in (1, 2):
+            if prov.stopped:
+                raise ProviderError(f"{prov.label}: prueba cortada, no se hacen más peticiones")
+            prov.trace("http", f"{method.upper()} {_shown_url(url, kw.get('params'))}")
+            started = time.monotonic()
+            try:
+                r = prov.request(self.session, method, url, self.debug_dir, self._next(), **kw)
+                break
+            except ProviderTimeout as exc:
+                if attempt == 2:
+                    prov.trace("error", f"  ✗ {exc}")
+                    raise
+                prov.trace("warn", f"  ✗ {exc}; lo repito una vez")
+            except ProviderError as exc:
+                prov.trace("error", f"  ✗ {exc}")
+                raise
         ms = int((time.monotonic() - started) * 1000)
         if r is None:
             prov.trace("warn", f"  ← 404 en {ms} ms: no existe (la función recibe None)")
@@ -218,13 +231,13 @@ class ScriptApi:
             self._prov.trace("info", f"  JSON: {shape(data)}")
         return data
 
-    def get_json(self, url: str, **params):
-        """JSON de un GET (None si 404)."""
-        return self._json(self.request("GET", url, params=params))
+    def get_json(self, url: str, timeout: float | None = None, **params):
+        """JSON de un GET (None si 404). `timeout`: segundos de espera (30 si no se indica)."""
+        return self._json(self.request("GET", url, params=params, timeout=timeout))
 
-    def post_json(self, url: str, body, **params):
-        """JSON de un POST con cuerpo JSON (None si 404)."""
-        return self._json(self.request("POST", url, params=params, json=body))
+    def post_json(self, url: str, body, timeout: float | None = None, **params):
+        """JSON de un POST con cuerpo JSON (None si 404). `timeout`: segundos de espera (30 si no se indica)."""
+        return self._json(self.request("POST", url, params=params, json=body, timeout=timeout))
 
     def log(self, *parts):
         """Mensaje para el log del servidor y para la consola de la prueba del editor."""

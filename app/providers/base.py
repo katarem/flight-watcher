@@ -45,6 +45,10 @@ class ProviderError(RuntimeError):
     pass
 
 
+class ProviderTimeout(ProviderError):
+    """La web no ha respondido a tiempo a una petición (puede ser algo puntual: se repite una vez)."""
+
+
 class ProviderBlocked(ProviderError):
     """La web rechaza la consulta (403/429, anti-bot o CAPTCHA): no es un fallo nuestro ni de la ruta."""
 
@@ -106,6 +110,9 @@ class Provider(ABC):
     #: Última señal de vida (`time.monotonic()`): turno, petición o traza. La prueba de acceso no corta a un
     #: proveedor lento que sigue avanzando, solo al que lleva demasiado sin dar ninguna (ver health.py).
     last_activity: float = 0.0
+    #: Hasta cuándo (`time.monotonic()`) puede tardar la petición en curso según su propio `timeout`: mientras tanto
+    #: no está colgado aunque no dé señales.
+    busy_until: float = 0.0
 
     def pulse(self) -> None:
         """Apunta que el proveedor sigue haciendo algo."""
@@ -313,12 +320,17 @@ class ApiProvider(Provider):
 
     def request(self, session: requests.Session, method: str, url: str, debug_dir: Path | None = None,
                 tag: str = "", **kw) -> requests.Response | None:
-        """Petición en el turno del proveedor, con errores legibles. None si la API responde 404."""
+        """Petición en el turno del proveedor, con errores legibles. None si la API responde 404.
+
+        `timeout` (segundos) sustituye al del proveedor para esta petición.
+        """
+        timeout = kw.pop("timeout", None) or self.timeout
         with self.slot():
+            self.busy_until = time.monotonic() + timeout
             try:
-                r = session.request(method, url, timeout=self.timeout, **kw)
+                r = session.request(method, url, timeout=timeout, **kw)
             except TIMEOUT_ERRORS as exc:
-                raise ProviderError(f"{self.label}: la API no responde (tiempo agotado)") from exc
+                raise ProviderTimeout(f"{self.label}: la API no ha respondido en {timeout:g} s (tiempo agotado)") from exc
             except NETWORK_ERRORS as exc:
                 raise ProviderError(f"{self.label}: sin conexión con la API ({type(exc).__name__})") from exc
         if debug_dir and tag:

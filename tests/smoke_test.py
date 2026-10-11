@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import json
+import requests
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -579,6 +580,10 @@ def providers_flow(admin: Api, admin_id: int, admin_chan: int):
 HTTP: dict = {}
 
 
+#: `timeout` con el que se hizo cada petición de FakeHttp.
+WAITS: list = []
+
+
 class FakeHttp:
     """Sustituye a requests.Session en los scripts: sin red, con las respuestas de HTTP."""
     headers: dict = {}
@@ -590,7 +595,13 @@ class FakeHttp:
         return False
 
     def request(self, method, url, timeout=None, params=None, json=None):
-        status, body = HTTP.get(url, (404, {"error": "no existe"}))
+        WAITS.append(timeout)
+        answer = HTTP.get(url, (404, {"error": "no existe"}))
+        if isinstance(answer, list):  # respuestas sucesivas; la última se repite
+            answer = answer.pop(0) if len(answer) > 1 else answer[0]
+        if answer == "timeout":
+            raise requests.Timeout("sin respuesta")
+        status, body = answer
 
         class Resp:
             pass
@@ -828,6 +839,19 @@ def scripts_flow(admin: Api, admin_chan: int):
                    "        api.log('sigo')\n    return {}\n", idle_timeout=0.5, max_time=0.6)
     check(res["status"] == "timeout" and "tope de la prueba" in res["steps"][-1]["detail"],
           "aunque siga avanzando, la prueba tiene un tope total")
+
+    # --- una petición sin respuesta a tiempo se repite una vez; el script puede esperar más a una web lenta
+    lenta = "def fetch_route(api, o, d, start, months):\n    api.post_json('https://api.prueba.test/lenta', {}, timeout=45)\n    return {}\n"
+    HTTP["https://api.prueba.test/lenta"] = ["timeout", (200, {"ok": 1})]
+    WAITS.clear()
+    res, lines = draft(lenta)
+    check(res["status"] == "empty" and WAITS == [45, 45] and any("lo repito una vez" in t for t in lines),
+          "sin respuesta a tiempo: se repite una vez (con el timeout que pide el script)")
+    HTTP["https://api.prueba.test/lenta"] = ["timeout"]
+    res, lines = draft(lenta.replace(", timeout=45", ""))
+    check(res["status"] == "timeout" and res["steps"][-1]["status"] == "timeout"
+          and "no ha respondido en 30 s" in res["steps"][-1]["detail"],
+          "si tampoco responde la segunda vez, el paso sale como «sin respuesta» con el tiempo que esperó")
 
     # --- guardado: entra en el registro y lo usan vigilancias, ronda, avisos y enlaces
     r = admin.post("/providers", {**base, "password": "clave-de-prueba-1"})
