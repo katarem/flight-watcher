@@ -173,7 +173,7 @@ def _check_one(browser, settings, tz, watch, prov, pairs, trigger) -> dict:
                         "provider": prov.key, "day": p.day, "price": p.price_eur, "reason": reason,
                         "origin": p.origin, "destination": p.destination, "stops": p.stops,
                         "currency": p.currency, "orig_price": p.price if p.currency != "EUR" else None,
-                        "link": link_for(settings, prov.key, p.origin or watch["origin"],
+                        "link": link_for(prov.key, p.origin or watch["origin"],
                                          p.destination or watch["destination"], p.day),
                     })
         db.finish_run(con, run_id, datetime.now(tz).replace(tzinfo=None).isoformat(timespec="seconds"),

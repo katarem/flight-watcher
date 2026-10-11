@@ -272,7 +272,7 @@ test.describe('administración', () => {
 test.describe('proveedores', () => {
   test.beforeEach(async ({ page }) => login(page))
 
-  test('probar el acceso a los proveedores y a las aerolíneas en estudio', async ({ page }) => {
+  test('probar el acceso a los proveedores', async ({ page }) => {
     await page.getByRole('link', { name: 'Proveedores' }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Proveedores' })).toBeVisible()
     await expectAccessible(page)
@@ -287,19 +287,17 @@ test.describe('proveedores', () => {
     await expect(page.getByRole('alert')).toContainText('Indica origen y destino')
     await page.getByLabel('Destino de la prueba (opcional)').fill('bcn')
     await page.getByRole('button', { name: 'Probar todos' }).click()
-    const studied = page.getByRole('region', { name: 'En estudio' })
-    await expect(studied.getByText('Bloqueado', { exact: true })).toBeVisible({ timeout: 30_000 })
-    await expect(studied.getByText(/Detectado: Akamai/)).toBeVisible()
-    await expect(page.getByRole('region', { name: 'Cambio de divisas (BCE)' }).getByText('Accesible', { exact: true })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Cambio de divisas (BCE)' }).getByText('Accesible', { exact: true }))
+      .toBeVisible({ timeout: 30_000 })
     await expectAccessible(page)
   })
 
-  test('crear, probar y eliminar un proveedor propio (script)', async ({ page }) => {
+  test('crear, probar con la consola, exportar y eliminar un proveedor', async ({ page }) => {
     const key = `e2e${Date.now() % 100_000}`
     const name = `Aerolínea ${key}`
     await page.goto('/admin/providers')
     await page.getByRole('link', { name: 'Nuevo proveedor' }).click()
-    await expect(page.getByRole('heading', { level: 1, name: 'Nuevo proveedor propio' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: 'Nuevo proveedor' })).toBeVisible()
     await expect(page.getByLabel('Código', { exact: true })).toHaveValue(/def fetch_route/)
     await expectAccessible(page)
 
@@ -314,36 +312,64 @@ test.describe('proveedores', () => {
       '    return {start + timedelta(days=d): 40 + d for d in range(5, 9)}',
     ].join('\n'))
 
-    const testCard = page.getByRole('region', { name: 'Probar sin guardar' })
-    await testCard.getByRole('button', { name: 'Probar el script' }).click()
-    await expect(testCard.getByRole('alert')).toContainText('Confirma tu contraseña')
+    const testBox = page.getByRole('region', { name: 'Probar sin guardar' })
+    await testBox.getByRole('button', { name: 'Probar el script' }).click()
+    await expect(testBox.getByRole('alert')).toContainText('Confirma tu contraseña')
     await page.getByLabel('Tu contraseña').fill(ADMIN.password)
-    await testCard.getByRole('button', { name: 'Probar el script' }).click()
-    await expect(testCard.getByText('Accesible', { exact: true })).toBeVisible({ timeout: 20_000 })
-    await expect(testCard.getByText(/4 días con precio para SVQ→BCN; el más barato, 45 EUR/)).toBeVisible()
-    await expect(testCard.getByRole('table')).toContainText('SVQ→BCN')
-    await expect(testCard.getByLabel('Mensajes del script')).toHaveText('ruta SVQ BCN')
+    await testBox.getByRole('button', { name: 'Probar el script' }).click()
+    const log = testBox.getByRole('log', { name: 'Salida de la prueba' })
+    await expect(log).toContainText('Mensaje del script: ruta SVQ BCN', { timeout: 20_000 })
+    await expect(log).toContainText('4 días con precio para SVQ→BCN; el más barato, 45 EUR')
+    await expect(testBox.getByText('Accesible', { exact: true })).toBeVisible()
+    await expect(testBox.getByRole('table')).toContainText('SVQ→BCN')
     await expectAccessible(page)
 
     await page.getByRole('button', { name: 'Crear proveedor' }).click()
     await expect(page.getByRole('heading', { level: 1, name: `Editar ${name}` })).toBeVisible()
     await page.getByRole('link', { name: 'Proveedores', exact: true }).first().click()
     const card = page.getByRole('region', { name, exact: true })
-    await expect(card.getByText('Script propio')).toBeVisible()
-    await expect(page.getByRole('region', { name: 'Proveedores propios' })).toContainText(key)
+    await expect(card).toContainText(key)
 
-    await card.getByRole('link', { name: `Editar el script de ${name}` }).click()
+    await card.getByRole('checkbox', { name: `Elegir ${name} para exportar` }).click()
+    const download = page.waitForEvent('download')
+    await page.getByRole('link', { name: 'Exportar los elegidos (1)' }).click()
+    expect((await download).suggestedFilename()).toBe(`proveedores-${key}.fwp`)
+
+    await card.getByRole('link', { name: `Editar ${name}` }).click()
     await page.getByRole('button', { name: 'Eliminar' }).click()
     await page.getByRole('alertdialog').getByRole('button', { name: 'Eliminar' }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Proveedores' })).toBeVisible()
     await expect(page.getByRole('region', { name, exact: true })).toHaveCount(0)
+  })
+
+  test('importar proveedores desde un enlace, revisando su código', async ({ page }) => {
+    await page.goto('/admin/providers')
+    await page.getByRole('link', { name: 'Importar' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Importar proveedores' })).toBeVisible()
+    await expectAccessible(page)
+
+    await page.getByRole('button', { name: 'Sin verificar (Wizz Air y Google Flights)' }).click()
+    const found = page.getByRole('region', { name: /Qué trae/ })
+    await expect(found.getByRole('checkbox', { name: /Wizz Air/ })).toBeVisible()
+    await expect(found.getByText('Igual que el guardado').first()).toBeVisible()
+    await found.getByText('Ver el código').first().click()
+    await expect(found.getByLabel('Código de Wizz Air')).toContainText('def fetch_route(api, origin, destination, start, max_months):')
+    await expectAccessible(page)
+
+    await found.getByRole('checkbox', { name: /Wizz Air/ }).click()
+    await page.getByRole('button', { name: 'Importar 1 proveedor' }).click()
+    await expect(page.getByRole('alert')).toContainText('Confirma tu contraseña')
+    await page.getByLabel('Tu contraseña').fill(ADMIN.password)
+    await page.getByRole('button', { name: 'Importar 1 proveedor' }).click()
+    await expect(page.getByText('1 proveedor importado')).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: 'Proveedores' })).toBeVisible()
   })
 })
 
 test('en el móvil el menú lleva a todas las secciones y nada se sale de la pantalla @movil', async ({ page, isMobile }) => {
   test.skip(!isMobile, 'solo en móvil')
   await login(page)
-  for (const path of ['/', '/watches/1', '/watches/new', '/trips', '/trips/1', '/trips/new', '/profile', '/admin/users', '/admin/providers', '/admin/providers/new', '/settings', '/runs']) {
+  for (const path of ['/', '/watches/1', '/watches/new', '/trips', '/trips/1', '/trips/new', '/profile', '/admin/users', '/admin/providers', '/admin/providers/new', '/admin/providers/import', '/settings', '/runs']) {
     await page.goto(path)
     await page.waitForLoadState('networkidle')
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)

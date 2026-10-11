@@ -3,7 +3,9 @@
 Crea una BD SQLite en la revisión 0003 con usuarios, vigilancias (CSV de proveedores), canales, precios,
 avisos y ejecuciones; aplica las migraciones pendientes como la app (`db.init`) y comprueba que no se
 pierde nada (el ON DELETE CASCADE al recrear tablas en SQLite) y que los datos se convierten bien.
-Después crea un viaje (0005) y un proveedor propio (0006), baja a 0005, a 0004 y a 0003 y vuelve a subir.
+Crea los proveedores incluidos como al arrancar (`bundle.seed`, con la plantilla de enlace que había en Ajustes y
+los del paquete sin verificar que ya usaba una vigilancia). Después crea un viaje (0005) y un proveedor (0006),
+baja a 0006, a 0005, a 0004 y a 0003 y vuelve a subir.
 """
 import os
 import sqlite3
@@ -14,6 +16,7 @@ os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="fw-mig-")
 from alembic import command  # noqa: E402
 
 from app import config, db  # noqa: E402
+from app.providers import bundle  # noqa: E402
 
 TABLES = ("users", "watches", "channels", "watch_channels", "prices", "alerts", "runs")
 
@@ -39,7 +42,9 @@ def main():
               "VALUES (1, 'admin', 'Admin', 'x', 'admin', 1, 1, '2026-01-01T00:00:00')")
     c.execute("INSERT INTO watches(id, user_id, name, origin, destination, providers, discount_pct, enabled, created_at) "
               "VALUES (1, 1, 'Sevilla → Tenerife', 'SVQ', 'TCI', 'vueling,ryanair', 30, 1, '2026-01-01'), "
-              "(2, 1, 'Madrid → Barcelona', 'MAD', 'BCN', 'vueling', 30, 0, '2026-01-01')")
+              "(2, 1, 'Madrid → Barcelona', 'MAD', 'BCN', 'vueling,google', 30, 0, '2026-01-01')")
+    c.execute("INSERT INTO settings(key, value) VALUES ('link_vueling', 'https://www.vueling.com/x?d={date}'), "
+              "('link_ryanair', ''), ('schedule_hours', '9')")
     c.execute("INSERT INTO channels(id, user_id, kind, name, config, enabled, created_at) "
               "VALUES (1, 1, 'discord', 'Discord', '{}', 1, '2026-01-01')")
     c.execute("INSERT INTO watch_channels VALUES (1, 1), (2, 1)")
@@ -63,12 +68,23 @@ def main():
     check(w1["providers"] == ["ryanair", "vueling"] and w1["coverage"]["vueling"]["routes"] == [("SVQ", "TFN"), ("SVQ", "TFS")]
           and w1["coverage"]["vueling"]["checked_at"] is None and w1["coverage"]["vueling"]["active"],
           "el CSV de proveedores pasa a watch_providers (todos los pares, sin comprobar)")
-    check(w2["coverage"]["vueling"]["routes"] == [("MAD", "BCN")] and w1["max_stops"] == 0 == w2["max_stops"],
+    check(w2["coverage"]["vueling"]["routes"] == [("MAD", "BCN")] and w1["max_stops"] == 0 == w2["max_stops"]
+          and set(w2["coverage"]) == {"vueling", "google"},
           "vigilancias sin ciudades y máximo de escalas 0 (como antes)")
     with db.connect() as con:
         check(db.latest_snapshot(con, 1, "vueling")[0]["orig_price"] is None, "los precios antiguos quedan en euros")
     check(c.execute("PRAGMA foreign_key_check").fetchall() == [] and c.execute("PRAGMA integrity_check").fetchone()[0] == "ok",
           "claves foráneas e integridad")
+    created = bundle.seed()
+    with db.connect() as con:
+        rows = {r["key"]: r for r in db.list_provider_scripts(con)}
+    settings = dict(c.execute("SELECT key, value FROM settings").fetchall())
+    check(created == ["vueling", "ryanair", "google"] and set(rows) == {"vueling", "ryanair", "google"}
+          and rows["vueling"]["link_template"] == "https://www.vueling.com/x?d={date}"
+          and rows["ryanair"]["link_template"].startswith("https://www.ryanair.com/")
+          and not any(k.startswith("link_") for k in settings) and settings["schedule_hours"] == "9"
+          and settings[bundle.SEED_FLAG] == "1" and bundle.seed() == [],
+          "al arrancar: Vueling, Ryanair y el Google que ya se usaba, con la plantilla de Ajustes (una sola vez)")
     with db.connect() as con:
         tid = db.create_trip(con, 1, {"name": "Viaje", "outbound_id": 1, "return_id": 2, "min_nights": 2, "max_nights": 4,
                                       "date_from": None, "date_to": None, "max_total": None, "discount_pct": 30,
@@ -78,6 +94,10 @@ def main():
                                                 "max_routes": None, "health_origin": "SVQ", "health_destination": "TFN",
                                                 "link_template": "", "notes": "", "min_interval": 1.5,
                                                 "code": "def fetch_route(*a):\n    return {}\n", "enabled": 1}, "admin")
+    migrate("0006", down=True)
+    cols = {r[1] for r in c.execute("PRAGMA table_info(provider_scripts)")}
+    check(counts() == before and "source" not in cols and c.execute("SELECT count(*) FROM provider_scripts").fetchone()[0] == 4,
+          "downgrade a 0006 quita el origen de los proveedores sin perderlos")
     migrate("0005", down=True)
     tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     check(counts() == before and "provider_scripts" not in tables and "trips" in tables,
@@ -89,7 +109,7 @@ def main():
           "downgrade a 0004 quita los viajes sin tocar lo demás")
     migrate("0003", down=True)
     check(counts() == before and dict(c.execute("SELECT id, providers FROM watches").fetchall())
-          == {1: "ryanair,vueling", 2: "vueling"}, "downgrade a 0003 recupera el CSV sin perder filas")
+          == {1: "ryanair,vueling", 2: "google,vueling"}, "downgrade a 0003 recupera el CSV sin perder filas")
     db.init()
     check(counts() == before, "y vuelta a head")
     print("\nTodo correcto.")

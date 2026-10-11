@@ -1,14 +1,15 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, FlaskConical, ShieldAlert, Trash2 } from 'lucide-react'
-import { useState, type FormEvent } from 'react'
+import { ChevronLeft, Download, FlaskConical, ShieldAlert, Trash2 } from 'lucide-react'
+import { useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
-import { del, errorList, post, put } from '@/api/client'
-import { keys, useProviderScript, useProviderScripts } from '@/api/queries'
-import type { Coverage, ProviderScript, ScriptTestResult } from '@/api/types'
-import { StatusBadge, Steps } from '@/components/provider/health'
+import { API, ApiError, del, errorList, post, put, stream } from '@/api/client'
+import { keys, useProvider, useProvidersAdmin } from '@/api/queries'
+import type { ConsoleEvent, Coverage, Provider, ScriptTestResult } from '@/api/types'
+import { ScriptConsole } from '@/components/provider/console'
+import { StatusBadge } from '@/components/provider/health'
 import { Button, buttonClass } from '@/components/ui/button'
-import { Card, CardHeader, PageHeader } from '@/components/ui/card'
+import { PageHeader } from '@/components/ui/card'
 import { ConfirmDialog } from '@/components/ui/dialog'
 import { ErrorBox, LoadError, PageLoading } from '@/components/ui/feedback'
 import { Field, FormSection, Input, Select, Switch, Textarea } from '@/components/ui/form'
@@ -36,7 +37,7 @@ interface FormState {
   enabled: boolean
 }
 
-const fromScript = (s: ProviderScript): FormState => ({
+const fromProvider = (s: Provider): FormState => ({
   key: s.key, label: s.label, color: s.color, coverage: s.coverage, max_routes: s.max_routes != null ? String(s.max_routes) : '',
   health_origin: s.health_origin, health_destination: s.health_destination, link_template: s.link_template, notes: s.notes,
   min_interval: String(s.min_interval), code: s.code ?? '', enabled: s.enabled,
@@ -56,7 +57,8 @@ function Contract({ coverage }: { coverage: Coverage }) {
           {' '}<code>origin</code>→<code>destination</code> (aeropuertos IATA) desde <code>start</code> (fecha) durante
           {' '}<code>max_months</code> meses. Devuelve <code>{'{fecha: precio en euros}'}</code>, <code>{'{fecha: DayPrice}'}</code> o
           una lista de <code>DayPrice</code>; <code>{'{}'}</code> si no opera la ruta. Con otra moneda o con escalas:
-          {' '}<code>DayPrice(día, precio, currency=&quot;GBP&quot;, stops=1)</code>.
+          {' '}<code>DayPrice(día, precio, currency=&quot;GBP&quot;, stops=1)</code>. Si además acepta
+          {' '}<code>max_stops=None</code>, recibe el máximo de escalas de la vigilancia y filtra él mismo.
         </p>
         {fn ? (
           <p>
@@ -72,11 +74,12 @@ function Contract({ coverage }: { coverage: Coverage }) {
           indicada; 403/429/anti-bot = bloqueado; 404 = <code>None</code>; copia en Diagnóstico si está activo):
           {' '}<code>api.get_json(url, **params)</code>, <code>api.post_json(url, body, **params)</code>,
           {' '}<code>api.request(method, url, **kw)</code>, <code>api.session</code> (cabeceras) y <code>api.log(texto)</code>.
+          {' '}<code>api.log</code> y <code>print</code> salen en la consola de la prueba, junto a cada petición y su respuesta.
         </p>
         <p>
           Ya están importados <code>date</code>, <code>datetime</code>, <code>timedelta</code>, <code>re</code>, <code>json</code>,
           {' '}<code>math</code>, <code>DayPrice</code>, <code>ProviderError</code>, <code>ProviderBlocked</code> y <code>add_months</code>.
-          Llama a las API con un User-Agent honesto: nada de hacerse pasar por un navegador ni de saltarse un anti-bot.
+          Las peticiones llevan un User-Agent que dice quiénes somos (<code>flight-watcher</code>).
         </p>
       </div>
     </details>
@@ -85,12 +88,11 @@ function Contract({ coverage }: { coverage: Coverage }) {
 
 function TestResult({ res }: { res: ScriptTestResult }) {
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <StatusBadge status={res.status} />
         <span className="text-muted">{res.route} · {(res.latency_ms / 1000).toFixed(1)} s · {res.n_prices} días con precio</span>
       </div>
-      <Steps steps={res.steps} />
       {res.sample.length > 0 && (
         <div className="max-h-72 overflow-auto rounded-xl border border-line" tabIndex={0} aria-label="Precios de la prueba">
           <table className="w-full text-sm">
@@ -116,19 +118,13 @@ function TestResult({ res }: { res: ScriptTestResult }) {
           </table>
         </div>
       )}
-      {res.logs.length > 0 && (
-        <div className="space-y-1">
-          <p className="text-sm font-medium">Mensajes del script (<code>api.log</code>)</p>
-          <pre className="max-h-48 overflow-auto rounded-xl bg-surface-2 p-3 text-xs" tabIndex={0} aria-label="Mensajes del script">
-            {res.logs.join('\n')}
-          </pre>
-        </div>
-      )}
     </div>
   )
 }
 
-function ScriptForm({ initial, existing }: { initial: FormState; existing?: ProviderScript }) {
+type TestEvent = ConsoleEvent | { result: ScriptTestResult }
+
+function ProviderForm({ initial, existing, editable }: { initial: FormState; existing?: Provider; editable: boolean }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const isNew = !existing
@@ -138,6 +134,9 @@ function ScriptForm({ initial, existing }: { initial: FormState; existing?: Prov
   const [errors, setErrors] = useState<string[]>([])
   const [testErrors, setTestErrors] = useState<string[]>([])
   const [result, setResult] = useState<ScriptTestResult | null>(null)
+  const [events, setEvents] = useState<ConsoleEvent[]>([])
+  const [consoleOpen, setConsoleOpen] = useState(false)
+  const received = useRef(0)
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((s) => ({ ...s, [k]: v }))
   const refresh = () => {
     qc.invalidateQueries({ queryKey: keys.providers })
@@ -147,36 +146,54 @@ function ScriptForm({ initial, existing }: { initial: FormState; existing?: Prov
   const save = useMutation({
     mutationFn: () => {
       const body = { ...f, password }
-      return isNew ? post<{ script: ProviderScript }>('/providers/scripts', body)
-        : put<{ script: ProviderScript }>(`/providers/scripts/${existing.key}`, body)
+      return isNew ? post<{ provider: Provider }>('/providers', body)
+        : put<{ provider: Provider }>(`/providers/${existing.key}`, body)
     },
-    onSuccess: ({ script }) => {
+    onSuccess: ({ provider }) => {
       refresh()
-      qc.setQueryData(keys.providerScript(script.key), script)
-      toast.success(isNew ? `Proveedor «${script.label}» creado` : 'Cambios guardados', {
-        description: script.enabled ? 'Ya se puede elegir en las vigilancias.' : 'Está desactivado: ninguna vigilancia lo consulta.',
+      qc.setQueryData(keys.provider(provider.key), provider)
+      toast.success(isNew ? `Proveedor «${provider.label}» creado` : 'Cambios guardados', {
+        description: provider.enabled ? 'Ya se puede elegir en las vigilancias.' : 'Está desactivado: ninguna vigilancia lo consulta.',
       })
-      if (isNew) navigate(`/admin/providers/${script.key}/edit`, { replace: true })
+      if (isNew) navigate(`/admin/providers/${provider.key}/edit`, { replace: true })
     },
     onError: (e) => setErrors(errorList(e)),
   })
 
+  // La prueba responde en streaming: cada línea de la consola llega en cuanto ocurre y el resultado, al final.
   const test = useMutation({
-    mutationFn: () => post<{ result: ScriptTestResult }>('/providers/scripts/test', { ...f, ...route, password }),
+    mutationFn: async () => {
+      let final = null as ScriptTestResult | null
+      await stream<TestEvent>('/providers/test', { ...f, ...route, password }, (ev) => {
+        if ('result' in ev) final = ev.result
+        else {
+          received.current += 1
+          setEvents((xs) => [...xs, ev])
+        }
+      })
+      if (!final) throw new ApiError(0, ['La prueba no ha terminado: se ha cortado la conexión con el servidor.'])
+      return final
+    },
     onMutate: () => {
       setTestErrors([])
       setResult(null)
+      setEvents([])
+      received.current = 0
+      setConsoleOpen(true)
     },
-    onSuccess: ({ result: res }) => {
+    onSuccess: (res) => {
       setResult(res)
       if (res.status === 'ok') toast.success('El script funciona')
-      else toast.warning('El script no ha ido bien', { description: 'Mira el resultado de la prueba.' })
+      else toast.warning('El script no ha ido bien', { description: 'Mira la consola de la prueba.' })
     },
-    onError: (e) => setTestErrors(errorList(e)),
+    onError: (e) => {
+      setTestErrors(errorList(e))
+      if (!received.current) setConsoleOpen(false)
+    },
   })
 
   const remove = useMutation({
-    mutationFn: () => del(`/providers/scripts/${existing!.key}`),
+    mutationFn: () => del(`/providers/${existing!.key}`),
     onSuccess: () => {
       refresh()
       toast.success(`Proveedor «${existing!.label}» eliminado`)
@@ -266,17 +283,6 @@ function ScriptForm({ initial, existing }: { initial: FormState; existing?: Prov
         </Field>
       </FormSection>
 
-      <FormSection title="Script" description="Código de Python que cumple el contrato de proveedor.">
-        <Contract coverage={f.coverage} />
-        <Field label="Código" hint="Python 3.12. Se ejecuta en el servidor al guardarlo activo, al probarlo y en cada ronda.">
-          {(id, hint) => <Textarea id={id} aria-describedby={hint} value={f.code} onChange={(e) => set('code', e.target.value)}
-            rows={26} spellCheck={false} autoCapitalize="none" autoComplete="off" wrap="off"
-            className="font-mono text-xs leading-5 whitespace-pre" />}
-        </Field>
-        <Switch checked={f.enabled} onChange={(v) => set('enabled', v)} label="Proveedor activo"
-          description="Desactivado no se carga: no sale en las vigilancias ni se consulta en las rondas." />
-      </FormSection>
-
       <section aria-labelledby="confirmar" className="space-y-3 rounded-2xl border border-warn/40 bg-warn/8 p-4 sm:p-5">
         <h2 id="confirmar" className="flex items-center gap-2 text-base font-semibold">
           <ShieldAlert className="size-5 text-warn" aria-hidden="true" /> Confirma que eres tú
@@ -292,35 +298,58 @@ function ScriptForm({ initial, existing }: { initial: FormState; existing?: Prov
         </Field>
       </section>
 
-      <Card aria-labelledby="probar-script">
-        <CardHeader id="probar-script" title="Probar sin guardar"
-          description="Carga el script del formulario y hace la prueba de acceso (cobertura y precios de un mes) desde la IP del servidor. No guarda nada." />
-        <div className="space-y-4">
+      <FormSection title="Script" description="Código de Python que cumple el contrato de proveedor.">
+        <Contract coverage={f.coverage} />
+        {!editable && (
+          <p className="rounded-xl border border-warn/30 bg-warn/10 p-3 text-sm text-warn">
+            En este servidor no se puede cambiar ni probar el código desde el panel (<code>PROVIDER_SCRIPTS=0</code>).
+            Sí puedes cambiar el nombre, la plantilla de enlace o desactivarlo.
+          </p>
+        )}
+        <section aria-labelledby="probar-script" className="space-y-3 rounded-xl border border-line p-3 sm:p-4">
+          <div>
+            <h3 id="probar-script" className="text-sm font-semibold">Probar sin guardar</h3>
+            <p className="text-xs text-muted">
+              Carga el script de abajo y hace la prueba de acceso (cobertura y precios de un mes) desde la IP del
+              servidor. La consola cuenta cada paso y cada petición mientras ocurren. No guarda nada.
+            </p>
+          </div>
           <ErrorBox errors={testErrors} />
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Origen (opcional)" hint="Vacío = la ruta de prueba.">
-              {(id, hint) => <Input id={id} aria-describedby={hint} value={route.origin} placeholder={f.health_origin || 'SVQ'}
+          <div className="flex flex-wrap items-end gap-3">
+            <Field label="Origen (opcional)" className="w-36">
+              {(id) => <Input id={id} value={route.origin} placeholder={f.health_origin || 'SVQ'}
                 className="font-mono uppercase" autoComplete="off" spellCheck={false}
                 onChange={(e) => setRoute((r) => ({ ...r, origin: iata(e.target.value) }))} />}
             </Field>
-            <Field label="Destino (opcional)">
+            <Field label="Destino (opcional)" className="w-36">
               {(id) => <Input id={id} value={route.destination} placeholder={f.health_destination || 'BCN'}
                 className="font-mono uppercase" autoComplete="off" spellCheck={false}
                 onChange={(e) => setRoute((r) => ({ ...r, destination: iata(e.target.value) }))} />}
             </Field>
+            <Button type="button" variant="secondary" onClick={() => test.mutate()} loading={test.isPending} disabled={!editable}>
+              {!test.isPending && <FlaskConical />} Probar el script
+            </Button>
           </div>
-          <Button type="button" variant="secondary" onClick={() => test.mutate()} loading={test.isPending}>
-            {!test.isPending && <FlaskConical />} Probar el script
-          </Button>
+          {consoleOpen && <ScriptConsole events={events} running={test.isPending} onClose={() => setConsoleOpen(false)} />}
           <div aria-live="polite">{result && <TestResult res={result} />}</div>
-        </div>
-      </Card>
+        </section>
+        <Field label="Código" hint="Python 3.12. Se ejecuta en el servidor al guardarlo activo, al probarlo y en cada ronda.">
+          {(id, hint) => <Textarea id={id} aria-describedby={hint} value={f.code} onChange={(e) => set('code', e.target.value)}
+            rows={26} spellCheck={false} autoCapitalize="none" autoComplete="off" wrap="off" readOnly={!editable}
+            className="font-mono text-xs leading-5 whitespace-pre" />}
+        </Field>
+        <Switch checked={f.enabled} onChange={(v) => set('enabled', v)} label="Proveedor activo"
+          description="Desactivado no se carga: no sale en las vigilancias ni se consulta en las rondas." />
+      </FormSection>
 
       <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" loading={save.isPending}>{isNew ? 'Crear proveedor' : 'Guardar cambios'}</Button>
         <Link to="/admin/providers" className={buttonClass('ghost')}>Volver</Link>
         {existing && (
-          <div className="ml-auto">
+          <div className="ml-auto flex gap-2">
+            <a href={`${API}/providers/export?keys=${encodeURIComponent(existing.key)}`} download className={buttonClass('ghost')}>
+              <Download aria-hidden="true" /> Exportar
+            </a>
             <ConfirmDialog
               trigger={<Button type="button" variant="ghost" className="text-danger"><Trash2 /> Eliminar</Button>}
               title={`¿Eliminar «${existing.label}»?`}
@@ -337,18 +366,20 @@ function ScriptForm({ initial, existing }: { initial: FormState; existing?: Prov
   )
 }
 
-export function ProviderScriptPage() {
+const SOURCE_LABEL = (s: Provider) => s.source ? <> · importado de <span className="break-all">{s.source}</span></> : null
+
+export function ProviderFormPage() {
   const params = useParams()
   const key = params.key ?? null
-  const list = useProviderScripts()
-  const existing = useProviderScript(key)
-  useTitle(key ? 'Editar proveedor propio' : 'Nuevo proveedor propio')
+  const list = useProvidersAdmin()
+  const existing = useProvider(key)
+  useTitle(key ? 'Editar proveedor' : 'Nuevo proveedor')
 
   if (list.isPending || (key != null && existing.isPending)) return <PageLoading />
   if (list.isError) return <LoadError error={list.error} />
   if (key != null && existing.isError) return <LoadError error={existing.error} />
 
-  const initial: FormState = existing.data ? fromScript(existing.data) : {
+  const initial: FormState = existing.data ? fromProvider(existing.data) : {
     key: '', label: '', color: '#64748b', coverage: 'network', max_routes: '', health_origin: '', health_destination: '',
     link_template: '', notes: '', min_interval: '1.5', code: list.data.template, enabled: true,
   }
@@ -357,17 +388,17 @@ export function ProviderScriptPage() {
     <div className="mx-auto max-w-4xl">
       <PageHeader
         back={<Link to="/admin/providers" className="inline-flex items-center gap-1 text-sm text-muted hover:text-fg"><ChevronLeft className="size-4" aria-hidden="true" /> Proveedores</Link>}
-        title={existing.data ? `Editar ${existing.data.label}` : 'Nuevo proveedor propio'}
+        title={existing.data ? `Editar ${existing.data.label}` : 'Nuevo proveedor'}
         description={existing.data
-          ? `Guardado ${fmtAgo(existing.data.updated_at)} por @${existing.data.updated_by}.`
-          : 'Añade una aerolínea sin tocar el código de la aplicación: un script de Python que lee sus rutas y precios.'}
+          ? <>Guardado {fmtAgo(existing.data.updated_at)} por @{existing.data.updated_by}{SOURCE_LABEL(existing.data)}.</>
+          : 'Un script de Python que lee las rutas y los precios de una web. También puedes importar uno desde un enlace o un archivo.'}
       />
-      {!list.data.enabled ? (
+      {!existing.data && !list.data.editable ? (
         <p className="rounded-xl border border-warn/30 bg-warn/10 p-3 text-sm text-warn">
-          Los proveedores propios están desactivados en este servidor (<code>PROVIDER_SCRIPTS=0</code>).
+          En este servidor no se pueden crear proveedores desde el panel (<code>PROVIDER_SCRIPTS=0</code>).
         </p>
       ) : (
-        <ScriptForm key={key ?? 'new'} initial={initial} existing={existing.data} />
+        <ProviderForm key={key ?? 'new'} initial={initial} existing={existing.data} editable={list.data.editable} />
       )}
     </div>
   )

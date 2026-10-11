@@ -1,4 +1,4 @@
-"""Solo administradores: usuarios, ajustes globales, proveedores (prueba de acceso) y diagnóstico."""
+"""Solo administradores: usuarios, ajustes globales y diagnóstico (los proveedores están en `providers.py`)."""
 from __future__ import annotations
 
 import os
@@ -10,10 +10,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, 
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from .. import auth, avatars, checker, db, health, places, scheduler
+from .. import auth, avatars, db, scheduler
 from ..config import DEBUG_DIR
-from ..providers import COVERAGE_LABELS, PROVIDERS
-from ..providers.candidates import CANDIDATES
 from .account import drop_avatar, read_upload, replace_avatar
 from .deps import Invalid, public, require_admin
 
@@ -139,12 +137,7 @@ def delete_user_avatar(uid: int):
 
 # ---------------------------------------------------------------------- ajustes
 def _settings_view(values: dict) -> dict:
-    return {
-        "values": {k: values[k] for k in db.DEFAULT_SETTINGS}
-        | {f"link_{pk}": values.get(f"link_{pk}", "") for pk in PROVIDERS},
-        "providers": [{"key": p.key, "label": p.label, "default_link_template": p.default_link_template}
-                      for p in PROVIDERS.values()],
-    }
+    return {"values": {k: values[k] for k in db.DEFAULT_SETTINGS}}
 
 
 @router.get("/settings")
@@ -188,12 +181,6 @@ def save_settings(body: dict[str, str | int | float | bool | None]):
         if val and not re.match(r"^https?://|^socks5://", val):
             errors.append(f"{label} debe empezar por http://, https:// o socks5://")
         new[key] = val
-    for pk in PROVIDERS:
-        tpl = g(f"link_{pk}")
-        if tpl and not tpl.startswith(("http://", "https://")):
-            errors.append(f"La plantilla de enlace de {PROVIDERS[pk].label} debe empezar por https://")
-        new[f"link_{pk}"] = tpl
-
     for flag in ("headless", "debug"):
         new[flag] = "1" if body.get(flag) in (True, 1, "1", "true", "on") else "0"
 
@@ -202,79 +189,6 @@ def save_settings(body: dict[str, str | int | float | bool | None]):
     db.save_settings(new)
     scheduler.reschedule()
     return _settings_view(db.get_settings())
-
-
-# ------------------------------------------------------------------- proveedores
-def _provider_info(p, last: dict | None) -> dict:
-    return {
-        "key": p.key, "label": p.label, "color": p.color, "coverage": p.coverage,
-        "coverage_label": COVERAGE_LABELS[p.coverage], "needs_browser": p.needs_browser,
-        "max_routes": p.max_routes, "stops_filter": p.stops_filter, "min_interval": p.min_interval,
-        "health_route": f"{p.health_route[0]}→{p.health_route[1]}", "verified": p.verified or None,
-        "notes": p.notes, "last": last and {k: last[k] for k in ("status", "detail", "latency_ms", "checked_at")},
-        "scripted": bool(getattr(p, "scripted", False)),
-    }
-
-
-@router.get("/providers")
-def list_providers():
-    """Proveedores registrados con su último resultado de la prueba de acceso y las aerolíneas en estudio."""
-    with db.connect() as con:
-        last = db.list_health(con)
-    return {
-        "providers": [_provider_info(p, last.get(p.key)) for p in PROVIDERS.values()],
-        "candidates": [{"key": k, "label": c["label"], "url": c["url"], "notes": c["notes"]}
-                       for k, c in CANDIDATES.items() if k not in PROVIDERS],
-        "status_labels": health.STATUS_LABELS,
-    }
-
-
-class HealthIn(BaseModel):
-    providers: list[str] | None = None
-    origin: str = ""
-    destination: str = ""
-    browser: bool = False
-    candidates: bool = False
-
-
-def _airport(raw: str, label: str, errors: list[str]) -> str | None:
-    code = raw.strip().upper()
-    if not code:
-        return None
-    place = places.get(code)
-    if not place or place.kind != "airport":
-        errors.append(f"El {label} de la prueba debe ser un aeropuerto (código IATA de 3 letras).")
-    return code
-
-
-@router.post("/providers/health")
-def providers_health(body: HealthIn):
-    """Prueba de acceso: cobertura y precios de un mes por proveedor, desde la IP del panel."""
-    errors: list[str] = []
-    origin, destination = _airport(body.origin, "origen", errors), _airport(body.destination, "destino", errors)
-    if bool(origin) != bool(destination):
-        errors.append("Indica origen y destino, o deja los dos vacíos para usar la ruta de prueba de cada proveedor.")
-    if origin and origin == destination:
-        errors.append("Origen y destino no pueden ser iguales.")
-    keys = [k for k in (body.providers if body.providers is not None else PROVIDERS) if k in PROVIDERS]
-    unknown = [k for k in body.providers or [] if k not in PROVIDERS]
-    if unknown:
-        errors.append(f"Proveedor desconocido: {', '.join(unknown)}")
-    if errors:
-        raise Invalid(errors)
-    settings = db.get_settings()
-    factory = (lambda: checker.browser_session(settings)) if body.browser else None  # noqa: E731
-    results = health.run(keys, origin, destination, factory)
-    out = {"results": results, "fx": health.check_fx() if body.providers is None else None, "candidates": []}
-    if body.candidates:
-        out["candidates"] = [health.check_candidate(k, factory) for k in CANDIDATES if k not in PROVIDERS]
-    return out
-
-
-@router.post("/providers/revalidate")
-def providers_revalidate():
-    """Revalida ya la cobertura de las vigilancias (lo mismo que hace el planificador cada lunes)."""
-    return {"started": scheduler.revalidate_now()}
 
 
 # ------------------------------------------------------------------ diagnóstico

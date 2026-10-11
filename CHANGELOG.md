@@ -1,5 +1,25 @@
 # Cambios
 
+## 1.7.0 — 2026-10-11
+
+### Cambiado
+- **Un solo tipo de proveedor**: ya no hay proveedores «de serie», «en estudio» y «propios». Todos son scripts de Python que se ven, editan, prueban, exportan, importan o borran desde **Proveedores**, en una única lista.
+- **Vueling y Ryanair pasan a ser scripts** (`app/providers/catalog/incluidos.fwp`): se crean solos la primera vez que arranca esta versión, con la misma clave, así que las vigilancias, el histórico y los avisos siguen igual. **Wizz Air y Google Flights** (sin verificar) quedan en un paquete aparte (`sin-verificar.fwp`) que se importa con un clic; si alguna vigilancia ya los usaba, se crean también al actualizar.
+- La **plantilla de enlace** es parte de cada proveedor (se edita en su editor). Las que hubiera en Ajustes pasan solas a su proveedor y desaparecen de Ajustes.
+- `PROVIDER_SCRIPTS=0` ya no desactiva los proveedores (ahora todos son scripts): los que hay siguen funcionando, pero desde el panel no se puede crear, importar, cambiar el código ni probar ninguno.
+- La API de proveedores queda en `/api/v1/providers` (lista, `/{clave}`, `/test`, `/health`, `/export`, `/import`, `/import/preview`, `/revalidate`); desaparece `/providers/scripts`.
+- Si `fetch_route` acepta `max_stops`, el script recibe el máximo de escalas de la vigilancia y filtra él mismo (lo usa Google Flights).
+
+### Añadido
+- **Importar proveedores** desde un enlace (un `…/blob/…` de GitHub se cambia por el archivo en bruto) o desde un archivo, con vista previa: qué trae, si es nuevo, igual o qué cambia respecto al guardado, el código de cada uno y lo que no se podría importar. Pide la contraseña, importa todo o nada y recuerda de qué enlace vino cada proveedor.
+- **Exportar** los proveedores elegidos o todos (también uno desde su editor) en un archivo `.fwp`: texto con una línea de datos en JSON por proveedor y el script tal cual debajo, para poder leerlo y compararlo antes de importarlo.
+- **Consola de la prueba** encima del código en el editor: cuenta en directo (streaming) cada paso, cada petición con su URL, estado, tiempo, tamaño y forma del JSON, los `api.log`/`print` del script y, si falla, la línea del script con su código. Se puede copiar.
+- Migración `0007` (solo una columna nueva que admite nulos: `provider_scripts.source`).
+
+### Quitado
+- Las «aerolíneas en estudio» (Volotea, easyJet e Iberia) y la prueba de su portada.
+- Los proveedores escritos como clases de Python en `app/providers/` (vueling.py, ryanair.py, wizzair.py, google.py).
+
 ## 1.6.0 — 2026-10-10
 
 ### Añadido

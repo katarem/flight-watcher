@@ -1,14 +1,16 @@
 """Dobles de prueba compartidos por el test de humo y el servidor de las pruebas del panel (e2e).
 
 Importar **después** de fijar DATA_DIR (app.config lo lee al importarse). Sustituye el navegador, los
-proveedores (precios y cobertura simulados, sin red ni pausas), el cambio de divisas del BCE y el envío
-de avisos (se guardan en SENT/TARGETS).
+proveedores conocidos (precios y cobertura simulados, sin red ni pausas: los scripts de Vueling, Ryanair, Wizz Air y
+Google Flights se cargan de verdad, pero sus llamadas a la web se cambian por las de aquí), las descargas de
+paquetes de proveedores (sirve los incluidos desde el repositorio), el cambio de divisas del BCE y el envío de
+avisos (se guardan en SENT/TARGETS). Los demás scripts (los que crean los tests) se ejecutan tal cual.
 """
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 
-from app import checker, fx, health, notify, places
-from app.providers import PROVIDERS, CalendarProvider, DayPrice
+from app import checker, db, fx, notify, places
+from app.providers import PROVIDERS, CalendarProvider, DayPrice, bundle, scripted
 
 TODAY = date.today()
 
@@ -76,8 +78,16 @@ def _blocked(key):
         raise ProviderBlocked(f"{PROVIDERS[key].label} rechaza la consulta (HTTP 403, límite o anti-bot)", 403)
 
 
+#: Precios a medida por proveedor (el servidor de e2e pone unos meses de precios variados).
+FETCH: dict = {}
+#: Proveedores cuyas llamadas a la web se simulan aquí.
+FAKE_KEYS = {"vueling", "ryanair", "wizzair", "google", "mockweb"}
+
+
 def make_fetch(key):
     def fetch(self, page, origin, destination, max_months, debug_dir=None, **_kw):
+        if key in FETCH:
+            return FETCH[key](self, page, origin, destination, max_months, debug_dir)
         _blocked(key)
         if not operates(key, origin, destination):
             return []
@@ -109,33 +119,48 @@ def fake_send(channels, lines):
     return [c["name"] for c in channels], []
 
 
-class FakeResponse:
-    def __init__(self, status, body, headers=None):
-        self.status_code, self.text, self.content = status, body, body.encode()
-        self.headers, self.ok = headers or {}, status < 400
-
-
-#: Portadas de las aerolíneas en estudio (por URL); el resto responde 200.
-PAGES: dict = {"https://www.iberia.com/es/": FakeResponse(403, "<html>Access Denied</html>", {"Server": "AkamaiGHost"})}
-
-
-def fake_fetch_page(url):
-    return PAGES.get(url, FakeResponse(200, "<html>hola</html>", {"cf-ray": "1"}))
+def fake_download(url):
+    """Los paquetes incluidos, desde el repositorio (como si se descargaran de GitHub); el resto, 404."""
+    for path in (bundle.INCLUDED, bundle.EXTRA):
+        if url == bundle.CATALOG_URL + path.name:
+            return path.read_text("utf-8")
+    raise bundle.BundleError("El enlace no existe (HTTP 404).")
 
 
 def fake_fx_fetch():
     return {**RATES, "fetched_at": datetime.now().isoformat(timespec="seconds")}
 
 
+def import_extra():
+    """Wizz Air y Google Flights (el paquete sin verificar) directamente en la BD, como si se hubieran importado."""
+    with db.connect() as con:
+        for p in bundle.loads(bundle.EXTRA.read_text("utf-8")):
+            if not db.get_provider_script(con, p["key"]):
+                db.save_provider_script(con, p["key"], bundle.values(p) | {"enabled": 1}, "admin")
+    scripted.reload()
+
+
 def install():
     checker.browser_session = fake_session
     PROVIDERS["mockweb"] = MockWebProvider()
-    for k, prov in PROVIDERS.items():
-        cls = type(prov)
-        cls.fetch_prices = make_fetch(k)
-        cls.network = make_network(k)
-        cls.probe = make_probe(k)
-        cls.min_interval = cls.jitter = 0
+    MockWebProvider.fetch_prices = make_fetch("mockweb")
+    MockWebProvider.network, MockWebProvider.probe = make_network("mockweb"), make_probe("mockweb")
+    MockWebProvider.min_interval = MockWebProvider.jitter = 0
+    for name, make in (("fetch_prices", make_fetch), ("network", make_network), ("probe", make_probe)):
+        real = getattr(scripted.ScriptedProvider, name)
+
+        def method(self, *args, _real=real, _make=make, **kw):
+            if self.key in FAKE_KEYS:
+                return _make(self.key)(self, *args, **kw)
+            return _real(self, *args, **kw)
+        setattr(scripted.ScriptedProvider, name, method)
+    real_init = scripted.ScriptedProvider.__init__
+
+    def init(self, row, *args, **kw):
+        real_init(self, row, *args, **kw)
+        if self.key in FAKE_KEYS:
+            self.min_interval = self.jitter = 0
+    scripted.ScriptedProvider.__init__ = init
     fx.fetch = fake_fx_fetch
-    health.fetch_page = fake_fetch_page
+    bundle.download = fake_download
     notify.send = fake_send

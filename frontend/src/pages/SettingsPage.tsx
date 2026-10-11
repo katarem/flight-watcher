@@ -50,7 +50,9 @@ function SettingsForm({ data }: { data: SettingsData }) {
         })}
         <p className="text-xs text-muted">
           Los canales de aviso (Discord, Telegram) los configura cada usuario en su{' '}
-          <Link to="/profile" className="text-accent underline underline-offset-2">perfil</Link>.
+          <Link to="/profile" className="text-accent underline underline-offset-2">perfil</Link>. El enlace de
+          cada fecha en los avisos lo da la plantilla de cada{' '}
+          <Link to="/admin/providers" className="text-accent underline underline-offset-2">proveedor</Link>.
         </p>
       </FormSection>
 
@@ -65,18 +67,6 @@ function SettingsForm({ data }: { data: SettingsData }) {
           {text('min_samples', 'Muestras mínimas para «lo habitual»', { numeric: true })}
           {text('retention_days', 'Conservar histórico (días)', { numeric: true })}
         </div>
-      </FormSection>
-
-      <FormSection
-        title="Enlaces por fecha"
-        description="Marcadores: {origin} {destination} {date} (AAAA-MM-DD) {date_dmy} {year} {month} {day}. Vacío = el enlace por defecto."
-      >
-        {data.providers.map((p) => (
-          <Field key={p.key} label={`Plantilla de enlace de ${p.label}`}>
-            {(id) => <Input id={id} value={v[`link_${p.key}`] ?? ''} placeholder={p.default_link_template}
-              onChange={(e) => set(`link_${p.key}`, e.target.value)} className="font-mono text-xs" spellCheck={false} />}
-          </Field>
-        ))}
       </FormSection>
 
       <FormSection title="Navegador y diagnóstico">

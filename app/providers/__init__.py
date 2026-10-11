@@ -1,7 +1,7 @@
-"""Registro de proveedores. Para añadir uno: importa la clase y añádela a la tupla.
+"""Registro de proveedores.
 
-Los proveedores propios (scripts guardados desde el panel) se añaden detrás de los de serie al arrancar y
-cada vez que se guardan (`scripted.reload()`), en este mismo diccionario.
+Todos son scripts guardados en la BD (`scripted.py`): `scripted.reload()` los carga en `PROVIDERS` al arrancar y
+cada vez que se crean, importan, editan o borran desde el panel. El orden del registro es el de todo el panel.
 """
 from __future__ import annotations
 
@@ -11,14 +11,8 @@ from .. import places
 from .base import (
     COVERAGE_LABELS, ApiProvider, CalendarProvider, DayPrice, Provider, ProviderBlocked, ProviderError,
 )
-from .google import GoogleFlightsProvider
-from .ryanair import RyanairProvider
-from .vueling import VuelingProvider
-from .wizzair import WizzAirProvider
 
-PROVIDERS: dict[str, Provider] = {
-    p.key: p for p in (VuelingProvider(), RyanairProvider(), WizzAirProvider(), GoogleFlightsProvider())
-}
+PROVIDERS: dict[str, Provider] = {}
 
 airports = places.airports
 routes = places.routes
@@ -30,10 +24,10 @@ def ordered(keys) -> list[str]:
     return [k for k in PROVIDERS if k in keys]
 
 
-def link_for(settings: dict, provider_key: str, origin: str, destination: str, day: date) -> str:
-    """Enlace de compra/búsqueda para un día concreto, con la plantilla editable de Ajustes."""
-    prov = PROVIDERS[provider_key]
-    return prov.build_link(settings.get(f"link_{provider_key}", ""), origin, destination, day)
+def link_for(provider_key: str, origin: str, destination: str, day: date) -> str:
+    """Enlace de compra/búsqueda para un día concreto, con la plantilla del proveedor ("" si no está cargado)."""
+    prov = PROVIDERS.get(provider_key)
+    return prov.build_link(prov.default_link_template, origin, destination, day) if prov else ""
 
 
 __all__ = ["COVERAGE_LABELS", "PROVIDERS", "ApiProvider", "CalendarProvider", "DayPrice", "Provider",

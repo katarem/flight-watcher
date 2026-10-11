@@ -4,8 +4,7 @@ import { useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 import { ApiError, get } from './client'
 import type {
-  AdminUser, Alert, Channel, ChannelDetail, Charts, DebugFile, Me, Meta, Place, ProviderScript, ProviderScriptsData,
-  ProvidersData, Run, Series,
+  AdminUser, Alert, Channel, ChannelDetail, Charts, DebugFile, Me, Meta, Place, Provider, ProvidersData, Run, Series,
   SettingsData, Status, TripCard, TripCombo, TripDetail, User, WatchCard, WatchDetail,
 } from './types'
 
@@ -30,8 +29,7 @@ export const keys = {
   debug: ['debug'] as const,
   places: (q: string) => ['places', q] as const,
   providers: ['providers'] as const,
-  providerScripts: ['providers', 'scripts'] as const,
-  providerScript: (key: string) => ['providers', 'scripts', key] as const,
+  provider: (key: string) => ['providers', key] as const,
 }
 
 export function useMe() {
@@ -160,12 +158,9 @@ export const usePlaces = (q: string) =>
 export const useProvidersAdmin = () =>
   useQuery({ queryKey: keys.providers, queryFn: () => get<ProvidersData>('/providers') })
 
-export const useProviderScripts = () =>
-  useQuery({ queryKey: keys.providerScripts, queryFn: () => get<ProviderScriptsData>('/providers/scripts') })
-
-export const useProviderScript = (key: string | null) =>
+export const useProvider = (key: string | null) =>
   useQuery({
-    queryKey: keys.providerScript(key ?? ''),
-    queryFn: async () => (await get<{ script: ProviderScript }>(`/providers/scripts/${encodeURIComponent(key!)}`)).script,
+    queryKey: keys.provider(key ?? ''),
+    queryFn: async () => (await get<{ provider: Provider }>(`/providers/${encodeURIComponent(key!)}`)).provider,
     enabled: key != null,
   })

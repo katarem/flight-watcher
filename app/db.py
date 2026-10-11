@@ -143,8 +143,9 @@ provider_health = Table(
     **_TABLE_OPTS,
 )
 
-# Proveedores propios: un script de Python escrito desde el panel (solo administradores) que cumple el
-# contrato de `app/providers/scripted.py`. La clave no cambia nunca (la usan precios, avisos y vigilancias).
+# Proveedores: cada uno es un script de Python (escrito o importado desde el panel por un administrador, o de los
+# incluidos) que cumple el contrato de `app/providers/scripted.py`. La clave no cambia nunca (la usan precios,
+# avisos y vigilancias).
 provider_scripts = Table(
     "provider_scripts", metadata,
     Column("key", String(50), primary_key=True),
@@ -162,6 +163,7 @@ provider_scripts = Table(
     Column("created_at", ISO, nullable=False),
     Column("updated_at", ISO, nullable=False),
     Column("updated_by", String(32), nullable=False),  # usuario que lo guardó por última vez
+    Column("source", String(500)),  # enlace del paquete del que se importó (NULL = escrito en el panel o archivo)
     **_TABLE_OPTS,
 )
 
@@ -896,7 +898,7 @@ def list_health(con) -> dict[str, dict]:
     return {r["provider"]: {**r, "detail": json.loads(r["detail"])} for r in _all(con, select(provider_health))}
 
 
-# ---------------------------------------------------------- proveedores propios
+# ------------------------------------------------------------------- proveedores
 def list_provider_scripts(con) -> list[dict]:
     return _all(con, select(provider_scripts).order_by(provider_scripts.c.created_at, provider_scripts.c.key))
 
@@ -906,7 +908,7 @@ def get_provider_script(con, key: str) -> dict | None:
 
 
 def save_provider_script(con, key: str, values: dict, username: str):
-    """Crea o actualiza el script de un proveedor propio."""
+    """Crea o actualiza un proveedor (al actualizar, solo cambia las columnas de `values`)."""
     now = datetime.now().isoformat(timespec="seconds")
     values = {**values, "updated_at": now, "updated_by": username}
     if get_provider_script(con, key):
@@ -916,7 +918,7 @@ def save_provider_script(con, key: str, values: dict, username: str):
 
 
 def delete_provider_script(con, key: str):
-    """Borra el proveedor y lo que lo ata a las vigilancias (cobertura, caché, prueba y plantilla de enlace).
+    """Borra el proveedor y lo que lo ata a las vigilancias (cobertura, caché y prueba de acceso).
 
     Los precios y avisos ya guardados se conservan como histórico.
     """
@@ -924,10 +926,29 @@ def delete_provider_script(con, key: str):
     con.execute(delete(watch_providers).where(watch_providers.c.provider == key))
     forget_routes(con, key)
     con.execute(delete(provider_health).where(provider_health.c.provider == key))
-    con.execute(delete(settings_t).where(settings_t.c.key == f"link_{key}"))
 
 
-def provider_usage(con, key: str) -> int:
-    """Vigilancias que tienen asignado el proveedor."""
-    return con.execute(select(func.count()).select_from(watch_providers)
-                       .where(watch_providers.c.provider == key)).scalar() or 0
+def provider_usage_counts(con) -> dict[str, int]:
+    """Vigilancias que tienen asignado cada proveedor."""
+    rows = con.execute(select(watch_providers.c.provider, func.count()).group_by(watch_providers.c.provider)).all()
+    return {k: n for k, n in rows}
+
+
+def providers_in_use(con) -> set[str]:
+    return set(provider_usage_counts(con))
+
+
+def get_setting(con, key: str) -> str | None:
+    return con.execute(select(settings_t.c.value).where(settings_t.c.key == key)).scalar()
+
+
+def set_setting(con, key: str, value: str):
+    con.execute(_upsert_settings(), [{"key": key, "value": value}])
+
+
+def pop_link_settings(con) -> dict[str, str]:
+    """Plantillas de enlace por proveedor que antes se editaban en Ajustes (`link_<clave>`): las devuelve y las
+    borra (ahora son parte de cada proveedor)."""
+    rows = _all(con, select(settings_t).where(settings_t.c.key.like("link\\_%", escape="\\")))
+    con.execute(delete(settings_t).where(settings_t.c.key.in_([r["key"] for r in rows])))
+    return {r["key"][5:]: r["value"].strip() for r in rows}

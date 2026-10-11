@@ -18,7 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import __version__, auth, avatars, db, scheduler
-from .providers import scripted
+from .providers import bundle, scripted
 from .api import API_PREFIX
 from .api import router as api_router
 from .api.deps import Invalid, NotAuthenticated, require_login
@@ -54,7 +54,8 @@ def _bootstrap_admin() -> int:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     db.init()
-    scripted.reload()  # proveedores propios (scripts guardados desde el panel)
+    bundle.seed()  # la primera vez: Vueling y Ryanair (y las plantillas de enlace que hubiera en Ajustes)
+    scripted.reload()  # proveedores: scripts guardados en la BD
     admin_id = _bootstrap_admin()
     if os.getenv("SEED_DEFAULTS", "1") == "1":
         db.seed_defaults(admin_id)

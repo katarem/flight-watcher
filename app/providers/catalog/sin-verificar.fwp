@@ -1,0 +1,183 @@
+#flight-watcher:proveedores v1 separador=%%fw%%
+# 2 proveedores exportados el 2026-10-11 desde flight-watcher 1.7.0.
+# Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual.
+%%fw%% {"key": "wizzair", "label": "Wizz Air", "color": "#c6007e", "coverage": "network", "max_routes": null, "health_origin": "BCN", "health_destination": "BUD", "link_template": "https://wizzair.com/es-es/booking/select-flight/{origin}/{destination}/{date}/null/1/0/0/null", "notes": "Sin verificar contra la web real. Mapa de rutas y calendario por mes de la API de la web. Precios en la moneda de salida (se pasan a euros).", "min_interval": 1.5}
+"""Wizz Air (sin verificar contra la web real: pruébalo desde la IP donde corre el panel).
+
+Sin navegador, con las APIs JSON que usa wizzair.com:
+
+- Versión de la API: `https://wizzair.com/buildnumber` devuelve «SSR https://be.wizzair.com/X.Y.Z».
+- Cobertura «network»: `{api}/Api/asset/map?languageCode=es-es` lista las ciudades con sus conexiones.
+- Precios: `POST {api}/Api/search/timetable` con un tramo de fechas (un mes por petición). Devuelve el precio
+  más bajo por día en la moneda del aeropuerto de salida (HUF, PLN, EUR…): el panel lo pasa a euros.
+
+Wizz Air es conocido por cortar a los clientes que no son un navegador (403/429): si pasa, la prueba lo muestra
+como «bloqueado».
+"""
+import threading
+import time
+
+BUILD_URL = "https://wizzair.com/buildnumber"
+API_RE = re.compile(r"https://be\.wizzair\.com/[\d.]+")
+
+# Caché del script (vive mientras el proveedor esté cargado): versión de la API (6 h) y mapa de rutas (1 h).
+_lock = threading.Lock()
+_cache = {}
+
+
+def cached(name, max_age, load):
+    with _lock:
+        hit = _cache.get(name)
+        if hit and time.monotonic() - hit[0] < max_age:
+            return hit[1]
+    value = load()
+    with _lock:
+        _cache[name] = (time.monotonic(), value)
+    return value
+
+
+def api_base(api):
+    def load():
+        r = api.request("GET", BUILD_URL, headers={"Accept": "text/plain, */*"})
+        m = API_RE.search(r.text if r is not None else "")
+        if not m:
+            raise ProviderError("Wizz Air: no encuentro la versión de su API en /buildnumber (¿ha cambiado?)")
+        return m[0]
+    return cached("api", 6 * 3600, load)
+
+
+def routes_map(api):
+    def load():
+        data = api.get_json(f"{api_base(api)}/Api/asset/map", languageCode="es-es")
+        if not isinstance(data, dict) or not isinstance(data.get("cities"), list):
+            raise ProviderError("Wizz Air: el mapa de rutas tiene un formato inesperado (¿ha cambiado?)")
+        return {c["iata"]: {x.get("iata") for x in c.get("connections") or []} - {None}
+                for c in data["cities"] if isinstance(c, dict) and c.get("iata")}
+    return cached("map", 3600, load)
+
+
+def network(api, origin):
+    return routes_map(api).get(origin, set())
+
+
+def fetch_route(api, origin, destination, start, max_months):
+    base = api_base(api)
+    out = {}
+    for i in range(max_months):
+        lo = max(start, add_months(start, i))
+        hi = add_months(start, i + 1) - timedelta(days=1)
+        body = {
+            "flightList": [{"departureStation": origin, "arrivalStation": destination,
+                            "from": lo.isoformat(), "to": hi.isoformat()}],
+            "priceType": "regular", "adultCount": 1, "childCount": 0, "infantCount": 0,
+        }
+        data = api.post_json(f"{base}/Api/search/timetable", body)
+        if data is None:
+            break
+        for f in data.get("outboundFlights") or []:
+            price = f.get("price") or {}
+            amount = price.get("amount")
+            if f.get("priceType") != "price" or not amount:
+                continue
+            day = date.fromisoformat(str(f.get("departureDate", ""))[:10])
+            if day >= start and (day not in out or float(amount) < out[day].price):
+                out[day] = DayPrice(day, float(amount), currency=(price.get("currencyCode") or "EUR").upper())
+    return out
+%%fw%% {"key": "google", "label": "Google Flights", "color": "#1a73e8", "coverage": "universal", "max_routes": 12, "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://www.google.com/travel/flights?hl=es&gl=ES&curr=EUR&q=Vuelos%20de%20{origin}%20a%20{destination}%20el%20{date}%20solo%20ida", "notes": "Sin verificar contra Google. Busca en todas las aerolíneas (también con escalas). API interna del calendario, sin documentar; como mucho 12 pares de aeropuertos por vigilancia.", "min_interval": 3.0}
+"""Google Flights (sin verificar contra Google: pruébalo desde la IP donde corre el panel).
+
+Cobertura «universal»: busca cualquier ruta (directa o con escalas) entre todas las aerolíneas, así que no hay red
+que consultar; lo que limita es el número de pares por vigilancia.
+
+Precios: la llamada interna `GetCalendarGraph` que pinta el calendario de precios de google.com/travel/flights
+(el precio más bajo de cada día de un tramo de fechas), sin navegador. Es una API sin documentar: si cambia el
+formato, la ronda falla con un error claro en lugar de guardar datos malos. Como `fetch_route` acepta
+`max_stops`, recibe el filtro de escalas de la vigilancia.
+"""
+
+API_URL = ("https://www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/"
+           "GetCalendarGraph")
+ISO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+#: Días por petición (el calendario de Google no admite tramos muy largos).
+WINDOW_DAYS = 60
+#: Escalas de la vigilancia → filtro de Google (0 = cualquiera, 1 = directo, 2 = ≤ 1 escala, 3 = ≤ 2).
+STOPS = {None: 0, 0: 1, 1: 2, 2: 3}
+
+
+def request_body(origin, destination, start, end, max_stops):
+    """`f.req` de un viaje de solo ida, 1 adulto, turista, entre dos aeropuertos."""
+    segment = [[[[origin, 0]]], [[[destination, 0]]], None, STOPS.get(max_stops, 0), None, None,
+               start.isoformat(), None, None, None, None, None, None, None, 3]
+    query = [None, [None, None, 2, None, [], 1, [1, 0, 0, 0], None, None, None, None, None, None, [segment],
+                    None, None, None, 1], [start.isoformat(), end.isoformat()]]
+    return json.dumps([None, json.dumps(query, separators=(",", ":"))], separators=(",", ":"))
+
+
+def first_price(node):
+    """Primer `[null, número]` dentro de un nodo (así viene el precio de cada día)."""
+    if isinstance(node, list):
+        if len(node) >= 2 and node[0] is None and isinstance(node[1], (int, float)) and not isinstance(node[1], bool):
+            return float(node[1])
+        for item in node:
+            p = first_price(item)
+            if p is not None:
+                return p
+    return None
+
+
+def walk(node, out):
+    if not isinstance(node, list):
+        return
+    if node and isinstance(node[0], str) and ISO.match(node[0]):
+        p = first_price(node[1:])
+        if p is not None and 1 <= p <= 20000:
+            d = date.fromisoformat(node[0])
+            out[d] = min(p, out.get(d, p))
+            return
+    for item in node:
+        walk(item, out)
+
+
+def parse_response(text):
+    """Precios por día de la respuesta (`)]}'` + trozos JSON con [["wrb.fr", …, "<json>"]])."""
+    out = {}
+    found = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("["):
+            continue
+        try:
+            chunk = json.loads(line)
+        except ValueError:
+            continue
+        for item in chunk if isinstance(chunk, list) else []:
+            if isinstance(item, list) and len(item) > 2 and item[0] == "wrb.fr" and isinstance(item[2], str):
+                found = True
+                try:
+                    walk(json.loads(item[2]), out)
+                except ValueError:
+                    continue
+    if not found:
+        raise ProviderError("Google Flights: respuesta con un formato inesperado (¿ha cambiado la API?)")
+    return out
+
+
+def fetch_route(api, origin, destination, start, max_months, max_stops=None):
+    end = start + timedelta(days=max_months * 30)
+    out = {}
+    lo = start
+    while lo < end:
+        hi = min(end, lo + timedelta(days=WINDOW_DAYS - 1))
+        r = api.request(
+            "POST", API_URL, params={"hl": "es", "gl": "ES", "curr": "EUR", "rt": "c"},
+            data={"f.req": request_body(origin, destination, lo, hi, max_stops)},
+            headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8", "Accept": "*/*"},
+        )
+        if r is None:
+            raise ProviderError("Google Flights: la API del calendario ya no existe (HTTP 404)")
+        for d, p in parse_response(r.text).items():
+            if lo <= d <= hi:
+                # El calendario no dice cuántas escalas tiene el más barato, solo que cumple el filtro.
+                out[d] = DayPrice(d, p, currency="EUR", stops=0 if max_stops == 0 else None)
+        lo = hi + timedelta(days=1)
+    return out

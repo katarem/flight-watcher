@@ -16,7 +16,7 @@ import uvicorn  # noqa: E402
 
 from app import checker, db  # noqa: E402
 from app.main import _bootstrap_admin, app  # noqa: E402
-from app.providers import PROVIDERS, DayPrice  # noqa: E402
+from app.providers import DayPrice, bundle, scripted  # noqa: E402
 
 from . import fakes  # noqa: E402
 
@@ -41,8 +41,8 @@ def rich_fetch(key, base, operates):
     return fetch
 
 
-type(PROVIDERS["vueling"]).fetch_prices = rich_fetch("vueling", 55, {"TFN"})
-type(PROVIDERS["ryanair"]).fetch_prices = rich_fetch("ryanair", 45, {"TFS"})
+fakes.FETCH["vueling"] = rich_fetch("vueling", 55, {"TFN"})
+fakes.FETCH["ryanair"] = rich_fetch("ryanair", 45, {"TFS"})
 
 
 def seed():
@@ -70,6 +70,9 @@ if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
     # Lo mismo que hace el arranque de la app (idempotente), y después los precios, antes de aceptar peticiones.
     db.init()
+    bundle.seed()
+    scripted.reload()
+    fakes.import_extra()  # Wizz Air y Google Flights, para tener los cuatro proveedores
     db.seed_defaults(_bootstrap_admin())
     seed()
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

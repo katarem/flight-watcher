@@ -1,0 +1,84 @@
+#flight-watcher:proveedores v1 separador=%%fw%%
+# 2 proveedores exportados el 2026-10-11 desde flight-watcher 1.7.0.
+# Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual.
+%%fw%% {"key": "vueling", "label": "Vueling", "color": "#e8a800", "coverage": "probe", "max_routes": null, "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://tickets.vueling.com/booking?o={origin}&d={destination}&dd={date}&adt=1&chd=0&inf=0&c=es-ES&cur=EUR", "notes": "Calendario de ~1 año en una petición. Verificado contra la web real el 2026-09-30. Bloquea las IP de centros de datos: ejecutar desde una IP residencial. Residentes en islas/Ceuta: añade &dt=1 a la plantilla de enlace.", "min_interval": 1.5}
+"""Vueling.
+
+Precios: API JSON pública que usa la propia web para pintar el calendario (`apiw.vueling.com/api/v1/availability`).
+Devuelve el precio más bajo de cada día de ~1 año en una sola petición y no necesita navegador. Verificado el
+2026-09-30: responde también a un cliente que no es navegador; 404 = Vueling no opera esa ruta.
+
+Cobertura «probe»: se pregunta a esa misma API por cada ruta; un 404 significa que Vueling no la opera.
+"""
+
+API_URL = "https://apiw.vueling.com/api/v1/availability"
+
+
+def availability(api, origin, destination):
+    return api.get_json(API_URL, originCode=origin, destinationCode=destination,
+                        providerName="DmpsRetrieveAvailabilityProvider", currencyCode="EUR",
+                        lowPriceClassificationPercentage=25)
+
+
+def probe(api, origin, destination):
+    return availability(api, origin, destination) is not None
+
+
+def fetch_route(api, origin, destination, start, max_months):
+    data = availability(api, origin, destination)
+    if data is None:  # 404: no opera la ruta
+        return {}
+    end = add_months(start, max_months)
+    out = {}
+    for row in (data.get("availability") or {}).get("value") or []:
+        if row.get("isInvalidPrice") or not row.get("price"):
+            continue
+        day = date.fromisoformat(row["departureDate"][:10])
+        if start <= day < end:
+            out[day] = min(float(row["price"]), out.get(day, math.inf))
+    return out
+%%fw%% {"key": "ryanair", "label": "Ryanair", "color": "#073590", "coverage": "network", "max_routes": null, "health_origin": "SVQ", "health_destination": "BCN", "link_template": "https://www.ryanair.com/es/es/trip/flights/select?adults=1&teens=0&children=0&infants=0&dateOut={date}&isReturn=false&originIata={origin}&destinationIata={destination}", "notes": "Tarifas por mes de la API del calendario y red de rutas del buscador de la web. Solo vuelos directos. Precios verificados el 2026-09-30 (la red de rutas, sin verificar).", "min_interval": 1.5}
+"""Ryanair.
+
+Precios: API JSON pública de tarifas (`/api/farfnd/v4/oneWayFares/.../cheapestPerDay`), la misma que pinta el
+calendario de ryanair.com. Una petición por mes, sin navegador. Verificado el 2026-09-30. No entiende códigos de
+ciudad (TCI): el checker ya los expande a aeropuertos.
+
+Cobertura «network»: la red de rutas que usa el buscador de la web
+(`/api/views/locate/searchWidget/routes/es/airport/{origen}`): los destinos directos desde un aeropuerto.
+
+Si la ruta no existe, la API de tarifas devuelve todos los días sin precio: se trata como «sin precios», no como
+error de la web. La ruta SVQ↔TFS es estacional (en invierno no hay precios).
+"""
+
+API_URL = "https://www.ryanair.com/api/farfnd/v4/oneWayFares/{origin}/{destination}/cheapestPerDay"
+ROUTES_URL = "https://www.ryanair.com/api/views/locate/searchWidget/routes/es/airport/{origin}"
+
+
+def network(api, origin):
+    data = api.get_json(ROUTES_URL.format(origin=origin))
+    if data is None:  # 404: el aeropuerto no está en su red
+        return []
+    if not isinstance(data, list):
+        raise ProviderError("Ryanair: la red de rutas tiene un formato inesperado (¿ha cambiado?)")
+    return {(r.get("arrivalAirport") or {}).get("code") for r in data
+            if isinstance(r, dict) and not r.get("connectingAirport")} - {None}
+
+
+def fetch_route(api, origin, destination, start, max_months):
+    out = {}
+    url = API_URL.format(origin=origin, destination=destination)
+    for i in range(max_months):
+        month = add_months(start, i)
+        data = api.get_json(url, outboundMonthOfDate=month.isoformat(), currency="EUR")
+        if data is None:
+            break
+        for fare in (data.get("outbound") or {}).get("fares") or []:
+            price = fare.get("price") or {}
+            value = price.get("value")
+            if not value or fare.get("unavailable") or fare.get("soldOut"):
+                continue
+            day = date.fromisoformat(fare["day"])
+            if day >= start and (day not in out or float(value) < out[day].price):
+                out[day] = DayPrice(day, float(value), currency=(price.get("currencyCode") or "EUR").upper())
+    return out
