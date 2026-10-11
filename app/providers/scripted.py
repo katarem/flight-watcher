@@ -24,6 +24,8 @@ anti-bot → bloqueado, 404 → None y copia en diagnóstico si está activo. En
 están `date`, `datetime`, `timedelta`, `re`, `json`, `math`, `DayPrice`, `ProviderError`, `ProviderBlocked` y
 `add_months`. `api.log(…)` y `print(…)` escriben en el log del servidor y en la consola de la prueba del editor,
 que además muestra cada petición (URL, estado, tiempo, tamaño y forma del JSON) y en qué línea falla el script.
+Con «Aplicar medidas anti-bot» (`stealth`), sus peticiones se hacen pasar por las de una persona con Chrome (ver
+`stealth.py`) y `api.stealth` lo indica.
 
 Seguridad: el script se ejecuta dentro del proceso del servidor, con sus mismos permisos (puede leer la BD y sus
 secretos). Por eso solo lo escribe o importa un administrador, hay que confirmar la contraseña para guardar,
@@ -45,6 +47,7 @@ import traceback
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
+from . import stealth
 from .base import ApiProvider, DayPrice, ProviderBlocked, ProviderError, add_months
 
 log = logging.getLogger("scripts")
@@ -178,6 +181,8 @@ class ScriptApi:
 
     def __init__(self, prov: ScriptedProvider, session, debug_dir, tag: str):
         self._prov, self.session, self.debug_dir, self._tag, self._n = prov, session, debug_dir, tag, 0
+        #: True si el proveedor tiene activadas las medidas anti-bot (el script puede adaptarse).
+        self.stealth = prov.stealth
 
     def _next(self) -> str:
         self._n += 1
@@ -292,6 +297,12 @@ class ScriptedProvider(ApiProvider):
         self.notes = row.get("notes") or ""
         self.min_interval = float(row.get("min_interval") if row.get("min_interval") is not None else 1.5)
         self.jitter = min(1.0, self.min_interval)
+        #: «Aplicar medidas anti-bot»: sesión que se hace pasar por Chrome y pausas más variables (ver stealth.py).
+        self.stealth = bool(row.get("stealth"))
+        if self.stealth:
+            self.jitter = max(self.jitter, 2.0)
+        self._shared: stealth.StealthClient | None = None
+        self._session_lock = threading.Lock()
         self.updated_at, self.updated_by = row.get("updated_at"), row.get("updated_by")
         #: Consola de la prueba del editor (None en las rondas: solo el log del servidor).
         self.console = console
@@ -302,6 +313,19 @@ class ScriptedProvider(ApiProvider):
             params = {}
         #: Si `fetch_route` acepta `max_stops`, recibe el filtro de escalas de la vigilancia.
         self.stops_filter = "max_stops" in params
+        if self.stealth:
+            self.trace("info", stealth.describe())
+
+    def new_session(self):
+        """Con medidas anti-bot, una sesión «de navegador» sobre el mismo cliente (y sus cookies) mientras no caduque."""
+        if not self.stealth:
+            return super().new_session()
+        with self._session_lock:
+            if self._shared is None or self._shared.expired():
+                if self._shared is not None:
+                    self._shared.close()
+                self._shared = stealth.StealthClient(self.trace)
+            return stealth.StealthSession(self._shared, self.key, self.trace)
 
     def trace(self, level: str, text: str):
         if self.console is not None:

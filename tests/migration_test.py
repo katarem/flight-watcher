@@ -96,7 +96,7 @@ def main():
                                                 "code": "def fetch_route(*a):\n    return {}\n", "enabled": 1}, "admin")
     migrate("0006", down=True)
     cols = {r[1] for r in c.execute("PRAGMA table_info(provider_scripts)")}
-    check(counts() == before and "source" not in cols and c.execute("SELECT count(*) FROM provider_scripts").fetchone()[0] == 4,
+    check(counts() == before and not cols & {"source", "stealth"} and c.execute("SELECT count(*) FROM provider_scripts").fetchone()[0] == 4,
           "downgrade a 0006 quita el origen de los proveedores sin perderlos")
     migrate("0005", down=True)
     tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}

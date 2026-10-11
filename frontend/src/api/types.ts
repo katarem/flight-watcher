@@ -293,6 +293,8 @@ export interface Provider {
   loaded: boolean
   /** Por qué no se pudo cargar (activo pero roto). */
   error: string | null
+  /** «Aplicar medidas anti-bot»: sus peticiones se hacen pasar por Chrome (app/providers/stealth.py). */
+  stealth: boolean
   /** `fetch_route` acepta `max_stops` (filtra él mismo por escalas). */
   stops_filter: boolean
   n_watches: number

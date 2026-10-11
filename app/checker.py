@@ -41,14 +41,11 @@ def deal_reason(watch: dict, price: float, base: float | None) -> str | None:
 
 @contextmanager
 def browser_session(settings):
-    """Chromium headless compartido por toda la ronda (solo se abre si algún proveedor lo necesita)."""
-    from playwright.sync_api import sync_playwright
+    """Chrome (patchright) compartido por toda la ronda; solo se abre si algún proveedor lo necesita."""
+    from .providers.browser import launch, sync_playwright
 
     with sync_playwright() as pw:
-        kwargs = {"headless": settings["headless"] == "1"}
-        if settings.get("proxy_url"):
-            kwargs["proxy"] = {"server": settings["proxy_url"]}
-        browser = pw.chromium.launch(**kwargs)
+        browser = launch(pw, settings)
         try:
             yield browser
         finally:

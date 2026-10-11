@@ -9,12 +9,14 @@
 - `PROVIDER_SCRIPTS=0` ya no desactiva los proveedores (ahora todos son scripts): los que hay siguen funcionando, pero desde el panel no se puede crear, importar, cambiar el código ni probar ninguno.
 - La API de proveedores queda en `/api/v1/providers` (lista, `/{clave}`, `/test`, `/health`, `/export`, `/import`, `/import/preview`, `/revalidate`); desaparece `/providers/scripts`.
 - Si `fetch_route` acepta `max_stops`, el script recibe el máximo de escalas de la vigilancia y filtra él mismo (lo usa Google Flights).
+- **patchright sustituye a Playwright** (misma API, parcheado para que no se note que el navegador está automatizado). La imagen Docker trae Google Chrome y Xvfb, una pantalla virtual: Chrome puede ir «con ventana» sin monitor. «Modo sin ventana» pasa a estar desactivado por defecto; sin pantalla (fuera de Docker) se abre sin ventana igualmente.
 
 ### Añadido
 - **Importar proveedores** desde un enlace (un `…/blob/…` de GitHub se cambia por el archivo en bruto) o desde un archivo, con vista previa: qué trae, si es nuevo, igual o qué cambia respecto al guardado, el código de cada uno y lo que no se podría importar. Pide la contraseña, importa todo o nada y recuerda de qué enlace vino cada proveedor.
 - **Exportar** los proveedores elegidos o todos (también uno desde su editor) en un archivo `.fwp`: texto con una línea de datos en JSON por proveedor y el script tal cual debajo, para poder leerlo y compararlo antes de importarlo.
+- Interruptor **«Aplicar medidas anti-bot»** en cada proveedor: sus peticiones se hacen pasar por las de una persona con Chrome (huella TLS y HTTP/2 de Chrome con `curl_cffi`, sus cabeceras en español, una sesión con cookies que dura 30 minutos, visita previa a la portada y pausas más variables). Si aun así una respuesta parece de un anti-bot, la repite con `fetch()` desde Chrome de verdad abierto en la portada (patchright), que resuelve los retos de JavaScript, y sigue con Chrome mientras dure la sesión; sus cookies se guardan para la próxima vez. No resuelve CAPTCHA que pidan intervención. Viaja en los paquetes `.fwp`.
 - **Consola de la prueba** encima del código en el editor: cuenta en directo (streaming) cada paso, cada petición con su URL, estado, tiempo, tamaño y forma del JSON, los `api.log`/`print` del script y, si falla, la línea del script con su código. Se puede copiar.
-- Migración `0007` (solo una columna nueva que admite nulos: `provider_scripts.source`).
+- Migración `0007` (solo columnas nuevas: `provider_scripts.source` y `provider_scripts.stealth`).
 
 ### Quitado
 - Las «aerolíneas en estudio» (Volotea, easyJet e Iberia) y la prueba de su portada.

@@ -16,7 +16,7 @@ import { useTitle } from '@/lib/hooks'
 const FIELD_LABELS: Record<string, string> = {
   label: 'nombre', color: 'color', coverage: 'cobertura', max_routes: 'máximo de pares', health_origin: 'ruta de prueba',
   health_destination: 'ruta de prueba', link_template: 'plantilla de enlace', notes: 'notas', min_interval: 'pausa',
-  code: 'código',
+  stealth: 'medidas anti-bot', code: 'código',
 }
 
 function StatusTag({ item }: { item: ImportItem }) {

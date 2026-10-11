@@ -1,7 +1,7 @@
 #flight-watcher:proveedores v1 separador=%%fw%%
 # 2 proveedores exportados el 2026-10-11 desde flight-watcher 1.7.0.
 # Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual.
-%%fw%% {"key": "vueling", "label": "Vueling", "color": "#e8a800", "coverage": "probe", "max_routes": null, "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://tickets.vueling.com/booking?o={origin}&d={destination}&dd={date}&adt=1&chd=0&inf=0&c=es-ES&cur=EUR", "notes": "Calendario de ~1 año en una petición. Verificado contra la web real el 2026-09-30. Bloquea las IP de centros de datos: ejecutar desde una IP residencial. Residentes en islas/Ceuta: añade &dt=1 a la plantilla de enlace.", "min_interval": 1.5}
+%%fw%% {"key": "vueling", "label": "Vueling", "color": "#e8a800", "coverage": "probe", "max_routes": null, "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://tickets.vueling.com/booking?o={origin}&d={destination}&dd={date}&adt=1&chd=0&inf=0&c=es-ES&cur=EUR", "notes": "Calendario de ~1 año en una petición. Verificado contra la web real el 2026-09-30. Bloquea las IP de centros de datos: ejecutar desde una IP residencial. Residentes en islas/Ceuta: añade &dt=1 a la plantilla de enlace.", "min_interval": 1.5, "stealth": false}
 """Vueling.
 
 Precios: API JSON pública que usa la propia web para pintar el calendario (`apiw.vueling.com/api/v1/availability`).
@@ -37,7 +37,7 @@ def fetch_route(api, origin, destination, start, max_months):
         if start <= day < end:
             out[day] = min(float(row["price"]), out.get(day, math.inf))
     return out
-%%fw%% {"key": "ryanair", "label": "Ryanair", "color": "#073590", "coverage": "network", "max_routes": null, "health_origin": "SVQ", "health_destination": "BCN", "link_template": "https://www.ryanair.com/es/es/trip/flights/select?adults=1&teens=0&children=0&infants=0&dateOut={date}&isReturn=false&originIata={origin}&destinationIata={destination}", "notes": "Tarifas por mes de la API del calendario y red de rutas del buscador de la web. Solo vuelos directos. Precios verificados el 2026-09-30 (la red de rutas, sin verificar).", "min_interval": 1.5}
+%%fw%% {"key": "ryanair", "label": "Ryanair", "color": "#073590", "coverage": "network", "max_routes": null, "health_origin": "SVQ", "health_destination": "BCN", "link_template": "https://www.ryanair.com/es/es/trip/flights/select?adults=1&teens=0&children=0&infants=0&dateOut={date}&isReturn=false&originIata={origin}&destinationIata={destination}", "notes": "Tarifas por mes de la API del calendario y red de rutas del buscador de la web. Solo vuelos directos. Precios verificados el 2026-09-30 (la red de rutas, sin verificar).", "min_interval": 1.5, "stealth": false}
 """Ryanair.
 
 Precios: API JSON pública de tarifas (`/api/farfnd/v4/oneWayFares/.../cheapestPerDay`), la misma que pinta el

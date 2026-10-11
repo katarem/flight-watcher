@@ -114,7 +114,17 @@ Rutas Sevilla ↔ Tenerife:
 
 Según Aena (2026-09-30), **no hay más aerolíneas directas**: SVQ ↔ TFN solo Vueling y Binter; SVQ ↔ TFS solo Ryanair.
 
-Si una web bloquea, la comprobación falla con un mensaje claro («rechaza la consulta (HTTP 403, límite o anti-bot)») y te avisa. **No se usan técnicas para esquivar sistemas anti-bot**: las peticiones dicen que son de `flight-watcher`.
+Si una web bloquea, la comprobación falla con un mensaje claro («rechaza la consulta (HTTP 403, límite o anti-bot)») y te avisa. Por defecto las peticiones dicen que son de `flight-watcher`. Para las webs que bloquean, cada proveedor tiene el interruptor **«Aplicar medidas anti-bot»** (ver abajo).
+
+### Medidas anti-bot
+
+Con el interruptor activado en el editor del proveedor, sus peticiones se hacen pasar por las de una persona con Chrome:
+
+- huella TLS y HTTP/2 de Chrome (`curl_cffi`), que es lo que miran Cloudflare, Akamai o DataDome además del User-Agent, y las cabeceras de Chrome en español (`Origin`, `Referer`, `Sec-Fetch-*`…);
+- una sesión con cookies que dura 30 minutos, una visita previa a la portada de la web antes de su API y pausas más variables entre peticiones;
+- si aun así la respuesta parece de un anti-bot (403/429 o su página de reto), la repite con `fetch()` desde **Chrome de verdad** abierto en la portada ([patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python), Playwright parcheado para que no se note la automatización), que resuelve los retos de JavaScript. Ese proveedor sigue con Chrome mientras dure la sesión y sus cookies se guardan en `DATA_DIR/navegador/`.
+
+No resuelve CAPTCHA que pidan intervención ni arregla una IP ya bloqueada. En Docker, Chrome va «con ventana» en una pantalla virtual (Xvfb), que se parece más a una persona que el modo sin ventana; se cambia en **Ajustes → Modo sin ventana**. Úsalo solo con las webs que lo necesiten: es más lento y Chrome ocupa unos 300 MB de RAM mientras está abierto.
 
 Para depurar: **Ajustes → Navegador y diagnóstico → Guardar capturas, HTML y JSON**, pulsa **Comprobar ahora** y abre **Diagnóstico** (en los proveedores por API se guarda la respuesta JSON de cada petición).
 
@@ -235,7 +245,7 @@ Para añadir otra ciudad (como `TCI`) o un grupo (como `canarias`), añádelo a 
 - Los webhooks y tokens de los canales se guardan en la base de datos en texto plano (JSON): protege la BD y su copia de seguridad.
 - Solo se aceptan webhooks de Discord con la URL oficial y los campos secretos nunca se devuelven al navegador.
 - Los proveedores ejecutan código Python en el servidor: solo un administrador puede escribirlos o importarlos, y hace falta su contraseña para probarlos, importarlos o activarlos. Importa solo paquetes de quien te fíes. Para que nadie pueda cambiar el código desde el panel, usa `PROVIDER_SCRIPTS=0`.
-- Respeta los términos de uso de cada aerolínea; una comprobación al día es una frecuencia razonable.
+- Respeta los términos de uso de cada aerolínea; una comprobación al día es una frecuencia razonable. Las medidas anti-bot pueden ir contra los términos de algunas webs: actívalas solo si te hacen falta y bajo tu responsabilidad.
 
 ## Estructura
 
@@ -257,7 +267,8 @@ app/
   db.py           acceso a datos (SQLAlchemy Core: SQLite, PostgreSQL, MySQL, MariaDB)
   migrations/     migraciones de Alembic
   providers/      base.py (abstracción), extract.py, scripted.py (contrato, carga y registro de los scripts),
-                  bundle.py (formato .fwp para importar y exportar) y catalog/ (paquetes incluidos)
+                  bundle.py (formato .fwp para importar y exportar), stealth.py y browser.py (medidas anti-bot y
+                  Chrome con patchright) y catalog/ (paquetes incluidos)
 scripts/          build_places.py (regenera el catálogo de aeropuertos desde OurAirports)
 frontend/         panel React + Vite + TypeScript (src/pages, src/components, src/api) y pruebas e2e
 tests/
@@ -267,7 +278,7 @@ tests/
   e2e_server.py         servidor con datos simulados para las pruebas del panel
 ```
 
-Pruebas de Python (necesitan además `pip install httpx`): `python -m tests.smoke_test`, `python -m tests.migration_test` y `python -m tests.browser_mock_test` (esta última necesita Chromium; con uno propio: `FW_CHROMIUM=/ruta/chromium`). Las del panel, en «Desarrollo del panel».
+Pruebas de Python (necesitan además `pip install httpx`): `python -m tests.smoke_test`, `python -m tests.migration_test` y `python -m tests.browser_mock_test` (esta última necesita Chromium, `patchright install chromium`; con uno propio: `FW_CHROMIUM=/ruta/chromium`). Las del panel, en «Desarrollo del panel».
 
 ## Limitaciones conocidas
 

@@ -31,7 +31,7 @@ DEFAULT_SETTINGS = {
     "max_months": "11",
     "min_samples": "30",
     "retention_days": "400",
-    "headless": "1",
+    "headless": "0",  # con ventana (en Docker, la pantalla virtual de Xvfb); sin pantalla va sin ventana igualmente
     "debug": "0",
     "proxy_url": "",
     "panel_url": "",
@@ -164,6 +164,7 @@ provider_scripts = Table(
     Column("updated_at", ISO, nullable=False),
     Column("updated_by", String(32), nullable=False),  # usuario que lo guardó por última vez
     Column("source", String(500)),  # enlace del paquete del que se importó (NULL = escrito en el panel o archivo)
+    Column("stealth", Integer, nullable=False, server_default="0"),  # «Aplicar medidas anti-bot» (providers/stealth.py)
     **_TABLE_OPTS,
 )
 

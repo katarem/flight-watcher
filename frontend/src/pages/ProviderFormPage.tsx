@@ -35,12 +35,13 @@ interface FormState {
   min_interval: string
   code: string
   enabled: boolean
+  stealth: boolean
 }
 
 const fromProvider = (s: Provider): FormState => ({
   key: s.key, label: s.label, color: s.color, coverage: s.coverage, max_routes: s.max_routes != null ? String(s.max_routes) : '',
   health_origin: s.health_origin, health_destination: s.health_destination, link_template: s.link_template, notes: s.notes,
-  min_interval: String(s.min_interval), code: s.code ?? '', enabled: s.enabled,
+  min_interval: String(s.min_interval), code: s.code ?? '', enabled: s.enabled, stealth: s.stealth,
 })
 
 const iata = (v: string) => v.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3)
@@ -277,6 +278,8 @@ function ProviderForm({ initial, existing, editable }: { initial: FormState; exi
             placeholder="https://www.ejemplo.com/vuelos?o={origin}&d={destination}&f={date}"
             onChange={(e) => set('link_template', e.target.value)} />}
         </Field>
+        <Switch checked={f.stealth} onChange={(v) => set('stealth', v)} label="Aplicar medidas anti-bot"
+          description="Sus peticiones se hacen pasar por las de una persona con Chrome: huella TLS y HTTP/2 de Chrome, sus cabeceras en español, cookies que se conservan, visita previa a la portada y pausas más variables. Si aun así la web bloquea, repite la petición desde Chrome de verdad (más lento). No resuelve CAPTCHA que pidan intervención. Úsalo solo con las webs que bloquean." />
         <Field label="Notas (opcional)" hint="Para los administradores: de dónde salen los precios, límites conocidos…">
           {(id, hint) => <Textarea id={id} aria-describedby={hint} rows={2} maxLength={1000} value={f.notes}
             onChange={(e) => set('notes', e.target.value)} />}
@@ -381,7 +384,7 @@ export function ProviderFormPage() {
 
   const initial: FormState = existing.data ? fromProvider(existing.data) : {
     key: '', label: '', color: '#64748b', coverage: 'network', max_routes: '', health_origin: '', health_destination: '',
-    link_template: '', notes: '', min_interval: '1.5', code: list.data.template, enabled: true,
+    link_template: '', notes: '', min_interval: '1.5', code: list.data.template, enabled: true, stealth: false,
   }
 
   return (

@@ -34,7 +34,7 @@ from app.main import app  # noqa: E402
 from app.providers import PROVIDERS, DayPrice, link_for  # noqa: E402
 from app.providers.base import Provider  # noqa: E402
 from app.providers.extract import parse_day, parse_price, walk_json  # noqa: E402
-from app.providers import bundle, scripted  # noqa: E402
+from app.providers import browser, bundle, scripted, stealth  # noqa: E402
 
 from . import fakes  # noqa: E402
 from .fakes import ASKED, SENT, TARGETS, TODAY  # noqa: E402
@@ -634,6 +634,104 @@ def console_text(events) -> str:
     return "\n".join(f"{e['level']}: {e['text']}" for e in events)
 
 
+class FakeCurl:
+    """Sustituye al cliente con la huella de Chrome (curl_cffi): apunta cada petición y responde de BLOCKS."""
+
+    def __init__(self):
+        self.headers, self.calls = {}, []
+
+    def request(self, method, url, headers=None, timeout=None, **kw):
+        self.calls.append((method, url, dict(headers or {}), kw))
+        status = BLOCKS.get(url, 200)
+
+        class Resp:
+            pass
+        r = Resp()
+        r.url, r.status_code, r.ok, r.cookies = url, status, status < 400, {"__cf_bm": "x"}
+        r.headers = {"content-type": "application/json" if status == 200 else "text/html"}
+        r.text = '{"ok": true}' if status == 200 else "<html>Just a moment...</html>"
+        r.json = lambda: {"ok": True}
+        return r
+
+    def close(self):
+        pass
+
+
+class FakeBrowser:
+    """Sustituye a Chrome (browser.BrowserFetch): apunta las peticiones y si se cerró."""
+    made: list = []
+
+    def __init__(self, key, trace=None):
+        self.key, self.calls, self.closed = key, [], False
+        FakeBrowser.made.append(self)
+
+    def request(self, site, method, url, **kw):
+        self.calls.append((site, method, url))
+        return browser.BrowserResponse({"status": 200, "url": url, "headers": {"Content-Type": "application/json"},
+                                        "text": '{"desde": "chrome"}'})
+
+    def close(self):
+        self.closed = True
+
+
+BLOCKS: dict = {}
+REAL_NEW_SESSION = scripted.ScriptedProvider.new_session
+
+
+def stealth_flow(admin: Api, base: dict):
+    """«Aplicar medidas anti-bot»: se guarda, se exporta y su sesión se hace pasar por Chrome."""
+    check(stealth.site_of("https://apiw.vueling.com/api/v1/x?a=1") == "https://www.vueling.com"
+          and stealth.site_of("https://www.ryanair.com/api/x") == "https://www.ryanair.com"
+          and stealth.site_of("https://wizzair.com/buildnumber") == "https://wizzair.com"
+          and stealth.site_of("https://api.ejemplo.co.uk/x") == "https://www.ejemplo.co.uk"
+          and stealth.site_of("http://127.0.0.1:8000/api") == "http://127.0.0.1:8000", "portada de la web de cada URL")
+    r = admin.post("/providers", {**base, "key": "sigilo", "label": "Sigilo", "stealth": True, "password": "clave-de-prueba-1"})
+    prov = PROVIDERS["sigilo"]
+    check(r.status_code == 201 and r.json()["provider"]["stealth"] is True and prov.stealth and prov.jitter >= 2,
+          "proveedor con medidas anti-bot (y pausas más variables)")
+    pkg = bundle.loads(admin.get("/providers/export", params={"keys": "sigilo,miaero"}).text)
+    check([p["stealth"] for p in pkg] == [False, True] or [p["stealth"] for p in pkg] == [True, False],
+          "el interruptor viaja en el paquete exportado")
+    r, res, events = run_test(admin, {**base, "stealth": True, "password": "clave-de-prueba-1"})
+    check("Medidas anti-bot activadas" in console_text(events), "la consola de la prueba dice qué medidas se aplican")
+
+    # La sesión: cliente con la huella de Chrome, visita previa a la portada y cabeceras de navegador…
+    old_client, old_browser, old_pause = stealth.make_client, browser.BrowserFetch, stealth.WARMUP_PAUSE
+    stealth.make_client, browser.BrowserFetch, stealth.WARMUP_PAUSE = FakeCurl, FakeBrowser, (0, 0)
+    try:
+        with REAL_NEW_SESSION(prov) as s:
+            s.request("GET", "https://apiw.vueling.com/api/v1/availability", timeout=5, params={"o": "SVQ"})
+            s.request("POST", "https://apiw.vueling.com/api/v1/otra", timeout=5, json={"a": 1}, headers={"X-Propia": "1"})
+        calls = s.shared.client.calls
+        check([(m, u) for m, u, _, _ in calls] == [("GET", "https://www.vueling.com/"),
+                                                   ("GET", "https://apiw.vueling.com/api/v1/availability"),
+                                                   ("POST", "https://apiw.vueling.com/api/v1/otra")]
+              and calls[0][2]["Sec-Fetch-Mode"] == "navigate" and calls[1][2]["Origin"] == "https://www.vueling.com"
+              and calls[1][2]["Referer"] == "https://www.vueling.com/" and calls[1][2]["Sec-Fetch-Site"] == "same-site"
+              and calls[1][2]["Accept-Language"].startswith("es-ES") and calls[2][2]["X-Propia"] == "1"
+              and calls[1][3] == {"params": {"o": "SVQ"}},
+              "anti-bot: visita la portada una vez y llama a la API con las cabeceras de un navegador")
+        with REAL_NEW_SESSION(prov) as s2:
+            pass
+        check(s2.shared is s.shared and len(s.shared.client.calls) == 3, "la sesión (y sus cookies) se reutiliza entre rondas")
+
+        # …y si aun así choca con un anti-bot, repite desde Chrome y sigue con él.
+        BLOCKS["https://apiw.vueling.com/api/v1/bloqueada"] = 403
+        with REAL_NEW_SESSION(prov) as s3:
+            r1 = s3.request("GET", "https://apiw.vueling.com/api/v1/bloqueada", timeout=5)
+            r2 = s3.request("GET", "https://apiw.vueling.com/api/v1/availability", timeout=5)
+        chrome = FakeBrowser.made[-1]
+        check(r1.status_code == 200 and r1.json() == {"desde": "chrome"} and r2.json() == {"desde": "chrome"}
+              and [u for _, _, u in chrome.calls] == ["https://apiw.vueling.com/api/v1/bloqueada",
+                                                      "https://apiw.vueling.com/api/v1/availability"]
+              and chrome.calls[0][0] == "https://www.vueling.com" and chrome.closed and s3.shared.prefer_browser,
+              "anti-bot: tras un bloqueo, lo repite desde Chrome (y lo cierra al acabar)")
+    finally:
+        stealth.make_client, browser.BrowserFetch, stealth.WARMUP_PAUSE = old_client, old_browser, old_pause
+        BLOCKS.clear()
+    admin.delete("/providers/sigilo")
+
+
 def scripts_flow(admin: Api, admin_chan: int):
     scripted.ScriptedProvider.new_session = lambda self: FakeHttp()
     days = [(TODAY + timedelta(days=10 + i)).isoformat() for i in range(3)]
@@ -766,6 +864,7 @@ def scripts_flow(admin: Api, admin_chan: int):
                                   "max_routes": "4", "password": "clave-de-prueba-1"})
     check(r.status_code == 201 and PROVIDERS["universal"].max_routes == 4, "proveedor de cobertura universal")
     admin.delete("/providers/universal")
+    stealth_flow(admin, base)
 
     # --- PROVIDER_SCRIPTS=0: se siguen ejecutando, pero no se puede cambiar código desde el panel
     scripted.EDITABLE = False

@@ -1,7 +1,7 @@
 #flight-watcher:proveedores v1 separador=%%fw%%
 # 2 proveedores exportados el 2026-10-11 desde flight-watcher 1.7.0.
 # Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual.
-%%fw%% {"key": "wizzair", "label": "Wizz Air", "color": "#c6007e", "coverage": "network", "max_routes": null, "health_origin": "BCN", "health_destination": "BUD", "link_template": "https://wizzair.com/es-es/booking/select-flight/{origin}/{destination}/{date}/null/1/0/0/null", "notes": "Sin verificar contra la web real. Mapa de rutas y calendario por mes de la API de la web. Precios en la moneda de salida (se pasan a euros).", "min_interval": 1.5}
+%%fw%% {"key": "wizzair", "label": "Wizz Air", "color": "#c6007e", "coverage": "network", "max_routes": null, "health_origin": "BCN", "health_destination": "BUD", "link_template": "https://wizzair.com/es-es/booking/select-flight/{origin}/{destination}/{date}/null/1/0/0/null", "notes": "Sin verificar contra la web real. Mapa de rutas y calendario por mes de la API de la web. Precios en la moneda de salida (se pasan a euros).", "min_interval": 1.5, "stealth": false}
 """Wizz Air (sin verificar contra la web real: pruébalo desde la IP donde corre el panel).
 
 Sin navegador, con las APIs JSON que usa wizzair.com:
@@ -83,7 +83,7 @@ def fetch_route(api, origin, destination, start, max_months):
             if day >= start and (day not in out or float(amount) < out[day].price):
                 out[day] = DayPrice(day, float(amount), currency=(price.get("currencyCode") or "EUR").upper())
     return out
-%%fw%% {"key": "google", "label": "Google Flights", "color": "#1a73e8", "coverage": "universal", "max_routes": 12, "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://www.google.com/travel/flights?hl=es&gl=ES&curr=EUR&q=Vuelos%20de%20{origin}%20a%20{destination}%20el%20{date}%20solo%20ida", "notes": "Sin verificar contra Google. Busca en todas las aerolíneas (también con escalas). API interna del calendario, sin documentar; como mucho 12 pares de aeropuertos por vigilancia.", "min_interval": 3.0}
+%%fw%% {"key": "google", "label": "Google Flights", "color": "#1a73e8", "coverage": "universal", "max_routes": 12, "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://www.google.com/travel/flights?hl=es&gl=ES&curr=EUR&q=Vuelos%20de%20{origin}%20a%20{destination}%20el%20{date}%20solo%20ida", "notes": "Sin verificar contra Google. Busca en todas las aerolíneas (también con escalas). API interna del calendario, sin documentar; como mucho 12 pares de aeropuertos por vigilancia.", "min_interval": 3.0, "stealth": false}
 """Google Flights (sin verificar contra Google: pruébalo desde la IP donde corre el panel).
 
 Cobertura «universal»: busca cualquier ruta (directa o con escalas) entre todas las aerolíneas, así que no hay red

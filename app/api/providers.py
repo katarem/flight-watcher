@@ -28,7 +28,7 @@ router = APIRouter(prefix="/providers", dependencies=[Depends(require_admin)])
 throttle = auth.LoginThrottle()
 
 FIELDS = ("key", "label", "color", "coverage", "max_routes", "health_origin", "health_destination", "link_template",
-          "notes", "min_interval", "enabled", "created_at", "updated_at", "updated_by", "source")
+          "notes", "min_interval", "enabled", "created_at", "updated_at", "updated_by", "source", "stealth")
 
 
 class ProviderIn(BaseModel):
@@ -44,6 +44,8 @@ class ProviderIn(BaseModel):
     min_interval: float | str | None = 1.5
     code: str = ""
     enabled: bool = True
+    #: «Aplicar medidas anti-bot» (providers/stealth.py).
+    stealth: bool = False
     #: Contraseña del administrador: obligatoria si el cambio va a ejecutar el código.
     password: str = ""
 
@@ -59,7 +61,7 @@ def _view(row: dict, usage: dict[str, int], last: dict | None = None, code: bool
     prov = PROVIDERS.get(row["key"])
     loaded = isinstance(prov, scripted.ScriptedProvider)
     return {k: row.get(k) for k in FIELDS} | {
-        "enabled": bool(row["enabled"]), "loaded": loaded, "error": scripted.ERRORS.get(row["key"]),
+        "enabled": bool(row["enabled"]), "stealth": bool(row.get("stealth")), "loaded": loaded, "error": scripted.ERRORS.get(row["key"]),
         "coverage_label": COVERAGE_LABELS.get(row["coverage"], row["coverage"]),
         "stops_filter": loaded and prov.stops_filter, "n_watches": usage.get(row["key"], 0),
         "last": last and {k: last[k] for k in ("status", "detail", "latency_ms", "checked_at")},
@@ -136,7 +138,7 @@ def _parse(body: ProviderIn, for_test: bool = False, errors: list[str] | None = 
     return {"label": label or "Borrador", "color": color.lower(), "coverage": body.coverage, "max_routes": max_routes,
             "health_origin": origin, "health_destination": destination, "link_template": link,
             "notes": body.notes.strip()[:1000], "min_interval": interval, "code": code,
-            "enabled": int(body.enabled)}
+            "enabled": int(body.enabled), "stealth": int(body.stealth)}
 
 
 def _require_editable():
@@ -398,7 +400,7 @@ def import_preview(body: ImportIn):
         old = current.get(key)
         changes = [] if not (old and values) else [
             f for f in ("label", "color", "coverage", "max_routes", "health_origin", "health_destination",
-                        "link_template", "notes", "min_interval", "code") if values[f] != old[f]]
+                        "link_template", "notes", "min_interval", "stealth", "code") if values[f] != old[f]]
         out.append({
             "key": key, "label": (values or {}).get("label") or str(p.get("label") or key),
             "color": (values or {}).get("color") or "#64748b", "coverage": p.get("coverage"),

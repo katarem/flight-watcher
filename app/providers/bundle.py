@@ -45,7 +45,7 @@ HEADER_RE = re.compile(r"^#flight-watcher:proveedores v(\d+) separador=(\S+)\s*$
 DEFAULT_SEPARATOR = "%%fw%%"
 #: Lo que se exporta de cada proveedor además del código (la clave, la primera).
 FIELDS = ("key", "label", "color", "coverage", "max_routes", "health_origin", "health_destination", "link_template",
-          "notes", "min_interval")
+          "notes", "min_interval", "stealth")
 MAX_BYTES = 2_000_000
 MAX_PROVIDERS = 100
 
@@ -75,7 +75,7 @@ def dumps(rows: list[dict]) -> str:
            f"{date.today().isoformat()} desde flight-watcher {__version__}.",
            "# Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual."]
     for row, code in zip(rows, codes):
-        meta = {k: row.get(k) for k in FIELDS}
+        meta = {k: row.get(k) for k in FIELDS} | {"stealth": bool(row.get("stealth"))}
         out.append(f"{sep} {json.dumps(meta, ensure_ascii=False)}")
         out.append(code.rstrip("\n"))
     return "\n".join(out) + "\n"
@@ -170,6 +170,7 @@ def values(p: dict) -> dict:
         "health_destination": (p.get("health_destination") or "BCN").upper(),
         "link_template": p.get("link_template") or "", "notes": p.get("notes") or "",
         "min_interval": float(p["min_interval"]) if p.get("min_interval") is not None else 1.5, "code": p["code"],
+        "stealth": int(bool(p.get("stealth"))),
     }
 
 
