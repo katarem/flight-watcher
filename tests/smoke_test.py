@@ -29,7 +29,7 @@ os.environ["WEB_DIR"] = str(WEB)
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
-from app import checker, config, coverage, db, fx, places, trips  # noqa: E402
+from app import checker, config, coverage, db, fx, health, places, trips  # noqa: E402
 from app.main import app  # noqa: E402
 from app.providers import PROVIDERS, DayPrice, link_for  # noqa: E402
 from app.providers.base import Provider  # noqa: E402
@@ -800,6 +800,34 @@ def scripts_flow(admin: Api, admin_chan: int):
           and len(res["steps"]) == 1 and "script: hola" in console_text(events)
           and "línea 2, en <module>: x = 1/0" in console_text(events), "un script que falla al cargar (con su print y su línea)")
     check(admin.post("/providers/test", {**base, "password": "mala"}).status_code == 403, "probar también pide la contraseña")
+
+    # --- tiempo límite de la prueba: por inactividad, no por duración (un proveedor lento que avanza no se corta)
+    def draft(code, **limits):
+        row = {"key": "lento", "label": "Lento", "color": "#000000", "coverage": "universal", "health_origin": "SVQ",
+               "health_destination": "TFN", "min_interval": 0, "code": "import time\n" + code}
+        lines = []
+        res = health.check_draft(lambda say: scripted.ScriptedProvider(row, console=say), "SVQ", "TFN",
+                                 lambda level, text: lines.append(text), **limits)
+        return res, lines
+    started = time.monotonic()
+    res, _ = draft("def fetch_route(api, o, d, start, months):\n"
+                   "    for _ in range(5):\n        time.sleep(0.2)\n        api.get_json(f'https://api.prueba.test/precios/{o}/{d}')\n"
+                   "    return {}\n", idle_timeout=0.5, max_time=10)
+    check(res["status"] == "empty" and time.monotonic() - started > 0.9,
+          "una prueba que tarda más que el límite de inactividad pero sigue haciendo peticiones no se corta")
+    res, lines = draft("def fetch_route(api, o, d, start, months):\n    time.sleep(1)\n    try:\n"
+                       "        api.get_json('https://api.prueba.test/rutas/SVQ')\n    except Exception as exc:\n"
+                       "        api.log('después:', exc)\n    return {}\n", idle_timeout=0.3, max_time=10)
+    steps = res["steps"]
+    check(res["status"] == "timeout" and [s["name"] for s in steps] == ["Carga del script", "Cobertura", "Precios (1 mes)"]
+          and steps[0]["status"] == "ok" and "Sin respuesta ni actividad" in steps[-1]["detail"],
+          "un script colgado se corta por inactividad, conservando los pasos terminados")
+    time.sleep(1)
+    check(any("prueba cortada" in t for t in lines), "tras cortarla, el script ya no puede hacer peticiones")
+    res, _ = draft("def fetch_route(api, o, d, start, months):\n    for _ in range(20):\n        time.sleep(0.1)\n"
+                   "        api.log('sigo')\n    return {}\n", idle_timeout=0.5, max_time=0.6)
+    check(res["status"] == "timeout" and "tope de la prueba" in res["steps"][-1]["detail"],
+          "aunque siga avanzando, la prueba tiene un tope total")
 
     # --- guardado: entra en el registro y lo usan vigilancias, ronda, avisos y enlaces
     r = admin.post("/providers", {**base, "password": "clave-de-prueba-1"})

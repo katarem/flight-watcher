@@ -191,6 +191,8 @@ class ScriptApi:
     def request(self, method: str, url: str, **kw):
         """`requests.Response`, o None si la web responde 404."""
         prov = self._prov
+        if prov.stopped:
+            raise ProviderError(f"{prov.label}: prueba cortada, no se hacen más peticiones")
         prov.trace("http", f"{method.upper()} {_shown_url(url, kw.get('params'))}")
         started = time.monotonic()
         try:
@@ -306,6 +308,8 @@ class ScriptedProvider(ApiProvider):
         self.updated_at, self.updated_by = row.get("updated_at"), row.get("updated_by")
         #: Consola de la prueba del editor (None en las rondas: solo el log del servidor).
         self.console = console
+        #: True cuando se corta la prueba del editor: el script que sigue en segundo plano ya no hace peticiones.
+        self.stopped = False
         self.ns = load(self.key, row["code"], self.coverage, printer=self.say)
         try:
             params = inspect.signature(self.ns["fetch_route"]).parameters
@@ -328,6 +332,7 @@ class ScriptedProvider(ApiProvider):
             return stealth.StealthSession(self._shared, self.key, self.trace)
 
     def trace(self, level: str, text: str):
+        self.pulse()
         if self.console is not None:
             self.console(level, text[:2000])
 

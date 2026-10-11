@@ -11,14 +11,18 @@ paso en la consola que ve el administrador mientras se ejecuta.
 from __future__ import annotations
 
 import time
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date, datetime
 
 from . import db, fx
 from .providers import PROVIDERS, ProviderBlocked, ProviderError, ordered
 
-#: Tiempo máximo de la prueba de un proveedor.
-TIMEOUT = 60.0
+#: Segundos sin ninguna señal de vida del proveedor (turno, petición, traza o `api.log`) para dar la prueba por
+#: colgada; se le suma su pausa entre peticiones. Cubre lo más largo que puede tardar una sola petición sin trazas
+#: (abrir la portada en Chrome: hasta 45 s + 15 s). Un proveedor lento que sigue avanzando no se corta.
+IDLE_TIMEOUT = 90.0
+#: Tope de la prueba completa aunque siga avanzando (un script que no acaba nunca).
+MAX_TIME = 600.0
 #: Gravedad de cada estado (el peor paso decide el estado del proveedor).
 SEVERITY = {"ok": 0, "skipped": 0, "empty": 1, "error": 2, "timeout": 3, "blocked": 4}
 STATUS_LABELS = {"ok": "Accesible", "empty": "Accesible, sin precios", "blocked": "Bloqueado",
@@ -39,9 +43,20 @@ def _now() -> str:
 CONSOLE_LEVEL = {"ok": "ok", "skipped": "info", "empty": "warn", "error": "error", "timeout": "error", "blocked": "error"}
 
 
-def _step(name: str, fn, say=None) -> dict:
+class Progress:
+    """Lo que lleva hecho una prueba, por si hay que cortarla: los pasos terminados y el que está en curso."""
+
+    def __init__(self):
+        self.steps: list[dict] = []
+        self.current = "Prueba"
+        self.started = time.monotonic()
+
+
+def _step(name: str, fn, say=None, progress: Progress | None = None) -> dict:
     """Ejecuta un paso y lo clasifica. `fn` devuelve (estado, detalle). `say(nivel, texto)`: consola de la prueba."""
     started = time.monotonic()
+    if progress is not None:
+        progress.current = name
     http = None
     if say:
         say("step", name)
@@ -56,10 +71,50 @@ def _step(name: str, fn, say=None) -> dict:
     ms = int((time.monotonic() - started) * 1000)
     if say:
         say(CONSOLE_LEVEL[status], f"{STATUS_LABELS[status]} ({ms / 1000:.1f} s): {detail}")
-    return {"name": name, "status": status, "detail": detail, "http_status": http, "ms": ms}
+    step = {"name": name, "status": status, "detail": detail, "http_status": http, "ms": ms}
+    if progress is not None:
+        progress.steps.append(step)
+    return step
 
 
-def _coverage_step(prov, origin, destination, say=None) -> dict:
+def _secs(s: float) -> str:
+    return f"{s / 60:g} min" if s >= 120 else f"{int(s)} s"
+
+
+def _watch(tests: dict, idle_timeout: float, max_time: float) -> dict[str, dict]:
+    """Espera a que acaben las pruebas `{clave: (futuro, proveedor o función que lo da, Progress)}`.
+
+    Una prueba solo se corta si su proveedor lleva más de `idle_timeout` (más su pausa entre peticiones) sin dar
+    señales de vida, o si pasa de `max_time` en total. Devuelve, de las cortadas, el paso «timeout» con lo que
+    estaba haciendo (los pasos terminados siguen en su `Progress`).
+    """
+    stopped: dict[str, dict] = {}
+    pending = dict(tests)
+    while pending:
+        now = time.monotonic()
+        for k, (fut, prov, progress) in list(pending.items()):
+            if fut.done():
+                del pending[k]
+                continue
+            prov = prov() if callable(prov) else prov
+            last = max(progress.started, getattr(prov, "last_activity", 0.0))
+            limit = idle_timeout + (prov.min_interval + prov.jitter if prov is not None else 0)
+            elapsed, quiet = now - progress.started, now - last
+            if elapsed >= max_time:
+                detail = f"No ha terminado en {_secs(max_time)} (tope de la prueba) aunque seguía avanzando."
+            elif quiet >= limit:
+                detail = f"Sin respuesta ni actividad durante {int(quiet)} s: parece colgado."
+            else:
+                continue
+            stopped[k] = {"name": progress.current, "status": "timeout", "detail": detail,
+                          "http_status": None, "ms": int(elapsed * 1000)}
+            del pending[k]
+        if pending:
+            wait([f for f, _, _ in pending.values()], timeout=0.25, return_when=FIRST_COMPLETED)
+    return stopped
+
+
+def _coverage_step(prov, origin, destination, say=None, progress: Progress | None = None) -> dict:
     def run():
         with prov.new_session() as s:
             if say and prov.coverage != "universal":
@@ -76,10 +131,11 @@ def _coverage_step(prov, origin, destination, say=None) -> dict:
                 ok = prov.probe(s, origin, destination)
                 return "ok", f"Responde: {'opera' if ok else 'no opera'} {origin}→{destination}."
         return "skipped", "Cubre cualquier ruta: no hay red que consultar."
-    return _step("Cobertura", run, say)
+    return _step("Cobertura", run, say, progress)
 
 
-def _prices_step(prov, origin, destination, browser_factory=None, sink: list | None = None, say=None) -> dict:
+def _prices_step(prov, origin, destination, browser_factory=None, sink: list | None = None, say=None,
+                 progress: Progress | None = None) -> dict:
     """Precios de un mes. Si se pasa `sink`, deja ahí los precios encontrados."""
     def run():
         kw = {"max_stops": 0} if prov.stops_filter else {}
@@ -103,17 +159,17 @@ def _prices_step(prov, origin, destination, browser_factory=None, sink: list | N
         return "ok", (f"{len(found)} días con precio para {origin}→{destination}; el más barato, "
                       f"{cheapest.price:g} {cheapest.currency} el {cheapest.day:%d/%m}"
                       + (f" (monedas: {', '.join(sorted(cur))})" if len(cur) > 1 else "") + ".")
-    return _step("Precios (1 mes)", run, say)
+    return _step("Precios (1 mes)", run, say, progress)
 
 
 def check_provider(key: str, origin: str | None = None, destination: str | None = None,
-                   browser_factory=None) -> dict:
+                   browser_factory=None, progress: Progress | None = None) -> dict:
     prov = PROVIDERS[key]
     o, d = origin or prov.health_route[0], destination or prov.health_route[1]
     started = time.monotonic()
-    steps = [_coverage_step(prov, o, d)]
+    steps = [_coverage_step(prov, o, d, progress=progress)]
     if steps[0]["status"] != "blocked":  # si ya nos bloquea, no insistir
-        steps.append(_prices_step(prov, o, d, browser_factory))
+        steps.append(_prices_step(prov, o, d, browser_factory, progress=progress))
     status = worst(steps)
     result = {"key": key, "status": status, "route": f"{o}→{d}", "steps": steps,
               "latency_ms": int((time.monotonic() - started) * 1000), "checked_at": _now()}
@@ -124,46 +180,53 @@ def check_provider(key: str, origin: str | None = None, destination: str | None 
 
 
 def run(keys=None, origin: str | None = None, destination: str | None = None, browser_factory=None,
-        timeout: float = TIMEOUT) -> list[dict]:
-    """Prueba varios proveedores a la vez (cada uno respeta su turno). Los que no acaban: «timeout»."""
+        idle_timeout: float = IDLE_TIMEOUT, max_time: float = MAX_TIME) -> list[dict]:
+    """Prueba varios proveedores a la vez (cada uno respeta su turno). Los colgados: «timeout» (ver `_watch`)."""
     keys = ordered(keys if keys is not None else PROVIDERS)
     if not keys:
         return []
     pool = ThreadPoolExecutor(max_workers=len(keys), thread_name_prefix="salud")
-    futures = {k: pool.submit(check_provider, k, origin, destination, browser_factory) for k in keys}
-    wait(futures.values(), timeout=timeout)
+    tests = {}
+    for k in keys:
+        progress = Progress()
+        tests[k] = (pool.submit(check_provider, k, origin, destination, browser_factory, progress), PROVIDERS[k], progress)
+    stopped = _watch(tests, idle_timeout, max_time)
     pool.shutdown(wait=False)
     out = []
-    for k, fut in futures.items():
-        if fut.done():
+    for k, (fut, prov, progress) in tests.items():
+        if k not in stopped:
             out.append(fut.result())
             continue
-        prov = PROVIDERS[k]
+        # Sigue en segundo plano: si acaba, su resultado sustituye a este en `provider_health`.
         route = f"{origin or prov.health_route[0]}→{destination or prov.health_route[1]}"
-        step = {"name": "Prueba", "status": "timeout", "detail": f"No ha terminado en {int(timeout)} s.",
-                "http_status": None, "ms": int(timeout * 1000), "route": route}
-        res = {"key": k, "status": "timeout", "route": route, "steps": [step], "latency_ms": int(timeout * 1000),
+        steps = [{**s, "route": route} for s in [*list(progress.steps), stopped[k]]]
+        res = {"key": k, "status": worst(steps), "route": route, "steps": steps, "latency_ms": stopped[k]["ms"],
                "checked_at": _now()}
         with db.connect() as con:
-            db.save_health(con, k, "timeout", [step], res["latency_ms"], res["checked_at"])
+            db.save_health(con, k, res["status"], steps, res["latency_ms"], res["checked_at"])
         out.append(res)
     return out
 
 
-def check_draft(build, origin: str, destination: str, say=None, timeout: float = TIMEOUT) -> dict:
+def check_draft(build, origin: str, destination: str, say=None, idle_timeout: float = IDLE_TIMEOUT,
+                max_time: float = MAX_TIME) -> dict:
     """Prueba del script del editor sin guardar nada (ni en `provider_health`): carga, cobertura y precios.
 
-    `build(say)` crea el proveedor (así la carga también cuenta para el tiempo límite y sale en la consola).
+    `build(say)` crea el proveedor (así la carga también cuenta para el tiempo límite y sale en la consola). Solo
+    se corta si se queda sin dar señales de vida o pasa del tope (ver `_watch`); entonces el script deja de poder
+    hacer peticiones.
+
     `say(nivel, texto)` recibe la traza de cada paso y de cada petición mientras ocurren. Devuelve además una
     muestra de los precios.
     """
     found: list = []
     started = time.monotonic()
     key = "borrador"
+    made: list = []
+    progress = Progress()
 
     def steps():
         nonlocal key
-        made = []
 
         def load():
             prov = build(say)
@@ -171,27 +234,29 @@ def check_draft(build, origin: str, destination: str, say=None, timeout: float =
             extra = {"network": "network", "probe": "probe"}.get(prov.coverage)
             fns = ["fetch_route" + (" (con max_stops)" if prov.stops_filter else "")] + ([extra] if extra else [])
             return "ok", f"Define {' y '.join(fns)}."
-        out = [_step("Carga del script", load, say)]
+        out = [_step("Carga del script", load, say, progress)]
         if not made:
             return out
         prov = made[0]
         key = prov.key
-        out.append(_coverage_step(prov, origin, destination, say))
+        out.append(_coverage_step(prov, origin, destination, say, progress))
         if out[-1]["status"] != "blocked":  # si ya nos bloquea, no insistir
-            out.append(_prices_step(prov, origin, destination, sink=found, say=say))
+            out.append(_prices_step(prov, origin, destination, sink=found, say=say, progress=progress))
         return out
 
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="script")
     fut = pool.submit(steps)
-    wait([fut], timeout=timeout)
+    stopped = _watch({"script": (fut, lambda: made[0] if made else None, progress)}, idle_timeout, max_time)
     pool.shutdown(wait=False)
-    if fut.done():
+    if not stopped:
         result = fut.result()
     else:
-        result = [{"name": "Prueba", "status": "timeout", "detail": f"El script no ha terminado en {int(timeout)} s.",
-                   "http_status": None, "ms": int(timeout * 1000)}]
+        if made:
+            made[0].stopped = True
+        cut = stopped["script"]
+        result = [*list(progress.steps), cut]
         if say:
-            say("error", result[0]["detail"])
+            say("error", f"{cut['name']}: {cut['detail']}")
     route = f"{origin}→{destination}"
     return {
         "key": key, "status": worst(result), "route": route, "steps": [{**s, "route": route} for s in result],
