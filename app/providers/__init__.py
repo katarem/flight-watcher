@@ -9,7 +9,7 @@ from datetime import date
 
 from .. import places
 from .base import (
-    COVERAGE_LABELS, ApiProvider, CalendarProvider, DayPrice, Provider, ProviderBlocked, ProviderError,
+    COVERAGE_LABELS, ApiProvider, CalendarProvider, DayPrice, Provider, ProviderBlocked, ProviderError, ProviderTimeout,
 )
 
 PROVIDERS: dict[str, Provider] = {}
@@ -31,4 +31,4 @@ def link_for(provider_key: str, origin: str, destination: str, day: date) -> str
 
 
 __all__ = ["COVERAGE_LABELS", "PROVIDERS", "ApiProvider", "CalendarProvider", "DayPrice", "Provider",
-           "ProviderBlocked", "ProviderError", "airports", "link_for", "ordered", "routes"]
+           "ProviderBlocked", "ProviderError", "ProviderTimeout", "airports", "link_for", "ordered", "routes"]

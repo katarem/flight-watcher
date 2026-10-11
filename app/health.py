@@ -15,10 +15,10 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date, datetime
 
 from . import db, fx
-from .providers import PROVIDERS, ProviderBlocked, ProviderError, ordered
+from .providers import PROVIDERS, ProviderBlocked, ProviderError, ProviderTimeout, ordered
 
 #: Segundos sin ninguna señal de vida del proveedor (turno, petición, traza o `api.log`) para dar la prueba por
-#: colgada; se le suma su pausa entre peticiones. Cubre lo más largo que puede tardar una sola petición sin trazas
+#: colgada; se le suma su pausa entre peticiones y no cuentan mientras una petición está dentro de su `timeout`. Cubre lo más largo que puede tardar una sola petición sin trazas
 #: (abrir la portada en Chrome: hasta 45 s + 15 s). Un proveedor lento que sigue avanzando no se corta.
 IDLE_TIMEOUT = 90.0
 #: Tope de la prueba completa aunque siga avanzando (un script que no acaba nunca).
@@ -65,7 +65,8 @@ def _step(name: str, fn, say=None, progress: Progress | None = None) -> dict:
     except ProviderBlocked as exc:
         status, detail, http = "blocked", str(exc), exc.status
     except ProviderError as exc:
-        status, detail = ("timeout" if "tiempo agotado" in str(exc) else "error"), str(exc)
+        timed_out = isinstance(exc, ProviderTimeout) or "tiempo agotado" in str(exc)  # también fetch() en Chrome
+        status, detail = ("timeout" if timed_out else "error"), str(exc)
     except Exception as exc:  # noqa: BLE001 - la prueba informa de cualquier fallo
         status, detail = "error", f"{type(exc).__name__}: {exc}"[:300]
     ms = int((time.monotonic() - started) * 1000)
@@ -97,7 +98,7 @@ def _watch(tests: dict, idle_timeout: float, max_time: float) -> dict[str, dict]
                 del pending[k]
                 continue
             prov = prov() if callable(prov) else prov
-            last = max(progress.started, getattr(prov, "last_activity", 0.0))
+            last = max(progress.started, getattr(prov, "last_activity", 0.0), getattr(prov, "busy_until", 0.0))
             limit = idle_timeout + (prov.min_interval + prov.jitter if prov is not None else 0)
             elapsed, quiet = now - progress.started, now - last
             if elapsed >= max_time:

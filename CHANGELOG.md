@@ -1,5 +1,13 @@
 # Cambios
 
+## 1.7.2 — 2026-10-11
+
+### Corregido
+- Una sola petición que tardaba más de 30 s (algo puntual en webs lentas como Binter) daba «Sin respuesta» a todo el paso aunque las demás fueran bien. Ahora **se repite una vez**; solo si tampoco responde la segunda vez es «sin respuesta», y el mensaje dice cuánto se esperó («no ha respondido en 30 s»).
+
+### Añadido
+- Los scripts pueden esperar más a una web lenta: `timeout=` en segundos en `api.get_json`, `api.post_json` y `api.request` (30 por defecto). La prueba de acceso no da por colgado a un proveedor mientras su petición está dentro de ese tiempo.
+
 ## 1.7.1 — 2026-10-11
 
 ### Corregido
