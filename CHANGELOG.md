@@ -1,5 +1,10 @@
 # Cambios
 
+## 1.8.1 — 2026-10-12
+
+### Corregido
+- Con las peticiones desde Chrome, si la página navega sola justo cuando se pide algo (el reto del anti-bot que se recarga, una redirección como la del motor de reservas de Air Europa), ya no falla con «Execution context was destroyed»: espera a que la página se asiente y repite la petición (hasta 3 veces), y la consola de la prueba lo dice.
+
 ## 1.8.0 — 2026-10-12
 
 ### Cambiado

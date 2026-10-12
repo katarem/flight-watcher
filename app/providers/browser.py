@@ -27,6 +27,8 @@ log = logging.getLogger("browser")
 #: Pausa tras abrir la portada, como quien la mira antes de buscar (segundos, al azar entre los dos).
 WARMUP_PAUSE = (1.5, 3.5)
 GOTO_TIMEOUT_MS = 45_000
+#: Veces que se repite un fetch() cortado porque la página navegó (retos de anti-bot que recargan, redirecciones).
+NAV_RETRIES = 3
 
 FETCH_JS = """async ({url, method, headers, body, timeoutMs}) => {
   const ctrl = new AbortController();
@@ -165,10 +167,20 @@ class BrowserFetch:
         elif data is not None:
             body = data if isinstance(data, str) else data.decode()
         page = self.page_for(page_url)
-        # En el mundo de la página (patchright, por defecto, evalúa en uno aislado): así el fetch() pasa por lo que
-        # su script le enganche, como el token que añade a cada petición el anti-bot de algunas webs (Imperva).
-        result = page.evaluate(FETCH_JS, {"url": url, "method": method.upper(), "headers": headers, "body": body,
-                                          "timeoutMs": int((timeout or 30) * 1000)}, isolated_context=False)
+        args = {"url": url, "method": method.upper(), "headers": headers, "body": body,
+                "timeoutMs": int((timeout or 30) * 1000)}
+        for attempt in range(1, NAV_RETRIES + 1):
+            try:
+                # En el mundo de la página (patchright, por defecto, evalúa en uno aislado): así el fetch() pasa por
+                # lo que su script le enganche, como el token que añade a cada petición el anti-bot (Imperva).
+                result = page.evaluate(FETCH_JS, args, isolated_context=False)
+                break
+            except Exception as exc:  # noqa: BLE001 - solo se repite si la página navegó a mitad
+                if attempt == NAV_RETRIES or not _navigated(exc):
+                    raise
+                # Hay páginas que siguen navegando tras cargar (el reto del anti-bot recarga, una redirección…).
+                self.trace("warn", "  Chrome: la página ha navegado mientras pedía; espero a que se asiente y lo repito")
+                _settle(page)
         if result.get("error"):
             raise BrowserError(f"fetch() en Chrome: {result['error']}")
         if result.get("credentials") == "omit" and page_url not in self._no_cookies:
@@ -193,6 +205,22 @@ class BrowserFetch:
                 pass
         self._pw = self._browser = self._ctx = None
         self._pages = {}
+
+
+def _navigated(exc: BaseException) -> bool:
+    """¿Se cortó la evaluación porque la página navegó? (patchright no tiene una excepción propia para esto)."""
+    text = str(exc)
+    return "Execution context was destroyed" in text or "navigation" in text.lower()
+
+
+def _settle(page):
+    """Espera a que la página termine de navegar (y de pedir cosas, hasta un límite)."""
+    for state, ms in (("domcontentloaded", GOTO_TIMEOUT_MS), ("networkidle", 10_000)):
+        try:
+            page.wait_for_load_state(state, timeout=ms)
+        except Exception:  # noqa: BLE001 - hay webs que nunca dejan de pedir cosas
+            pass
+    time.sleep(1)
 
 
 class BrowserError(RuntimeError):
