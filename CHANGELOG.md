@@ -10,6 +10,9 @@
 ### Corregido
 - **Wizz Air** (catálogo): su web ya no tiene `/buildnumber`; la versión de la API sale ahora de la portada. Viene con «Huella de Chrome» (la portada rechaza a quien no parece un navegador). Verificado contra la web real; se actualiza al importarlo de nuevo desde el catálogo.
 
+### Cambiado
+- Al crear o editar una vigilancia, la comprobación de qué webs operan la ruta ya no se corta a los 25 s: espera a todas, porque hay webs lentas (Binter, o las que van por Chrome) que sí la operan pero tardan.
+
 ### Quitado
 - **Google Flights** sale del catálogo: Google firma cada petición de su calendario con un token de BotGuard que solo genera su JavaScript en el navegador, sobre el cuerpo exacto de esa petición. Si lo tenías importado, bórralo en **Proveedores**.
 
