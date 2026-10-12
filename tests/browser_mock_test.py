@@ -15,6 +15,7 @@ import tempfile
 
 os.environ.setdefault("DATA_DIR", tempfile.mkdtemp(prefix="fw-browser-"))
 import threading
+import time
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -117,6 +118,18 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"cors": True}).encode() if ok else b"<html>Access Denied</html>")
             return
+        if self.path.startswith("/navega"):
+            # La página se recarga/redirige sola cuando ya parecía asentada (a mitad de una petición lenta).
+            page = "<!doctype html><script>setTimeout(() => location.replace('/antibot'), 4000)</script>Espera"
+            return self._send(200, page.encode(), "text/html; charset=utf-8")
+        if self.path.startswith("/redirige"):
+            # Como digital.aireuropa.com/booking: ya «cargada», su JavaScript lleva a la página buena (con el script
+            # del anti-bot), que es /con-token.
+            page = "<!doctype html><script>setTimeout(() => location.replace('/con-token'), 1200)</script>Un momento"
+            return self._send(200, page.encode(), "text/html; charset=utf-8")
+        if self.path.startswith("/api/lenta"):
+            time.sleep(3)
+            return self._send(200, json.dumps({"lenta": True}).encode(), "application/json")
         if self.path.startswith("/con-token"):
             # Como digital.aireuropa.com: su script (el del anti-bot) engancha fetch() y añade un token a cada petición.
             page = ("<!doctype html><script>const f = window.fetch; window.fetch = (u, o = {}) => "
@@ -175,6 +188,7 @@ def check(cond, msg):
 def browser_fetch():
     """Medidas anti-bot: Chrome resuelve el «reto» de la portada y hace las peticiones de la API desde ella."""
     from app import db
+    from app.providers import browser
     from app.providers.browser import BrowserFetch
 
     db.init()
@@ -197,6 +211,16 @@ def browser_fetch():
         check(r.status_code == 200 and r.json() == {"cors": True}
               and any("CORS" in line for line in lines),
               "API de otro origen: lleva el token del script de la página y, sin cookies por CORS, se repite sin ellas")
+        old_pause, browser.WARMUP_PAUSE = browser.WARMUP_PAUSE, (0, 0)
+        try:
+            r = fetcher.request(site + "/redirige", "GET", other + "/api/cors")
+            check(r.status_code == 200 and r.json() == {"cors": True} and any("ha seguido navegando" in line for line in lines),
+                  "si la página redirige con JavaScript tras cargar, espera a la buena antes de pedir")
+            r = fetcher.request(site + "/navega", "GET", site + "/api/lenta")
+        finally:
+            browser.WARMUP_PAUSE = old_pause
+        check(r.status_code == 200 and r.json() == {"lenta": True} and any("ha navegado" in line for line in lines),
+              "si la página navega sola mientras pide (reto que recarga, redirección), espera y lo repite")
     finally:
         fetcher.close()
         server.shutdown()

@@ -1,5 +1,5 @@
 #flight-watcher:proveedores v1 separador=%%fw%%
-# 5 proveedores exportados el 2026-10-12 desde flight-watcher 1.8.0.
+# 5 proveedores exportados el 2026-10-12 desde flight-watcher 1.8.1.
 # Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual.
 %%fw%% {"key": "vueling", "label": "Vueling", "color": "#e8a800", "coverage": "probe", "max_routes": null, "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://tickets.vueling.com/booking?o={origin}&d={destination}&dd={date}&adt=1&chd=0&inf=0&c=es-ES&cur=EUR", "notes": "Calendario de ~1 año en una petición. Verificado contra la web real el 2026-09-30. Bloquea las IP de centros de datos: ejecutar desde una IP residencial. Residentes en islas/Ceuta: añade &dt=1 a la plantilla de enlace.", "min_interval": 1.5, "stealth": 0}
 """Vueling.
@@ -295,7 +295,8 @@ import time
 API = "https://api-des.aireuropa.com"
 TOKEN_URL = f"{API}/v1/security/oauth2/token/initialization"
 #: Página del motor de reservas que abre Chrome: ahí corre el script de Imperva y su origen es el que admite la API.
-BROWSER_PAGE = "https://digital.aireuropa.com/booking?lang=es"
+#: La final: /booking?lang=es parece cargada antes de que su JavaScript lleve aquí, aún sin el script de Imperva.
+BROWSER_PAGE = "https://digital.aireuropa.com/booking/recovery"
 CALENDAR_URL = f"{API}/v2/search/air-calendars"
 CLIENT_ID = ""
 CLIENT_SECRET = ""

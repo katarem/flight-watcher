@@ -27,6 +27,12 @@ log = logging.getLogger("browser")
 #: Pausa tras abrir la portada, como quien la mira antes de buscar (segundos, al azar entre los dos).
 WARMUP_PAUSE = (1.5, 3.5)
 GOTO_TIMEOUT_MS = 45_000
+#: Veces que se repite un fetch() cortado porque la página navegó (retos de anti-bot que recargan, redirecciones).
+NAV_RETRIES = 3
+#: Una página recién abierta se da por asentada cuando su URL no cambia en STABLE_CHECKS comprobaciones seguidas,
+#: separadas STABLE_STEP segundos (como mucho STABLE_MAX): hay webs que, ya «cargadas», redirigen con JavaScript a
+#: la página buena (la intermedia aún no tiene el script del anti-bot).
+STABLE_CHECKS, STABLE_STEP, STABLE_MAX = 2, 1.0, 15.0
 
 FETCH_JS = """async ({url, method, headers, body, timeoutMs}) => {
   const ctrl = new AbortController();
@@ -143,12 +149,27 @@ class BrowserFetch:
             page.wait_for_load_state("networkidle", timeout=15_000)
         except Exception:  # noqa: BLE001 - hay webs que nunca dejan de pedir cosas
             pass
+        self._wait_stable(page)
         time.sleep(random.uniform(*WARMUP_PAUSE))
         status = resp.status if resp is not None else "?"
         self.trace("ok" if resp is not None and resp.status < 400 else "warn",
                    f"  ← página {status} en Chrome, {len(self._ctx.cookies())} cookies")
         self._pages[url] = page
         return page
+
+    def _wait_stable(self, page):
+        """Espera a que la URL de la página deje de cambiar (redirecciones con JavaScript tras cargar)."""
+        last, same, deadline = page.url, 0, time.monotonic() + STABLE_MAX
+        while same < STABLE_CHECKS and time.monotonic() < deadline:
+            # wait_for_timeout y no time.sleep: con la API síncrona, solo así llegan los eventos de navegación y
+            # page.url se actualiza.
+            page.wait_for_timeout(STABLE_STEP * 1000)
+            if page.url == last:
+                same += 1
+                continue
+            self.trace("info", f"  Chrome: la página ha seguido navegando ({page.url}); espero a que se asiente")
+            _settle(page)
+            last, same = page.url, 0
 
     def request(self, page_url: str, method: str, url: str, params=None, json=None, data=None, headers=None,
                 timeout=None, **_kw) -> BrowserResponse:
@@ -165,10 +186,20 @@ class BrowserFetch:
         elif data is not None:
             body = data if isinstance(data, str) else data.decode()
         page = self.page_for(page_url)
-        # En el mundo de la página (patchright, por defecto, evalúa en uno aislado): así el fetch() pasa por lo que
-        # su script le enganche, como el token que añade a cada petición el anti-bot de algunas webs (Imperva).
-        result = page.evaluate(FETCH_JS, {"url": url, "method": method.upper(), "headers": headers, "body": body,
-                                          "timeoutMs": int((timeout or 30) * 1000)}, isolated_context=False)
+        args = {"url": url, "method": method.upper(), "headers": headers, "body": body,
+                "timeoutMs": int((timeout or 30) * 1000)}
+        for attempt in range(1, NAV_RETRIES + 1):
+            try:
+                # En el mundo de la página (patchright, por defecto, evalúa en uno aislado): así el fetch() pasa por
+                # lo que su script le enganche, como el token que añade a cada petición el anti-bot (Imperva).
+                result = page.evaluate(FETCH_JS, args, isolated_context=False)
+                break
+            except Exception as exc:  # noqa: BLE001 - solo se repite si la página navegó a mitad
+                if attempt == NAV_RETRIES or not _navigated(exc):
+                    raise
+                # Hay páginas que siguen navegando tras cargar (el reto del anti-bot recarga, una redirección…).
+                self.trace("warn", "  Chrome: la página ha navegado mientras pedía; espero a que se asiente y lo repito")
+                _settle(page)
         if result.get("error"):
             raise BrowserError(f"fetch() en Chrome: {result['error']}")
         if result.get("credentials") == "omit" and page_url not in self._no_cookies:
@@ -193,6 +224,22 @@ class BrowserFetch:
                 pass
         self._pw = self._browser = self._ctx = None
         self._pages = {}
+
+
+def _navigated(exc: BaseException) -> bool:
+    """¿Se cortó la evaluación porque la página navegó? (patchright no tiene una excepción propia para esto)."""
+    text = str(exc)
+    return "Execution context was destroyed" in text or "navigation" in text.lower()
+
+
+def _settle(page):
+    """Espera a que la página termine de navegar (y de pedir cosas, hasta un límite)."""
+    for state, ms in (("domcontentloaded", GOTO_TIMEOUT_MS), ("networkidle", 10_000)):
+        try:
+            page.wait_for_load_state(state, timeout=ms)
+        except Exception:  # noqa: BLE001 - hay webs que nunca dejan de pedir cosas
+            pass
+    page.wait_for_timeout(1000)
 
 
 class BrowserError(RuntimeError):
