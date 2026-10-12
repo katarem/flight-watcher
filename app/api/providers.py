@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ValidationError
 
 from .. import auth, checker, coverage, db, health, places, scheduler
-from ..providers import COVERAGE_LABELS, PROVIDERS, bundle, scripted
+from ..providers import COVERAGE_LABELS, PROVIDERS, bundle, scripted, stealth
 from .deps import Invalid, require_admin
 
 log = logging.getLogger("providers")
@@ -44,8 +44,9 @@ class ProviderIn(BaseModel):
     min_interval: float | str | None = 1.5
     code: str = ""
     enabled: bool = True
-    #: «Aplicar medidas anti-bot» (providers/stealth.py).
-    stealth: bool = False
+    #: «Medidas anti-bot»: 0 ninguna, 1 huella de Chrome, 2 siempre Chrome (providers/stealth.py). true/false de
+    #: los paquetes antiguos = 1/0.
+    stealth: int | bool | str | None = 0
     #: Contraseña del administrador: obligatoria si el cambio va a ejecutar el código.
     password: str = ""
 
@@ -61,7 +62,8 @@ def _view(row: dict, usage: dict[str, int], last: dict | None = None, code: bool
     prov = PROVIDERS.get(row["key"])
     loaded = isinstance(prov, scripted.ScriptedProvider)
     return {k: row.get(k) for k in FIELDS} | {
-        "enabled": bool(row["enabled"]), "stealth": bool(row.get("stealth")), "loaded": loaded, "error": scripted.ERRORS.get(row["key"]),
+        "enabled": bool(row["enabled"]), "stealth": stealth.level(row.get("stealth")) or stealth.OFF,
+        "loaded": loaded, "error": scripted.ERRORS.get(row["key"]),
         "coverage_label": COVERAGE_LABELS.get(row["coverage"], row["coverage"]),
         "stops_filter": loaded and prov.stops_filter, "n_watches": usage.get(row["key"], 0),
         "last": last and {k: last[k] for k in ("status", "detail", "latency_ms", "checked_at")},
@@ -128,6 +130,9 @@ def _parse(body: ProviderIn, for_test: bool = False, errors: list[str] | None = 
     except ValueError:
         errors.append("La pausa entre peticiones debe ser un número de segundos entre 0 y 60.")
         interval = 1.5
+    level = stealth.level(body.stealth)
+    if level is None:
+        errors.append("Nivel de medidas anti-bot desconocido (" + ", ".join(f"{k} = {v}" for k, v in stealth.LEVELS.items()) + ").")
     code = body.code.replace("\r\n", "\n")
     if not code.strip():
         errors.append("Falta el código del script.")
@@ -138,7 +143,7 @@ def _parse(body: ProviderIn, for_test: bool = False, errors: list[str] | None = 
     return {"label": label or "Borrador", "color": color.lower(), "coverage": body.coverage, "max_routes": max_routes,
             "health_origin": origin, "health_destination": destination, "link_template": link,
             "notes": body.notes.strip()[:1000], "min_interval": interval, "code": code,
-            "enabled": int(body.enabled), "stealth": int(body.stealth)}
+            "enabled": int(body.enabled), "stealth": level}
 
 
 def _require_editable():
@@ -190,8 +195,7 @@ def list_providers():
         "providers": [_view(r, usage, last.get(r["key"])) for r in rows],
         "editable": scripted.EDITABLE, "template": scripted.TEMPLATE, "status_labels": health.STATUS_LABELS,
         "sources": sources,
-        "catalogs": [{"label": "Incluidos (Vueling y Ryanair)", "url": bundle.CATALOG_URL + bundle.INCLUDED.name},
-                     {"label": "Sin verificar (Wizz Air y Google Flights)", "url": bundle.CATALOG_URL + bundle.EXTRA.name}],
+        "catalogs": [{"label": label, "url": bundle.CATALOG_URL + name} for name, label in bundle.CATALOGS],
     }
 
 

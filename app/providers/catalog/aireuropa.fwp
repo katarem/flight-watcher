@@ -1,0 +1,151 @@
+#flight-watcher:proveedores v1 separador=%%fw%%
+# 1 proveedor exportado el 2026-10-12 desde flight-watcher 1.7.2.
+# Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual.
+%%fw%% {"key": "aireuropa", "label": "Air Europa", "color": "#2d69e1", "coverage": "probe", "max_routes": null, "health_origin": "SVQ", "health_destination": "MAD", "link_template": "https://www.aireuropa.com/es/es/home", "notes": "Sin verificar desde el servidor (2026-10-12): API de Amadeus (api-des.aireuropa.com) vista en la web real. Calendario de 31 días por petición, escalas incluidas; solo sabe filtrar «solo directos». Rellena CLIENT_ID y CLIENT_SECRET en el script (su cabecera dice de dónde salen). Necesita «Siempre Chrome».", "min_interval": 2.0, "stealth": 2}
+"""Air Europa (sin verificar contra la API real desde el servidor: pruébalo desde la IP donde corre el panel).
+
+El buscador de aireuropa.com manda al motor de reservas de Amadeus (digital.aireuropa.com), que pide los precios a
+la API de Amadeus Digital Experience Suite (DES) en api-des.aireuropa.com. Visto en la web real el 2026-10-12:
+
+- Token anónimo: `POST /v1/security/oauth2/token/initialization` (formulario con client_id, client_secret,
+  grant_type=client_credentials y `fact`: la búsqueda y el país en {"keyValuePairs": […]}). Dura 30 min.
+- Precios: `GET /v2/search/air-calendars` con origen, destino, una fecha central y `flexibility` (días a cada lado,
+  máximo 15: 31 días por petición). Devuelve el precio total más barato de cada día, con escalas incluidas (Air
+  Europa casi siempre vuela vía Madrid). `directFlights=true` deja solo los directos.
+- Cobertura «probe»: el mismo calendario en dos tramos de fechas; si alguno trae precios, opera la ruta.
+
+Anti-bot: api-des.aireuropa.com está detrás de Imperva, que exige en cada petición un `x-d-token` que solo genera
+su JavaScript en las páginas de digital.aireuropa.com (engancha fetch() y lo añade). Desde el servidor, el token sale
+con la huella de Chrome, pero el calendario da 403. Por eso el proveedor va con «Medidas anti-bot: Siempre Chrome» y
+`BROWSER_PAGE` (abajo): Chrome abre el motor de reservas y las peticiones salen desde ahí, como las de la web. Su
+CORS no admite cookies, así que van sin ellas (lo hace solo `BrowserFetch`).
+
+CLIENT_ID y CLIENT_SECRET (vacíos en el catálogo: rellénalos en el editor) son las credenciales del cliente web de
+Air Europa, las mismas para cualquier visitante. Para sacarlas: busca un vuelo en aireuropa.com y, en la página de
+resultados (digital.aireuropa.com), en la consola de Chrome (Cmd+Opt+I):
+
+    JSON.parse(document.body.dataset.bootstrapconfig)   // gatewayClientId y gatewayClientSecret
+
+Si dejan de valer («no da token»), cópialas otra vez de ahí.
+"""
+import threading
+import time
+
+API = "https://api-des.aireuropa.com"
+TOKEN_URL = f"{API}/v1/security/oauth2/token/initialization"
+#: Página del motor de reservas que abre Chrome: ahí corre el script de Imperva y su origen es el que admite la API.
+BROWSER_PAGE = "https://digital.aireuropa.com/booking?lang=es"
+CALENDAR_URL = f"{API}/v2/search/air-calendars"
+CLIENT_ID = ""
+CLIENT_SECRET = ""
+#: Lo que pide la web para la tarifa más barata en turista («Lite»/«NOBAG»).
+FARE_FAMILY = "DIGITAL1"
+#: Días a cada lado de la fecha central (15 es el máximo que acepta: 31 días por petición).
+FLEX = 15
+WINDOW = 2 * FLEX + 1
+#: Respuesta de Amadeus cuando no hay vuelos en esos días.
+NO_FLIGHTS = {"7959"}
+HEADERS = {"Accept": "application/json"}
+
+#: Sin `fact` la web usa este otro (lo probamos si el de arriba falla).
+TOKEN_PLAIN_URL = f"{API}/v1/security/oauth2/token"
+
+# Un token por ruta (el de la web lleva la búsqueda en su `fact`) mientras el proveedor esté cargado.
+_lock = threading.Lock()
+_tokens = {}
+
+
+def fact(origin, destination, day):
+    """Lo que manda la web al pedir el token: la búsqueda y los datos del portal (España, sin millas)."""
+    pairs = [{"key": "originLocationCode1", "value": origin}, {"key": "destinationLocationCode1", "value": destination},
+             {"key": "departureDateTime1", "value": day.isoformat()},
+             {"key": "CountryPortal", "value": "ES"}, {"key": "useMiles", "value": "false"}]
+    return json.dumps({"keyValuePairs": pairs}, separators=(",", ":"))
+
+
+def token(api, origin, destination, day):
+    key = (origin, destination)
+    with _lock:
+        hit = _tokens.get(key)
+        if hit and time.monotonic() < hit[1]:
+            return hit[0]
+    if not CLIENT_ID or not CLIENT_SECRET:
+        raise ProviderError("Air Europa: rellena CLIENT_ID y CLIENT_SECRET en el script (ver su cabecera)")
+    form = {"grant_type": "client_credentials", "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET}
+    try:
+        r = api.request("POST", TOKEN_URL, headers=HEADERS, data={**form, "fact": fact(origin, destination, day)})
+    except ProviderBlocked:
+        raise
+    except ProviderError as exc:
+        api.log("token con fact rechazado (", exc, "); pruebo sin fact")
+        r = api.request("POST", TOKEN_PLAIN_URL, headers=HEADERS, data=form)
+    data = r.json() if r is not None else {}
+    value = data.get("access_token")
+    if not value:
+        raise ProviderError(f"Air Europa: no da token ({str(data)[:200]}); ¿han cambiado las credenciales?")
+    api.log("token nuevo para", f"{origin}→{destination}", "· caduca en", data.get("expires_in"), "s")
+    with _lock:
+        # Se renueva un minuto antes de que caduque.
+        _tokens[key] = (value, time.monotonic() + max(60, int(data.get("expires_in") or 1799) - 60))
+    return value
+
+
+def calendar(api, origin, destination, center, direct):
+    """{fecha: precio en euros} de los 31 días alrededor de `center`."""
+    params = {"originLocationCode": origin, "destinationLocationCode": destination,
+              "departureDateTime": center.isoformat(), "commercialFareFamilies": FARE_FAMILY,
+              "travelers": "1ADT", "flexibility": FLEX}
+    if direct:
+        params["directFlights"] = "true"
+    auth = {"Authorization": f"Bearer {token(api, origin, destination, center)}"}
+    r = api.request("GET", CALENDAR_URL, params=params, headers={**HEADERS, **auth})
+    if r is None:
+        raise ProviderError("Air Europa: la API del calendario ya no existe (HTTP 404)")
+    data = r.json()
+    errors = data.get("errors") or []
+    if errors and not data.get("data"):
+        if all(str(e.get("code")) in NO_FLIGHTS for e in errors):
+            return {}
+        e = errors[0]
+        raise ProviderError(f"Air Europa: {e.get('title') or e.get('code')} {e.get('detail') or ''}".strip())
+    currencies = (data.get("dictionaries") or {}).get("currency") or {}
+    out = {}
+    for day in data.get("data") or []:
+        total = ((day.get("prices") or {}).get("totalPrices") or [{}])[0]
+        amount, currency = total.get("total"), (total.get("currencyCode") or "EUR").upper()
+        if not amount:
+            continue
+        # Los importes vienen en la unidad mínima de la moneda (céntimos): 5887 = 58,87 €.
+        decimals = (currencies.get(currency) or {}).get("decimalPlaces", 2)
+        out[date.fromisoformat(day["departureDate"][:10])] = (float(amount) / 10 ** decimals, currency)
+    return out
+
+
+def probe(api, origin, destination):
+    today = date.today()
+    return any(calendar(api, origin, destination, today + timedelta(days=d), False) for d in (FLEX + 1, 120))
+
+
+def fetch_route(api, origin, destination, start, max_months, max_stops=None):
+    end = add_months(start, max_months)
+    direct = max_stops == 0
+    out = {}
+    lo = start
+    while lo < end:
+        try:
+            found = calendar(api, origin, destination, lo + timedelta(days=FLEX), direct)
+        except ProviderBlocked:
+            raise
+        except ProviderError as exc:
+            if not out:
+                raise
+            # Más allá de lo que vende (unos 11 meses) puede responder con error: se queda lo que ya hay.
+            api.log("corto en", lo.isoformat(), "→", exc)
+            break
+        for d, (price, currency) in found.items():
+            if start <= d < end:
+                # El calendario no dice cuántas escalas tiene el más barato: solo sabe filtrar «directos» (0).
+                # Con max_stops=1 o más no se puede filtrar: None (el checker lo da por bueno).
+                out[d] = DayPrice(d, price, currency=currency, stops=0 if direct else None)
+        lo += timedelta(days=WINDOW)
+    return out

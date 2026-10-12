@@ -26,8 +26,12 @@ repite una vez (otra vez sin respuesta → `ProviderTimeout`); para una web lent
 están `date`, `datetime`, `timedelta`, `re`, `json`, `math`, `DayPrice`, `ProviderError`, `ProviderBlocked` y
 `add_months`. `api.log(…)` y `print(…)` escriben en el log del servidor y en la consola de la prueba del editor,
 que además muestra cada petición (URL, estado, tiempo, tamaño y forma del JSON) y en qué línea falla el script.
-Con «Aplicar medidas anti-bot» (`stealth`), sus peticiones se hacen pasar por las de una persona con Chrome (ver
-`stealth.py`) y `api.stealth` lo indica.
+
+«Medidas anti-bot» (`stealth`, se elige en el formulario: ninguna, huella de Chrome o siempre Chrome; ver
+`stealth.py`) decide cómo salen sus peticiones, y `api.stealth` dice el nivel (0, 1 o 2). Cuando van por Chrome,
+abre la portada del dominio de cada URL o, si el script lo define, una página concreta (de la web, no de la API):
+
+    BROWSER_PAGE = "https://digital.ejemplo.com/reservas"   # opcional: donde corre su anti-bot o la que admite CORS
 
 Seguridad: el script se ejecuta dentro del proceso del servidor, con sus mismos permisos (puede leer la BD y sus
 secretos). Por eso solo lo escribe o importa un administrador, hay que confirmar la contraseña para guardar,
@@ -144,6 +148,9 @@ def load(key: str, code: str, coverage: str, printer: Callable[..., None] | None
         exec(compiled, ns)  # noqa: S102 - código de un administrador (ver la cabecera del módulo)
     except Exception as exc:  # noqa: BLE001 - un script roto no debe tumbar el servidor
         raise ScriptError(f"Falla al cargarlo: {describe(exc, key)}") from exc
+    page = ns.get("BROWSER_PAGE")
+    if page is not None and not (isinstance(page, str) and re.fullmatch(r"https?://[^\s/]+(/\S*)?", page)):
+        raise ScriptError("`BROWSER_PAGE` debe ser la URL de una página de la web (https://…).")
     missing = [f for f in ("fetch_route", COVERAGE_FUNCS.get(coverage)) if f and not callable(ns.get(f))]
     if missing:
         raise ScriptError("Falta definir " + " y ".join(f"`{f}`" for f in missing)
@@ -184,7 +191,7 @@ class ScriptApi:
 
     def __init__(self, prov: ScriptedProvider, session, debug_dir, tag: str):
         self._prov, self.session, self.debug_dir, self._tag, self._n = prov, session, debug_dir, tag, 0
-        #: True si el proveedor tiene activadas las medidas anti-bot (el script puede adaptarse).
+        #: Nivel de medidas anti-bot (0 ninguna, 1 huella de Chrome, 2 siempre Chrome): el script puede adaptarse.
         self.stealth = prov.stealth
 
     def _next(self) -> str:
@@ -312,8 +319,8 @@ class ScriptedProvider(ApiProvider):
         self.notes = row.get("notes") or ""
         self.min_interval = float(row.get("min_interval") if row.get("min_interval") is not None else 1.5)
         self.jitter = min(1.0, self.min_interval)
-        #: «Aplicar medidas anti-bot»: sesión que se hace pasar por Chrome y pausas más variables (ver stealth.py).
-        self.stealth = bool(row.get("stealth"))
+        #: «Medidas anti-bot»: sesión que se hace pasar por Chrome (o es Chrome) y pausas más variables (stealth.py).
+        self.stealth = stealth.level(row.get("stealth")) or stealth.OFF
         if self.stealth:
             self.jitter = max(self.jitter, 2.0)
         self._shared: stealth.StealthClient | None = None
@@ -324,6 +331,8 @@ class ScriptedProvider(ApiProvider):
         #: True cuando se corta la prueba del editor: el script que sigue en segundo plano ya no hace peticiones.
         self.stopped = False
         self.ns = load(self.key, row["code"], self.coverage, printer=self.say)
+        #: Página que abre Chrome (`BROWSER_PAGE` del script); None = la portada de la web de cada URL.
+        self.browser_page: str | None = self.ns.get("BROWSER_PAGE")
         try:
             params = inspect.signature(self.ns["fetch_route"]).parameters
         except (TypeError, ValueError):
@@ -331,10 +340,11 @@ class ScriptedProvider(ApiProvider):
         #: Si `fetch_route` acepta `max_stops`, recibe el filtro de escalas de la vigilancia.
         self.stops_filter = "max_stops" in params
         if self.stealth:
-            self.trace("info", stealth.describe())
+            self.trace("info", stealth.describe(self.stealth, self.browser_page))
 
     def new_session(self):
-        """Con medidas anti-bot, una sesión «de navegador» sobre el mismo cliente (y sus cookies) mientras no caduque."""
+        """Con medidas anti-bot, una sesión «de navegador» sobre el mismo cliente (y sus cookies) mientras no caduque;
+        con «Siempre Chrome», todas sus peticiones van por Chrome."""
         if not self.stealth:
             return super().new_session()
         with self._session_lock:
@@ -342,7 +352,8 @@ class ScriptedProvider(ApiProvider):
                 if self._shared is not None:
                     self._shared.close()
                 self._shared = stealth.StealthClient(self.trace)
-            return stealth.StealthSession(self._shared, self.key, self.trace)
+            return stealth.StealthSession(self._shared, self.key, self.trace, page=self.browser_page,
+                                          always_browser=self.stealth == stealth.BROWSER)
 
     def trace(self, level: str, text: str):
         self.pulse()

@@ -1,5 +1,18 @@
 # Cambios
 
+## 1.8.0 — 2026-10-12
+
+### Cambiado
+- El interruptor «Aplicar medidas anti-bot» pasa a ser un selector **«Medidas anti-bot»** con tres niveles: **Ninguna**, **Huella de Chrome y, si bloquean, Chrome** (lo que hacía el interruptor) y **Siempre Chrome** (nuevo: todas las peticiones salen de Chrome de verdad, sin probar antes la huella; más lento, pero es lo único que vale con anti-bots que exigen algo que solo genera su JavaScript en cada petición, como Imperva). Los proveedores que lo tenían activado siguen igual y los paquetes `.fwp` antiguos (`true`/`false`) se importan bien.
+
+### Añadido
+- Un script puede decir qué página tiene que abrir Chrome con `BROWSER_PAGE = "https://…"` (si no, la portada del dominio de la API, como antes). Hace falta cuando la API solo acepta peticiones desde otra página o el anti-bot solo corre en ella. La consola de la prueba dice qué nivel se aplica y desde qué página.
+- **Air Europa** en el catálogo (`catalog/aireuropa.fwp`, sin verificar desde el servidor): precios por día de la API de Amadeus que usa su motor de reservas, 31 días por petición, con escalas (casi siempre vía Madrid). Va con «Siempre Chrome»; hay que rellenar en el editor sus credenciales de cliente web (la cabecera del script explica de dónde salen). Se ofrece al importar, junto a los otros paquetes del catálogo de GitHub.
+
+### Corregido
+- Las peticiones desde Chrome se hacen en el contexto de la propia página (patchright las aislaba): así pasan por lo que el script de la web les añade, como el token del anti-bot.
+- Si la API no admite cookies desde la página (CORS sin `Access-Control-Allow-Credentials`), la petición desde Chrome se repite sin ellas en vez de fallar con «Failed to fetch».
+
 ## 1.7.2 — 2026-10-11
 
 ### Corregido

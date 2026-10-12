@@ -1,6 +1,15 @@
-"""Medidas anti-bot de un proveedor (interruptor «Aplicar medidas anti-bot» en su editor).
+"""Medidas anti-bot de un proveedor (selector «Medidas anti-bot» en su editor, `provider_scripts.stealth`).
 
-Con el interruptor activado, las peticiones del proveedor se hacen pasar por las de una persona con Chrome:
+Tres niveles (`LEVELS`):
+
+- **Ninguna** (`OFF`): `requests` con el User-Agent honesto de la app (`base.USER_AGENT`).
+- **Huella de Chrome** (`FINGERPRINT`): las peticiones se hacen pasar por las de una persona con Chrome (abajo) y,
+  si aun así chocan con un anti-bot, se repiten desde Chrome de verdad.
+- **Siempre Chrome** (`BROWSER`): todas las peticiones van con `fetch()` desde Chrome de verdad, sin probar antes
+  la huella. Para webs cuyo anti-bot exige algo que solo genera su JavaScript en cada petición (Imperva con su
+  `x-d-token`, por ejemplo); más lento y con más memoria, pero es lo único que les vale.
+
+Con la huella de Chrome:
 
 - **Huella TLS y HTTP/2 de Chrome** con `curl_cffi` (`impersonate="chrome"`): Cloudflare, Akamai o DataDome miran
   cómo se negocia la conexión (JA3/JA4, ajustes de HTTP/2), no solo el User-Agent. Con ella van también el
@@ -13,12 +22,17 @@ Con el interruptor activado, las peticiones del proveedor se hacen pasar por las
   anti-bot, como `__cf_bm` o `_abck`) y una pausa de «lectura».
 - **Pausas más variables** entre peticiones (lo aplica `ScriptedProvider`: más `jitter`).
 - **Chrome de verdad si aun así hay bloqueo**: si una respuesta parece de un anti-bot (403/429 o su página de
-  reto), se repite con `fetch()` desde Chrome abierto en la portada (`browser.BrowserFetch`, con patchright), que
-  ejecuta los retos de JavaScript. A partir de ahí, ese proveedor sigue con Chrome mientras dure la sesión.
+  reto), se repite con `fetch()` desde Chrome (`browser.BrowserFetch`, con patchright), que ejecuta los retos de
+  JavaScript. A partir de ahí, ese proveedor sigue con Chrome mientras dure la sesión.
+
+Chrome abre la página que el script pida en `BROWSER_PAGE` o, si no define ninguna, la portada del dominio de la
+API (`site_of`). Hace falta la página buena cuando la API solo acepta peticiones (CORS) desde otro subdominio o el
+anti-bot solo corre en ella (Air Europa: la API está en api-des.aireuropa.com y el anti-bot en
+digital.aireuropa.com).
 
 Lo que no hace: resolver CAPTCHA que piden intervención (imágenes, casillas) ni reutilizar cookies sacadas de otro
-navegador. Sin `curl_cffi` instalado se queda en las cabeceras de Chrome con `requests` (la huella TLS sería la de
-Python) y la consola de la prueba lo dice.
+navegador. Sin `curl_cffi` instalado, la huella se queda en las cabeceras de Chrome con `requests` (la huella TLS
+sería la de Python) y la consola de la prueba lo dice.
 """
 from __future__ import annotations
 
@@ -65,6 +79,21 @@ if curl_exceptions is not None:
     NETWORK_ERRORS += (curl_exceptions.RequestException,)
 
 _SECOND_LEVEL = {"co", "com", "org", "net", "gov", "ac", "edu"}
+
+#: Niveles de «Medidas anti-bot» (valor de `provider_scripts.stealth`).
+OFF, FINGERPRINT, BROWSER = 0, 1, 2
+LEVELS = {OFF: "Ninguna", FINGERPRINT: "Huella de Chrome y, si bloquean, Chrome", BROWSER: "Siempre Chrome"}
+
+
+def level(value) -> int | None:
+    """Nivel de un valor guardado o recibido (los paquetes antiguos traen true/false); None si no es válido."""
+    if isinstance(value, bool):
+        return int(value)
+    try:
+        n = int(str(value).strip()) if value is not None and str(value).strip() else OFF
+    except ValueError:
+        return None
+    return n if n in LEVELS else None
 
 
 def available() -> bool:
@@ -157,13 +186,18 @@ class StealthClient:
 
 class StealthSession:
     """Sesión de un `with prov.new_session()` con medidas anti-bot. Se usa como `requests.Session` (`request`,
-    `headers`). Si choca con un anti-bot, sigue con Chrome (`browser.BrowserFetch`), que se cierra al salir del
-    `with` (la API síncrona del navegador no se puede compartir entre hilos)."""
+    `headers`). Si choca con un anti-bot (o con `always_browser`, desde el principio), sigue con Chrome
+    (`browser.BrowserFetch`) abierto en `page` o en la portada de la API, que se cierra al salir del `with` (la API
+    síncrona del navegador no se puede compartir entre hilos)."""
 
-    def __init__(self, shared: StealthClient, key: str, trace=None):
+    def __init__(self, shared: StealthClient, key: str, trace=None, page: str | None = None,
+                 always_browser: bool = False):
         self.shared, self.key = shared, key
         self.headers = shared.headers
         self.trace = trace or (lambda level, text: None)
+        #: Página que abre Chrome (`BROWSER_PAGE` del script); None = la portada de la web de cada URL.
+        self.page = page
+        self.always_browser = always_browser
         self._browser = None
 
     def __enter__(self):
@@ -179,7 +213,7 @@ class StealthSession:
             self._browser = None
 
     def request(self, method: str, url: str, headers: dict | None = None, timeout=None, **kw):
-        if not self.shared.prefer_browser:
+        if not (self.always_browser or self.shared.prefer_browser):
             r = self.shared.request(method, url, headers=headers, timeout=timeout, **kw)
             if not looks_blocked(r):
                 return r
@@ -190,16 +224,21 @@ class StealthSession:
         try:
             if self._browser is None:
                 self._browser = browser.BrowserFetch(self.key, self.trace)
-            return self._browser.request(site_of(url), method, url, headers=headers, timeout=timeout, **kw)
+            return self._browser.request(self.page or site_of(url) + "/", method, url, headers=headers,
+                                         timeout=timeout, **kw)
         except ImportError as exc:
             raise ProviderError("Falta patchright para usar Chrome (pip install patchright)") from exc
         except Exception as exc:  # noqa: BLE001 - un fallo del navegador es un error del proveedor, no de la ronda
             raise ProviderError(f"Chrome no ha podido hacer la petición: {exc}"[:300]) from exc
 
 
-def describe() -> str:
+def describe(lvl: int, page: str | None = None) -> str:
     """Qué medidas se aplican (para la consola de la prueba)."""
+    where = page or "la portada de la web"
+    if lvl == BROWSER:
+        return (f"Medidas anti-bot: siempre Chrome (patchright). Cada petición se hace con fetch() desde {where}, "
+                "con sus cookies y los retos de JavaScript del anti-bot resueltos; pausas más variables.")
     tls = ("huella TLS y HTTP/2 de Chrome (curl_cffi)" if available()
            else "SIN huella TLS de Chrome (falta curl_cffi: solo cabeceras)")
-    return (f"Medidas anti-bot activadas: {tls}, cabeceras de Chrome en español, una sesión con cookies, "
-            "visita previa a la portada, pausas más variables y, si hay bloqueo, Chrome de verdad (patchright).")
+    return (f"Medidas anti-bot: {tls}, cabeceras de Chrome en español, una sesión con cookies, visita previa a la "
+            f"portada, pausas más variables y, si hay bloqueo, Chrome de verdad (patchright) desde {where}.")

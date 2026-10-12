@@ -16,6 +16,9 @@ export interface Me extends User {
 
 export type Coverage = 'network' | 'probe' | 'universal'
 
+/** Medidas anti-bot de un proveedor: 0 ninguna, 1 huella de Chrome (y Chrome si bloquean), 2 siempre Chrome. */
+export type StealthLevel = 0 | 1 | 2
+
 export interface ProviderMeta {
   key: string
   label: string
@@ -293,8 +296,8 @@ export interface Provider {
   loaded: boolean
   /** Por qué no se pudo cargar (activo pero roto). */
   error: string | null
-  /** «Aplicar medidas anti-bot»: sus peticiones se hacen pasar por Chrome (app/providers/stealth.py). */
-  stealth: boolean
+  /** «Medidas anti-bot» (app/providers/stealth.py): 0 ninguna, 1 huella de Chrome (y Chrome si bloquean), 2 siempre Chrome. */
+  stealth: StealthLevel
   /** `fetch_route` acepta `max_stops` (filtra él mismo por escalas). */
   stops_filter: boolean
   n_watches: number

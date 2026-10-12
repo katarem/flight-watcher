@@ -22,8 +22,9 @@ se elige al exportar para que ninguna línea de ningún script empiece por él.
 Proveedores incluidos
 ---------------------
 `catalog/incluidos.fwp` (Vueling y Ryanair, verificados) se crea en la BD la primera vez que arranca esta versión
-(`seed()`); `catalog/sin-verificar.fwp` (Wizz Air y Google Flights) solo si alguna vigilancia ya los usaba. Los
-dos se pueden volver a importar desde el panel (o desde su enlace en GitHub) para recuperarlos o actualizarlos.
+(`seed()`); `catalog/sin-verificar.fwp` (Wizz Air y Google Flights) solo si alguna vigilancia ya los usaba;
+`catalog/aireuropa.fwp` nunca (hay que rellenar sus credenciales). Todos (`CATALOGS`) se pueden importar desde el
+panel (o desde su enlace en GitHub) para recuperarlos o actualizarlos.
 """
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ from pathlib import Path
 import requests
 
 from .. import __version__
+from . import stealth
 
 log = logging.getLogger("providers")
 
@@ -52,6 +54,12 @@ MAX_PROVIDERS = 100
 CATALOG_DIR = Path(__file__).resolve().parent / "catalog"
 INCLUDED = CATALOG_DIR / "incluidos.fwp"
 EXTRA = CATALOG_DIR / "sin-verificar.fwp"
+#: Paquetes del catálogo que el panel ofrece importar desde GitHub (archivo, nombre en el panel).
+CATALOGS = (
+    (INCLUDED.name, "Incluidos (Vueling y Ryanair)"),
+    (EXTRA.name, "Sin verificar (Wizz Air y Google Flights)"),
+    ("aireuropa.fwp", "Air Europa (sin verificar; hay que poner sus credenciales)"),
+)
 #: Dónde están publicados los paquetes incluidos (para importarlos o actualizarlos desde el panel).
 CATALOG_URL = "https://raw.githubusercontent.com/katarem/flight-watcher/main/app/providers/catalog/"
 #: Ajuste que marca que ya se crearon los proveedores incluidos (así, si se borran, no vuelven solos).
@@ -75,7 +83,7 @@ def dumps(rows: list[dict]) -> str:
            f"{date.today().isoformat()} desde flight-watcher {__version__}.",
            "# Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual."]
     for row, code in zip(rows, codes):
-        meta = {k: row.get(k) for k in FIELDS} | {"stealth": bool(row.get("stealth"))}
+        meta = {k: row.get(k) for k in FIELDS} | {"stealth": stealth.level(row.get("stealth")) or stealth.OFF}
         out.append(f"{sep} {json.dumps(meta, ensure_ascii=False)}")
         out.append(code.rstrip("\n"))
     return "\n".join(out) + "\n"
@@ -170,7 +178,7 @@ def values(p: dict) -> dict:
         "health_destination": (p.get("health_destination") or "BCN").upper(),
         "link_template": p.get("link_template") or "", "notes": p.get("notes") or "",
         "min_interval": float(p["min_interval"]) if p.get("min_interval") is not None else 1.5, "code": p["code"],
-        "stealth": int(bool(p.get("stealth"))),
+        "stealth": stealth.level(p.get("stealth")) or stealth.OFF,
     }
 
 

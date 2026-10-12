@@ -5,7 +5,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { API, ApiError, del, errorList, post, put, stream } from '@/api/client'
 import { keys, useProvider, useProvidersAdmin } from '@/api/queries'
-import type { ConsoleEvent, Coverage, Provider, ScriptTestResult } from '@/api/types'
+import type { ConsoleEvent, Coverage, Provider, ScriptTestResult, StealthLevel } from '@/api/types'
 import { ScriptConsole } from '@/components/provider/console'
 import { StatusBadge } from '@/components/provider/health'
 import { Button, buttonClass } from '@/components/ui/button'
@@ -35,7 +35,7 @@ interface FormState {
   min_interval: string
   code: string
   enabled: boolean
-  stealth: boolean
+  stealth: StealthLevel
 }
 
 const fromProvider = (s: Provider): FormState => ({
@@ -43,6 +43,19 @@ const fromProvider = (s: Provider): FormState => ({
   health_origin: s.health_origin, health_destination: s.health_destination, link_template: s.link_template, notes: s.notes,
   min_interval: String(s.min_interval), code: s.code ?? '', enabled: s.enabled, stealth: s.stealth,
 })
+
+/** Niveles de «Medidas anti-bot» (app/providers/stealth.py) y qué hace cada uno. */
+const STEALTH: { value: StealthLevel; label: string; hint: string }[] = [
+  { value: 0, label: 'Ninguna', hint: 'Peticiones normales, identificándose como Flight Watcher. Lo más rápido; vale para las webs que no bloquean.' },
+  {
+    value: 1, label: 'Huella de Chrome y, si bloquean, Chrome',
+    hint: 'Sus peticiones se hacen pasar por las de una persona con Chrome: huella TLS y HTTP/2 de Chrome, sus cabeceras en español, cookies que se conservan, visita previa a la portada y pausas más variables. Si aun así la web bloquea, repite la petición desde Chrome de verdad (más lento).',
+  },
+  {
+    value: 2, label: 'Siempre Chrome',
+    hint: 'Todas las peticiones salen de Chrome de verdad, abierto en la portada o en la página que indique el script (BROWSER_PAGE). Para webs cuyo anti-bot solo deja pasar a su propio JavaScript; es lo más lento y lo que más memoria gasta.',
+  },
+]
 
 const iata = (v: string) => v.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3)
 
@@ -80,7 +93,12 @@ function Contract({ coverage }: { coverage: Coverage }) {
         <p>
           Ya están importados <code>date</code>, <code>datetime</code>, <code>timedelta</code>, <code>re</code>, <code>json</code>,
           {' '}<code>math</code>, <code>DayPrice</code>, <code>ProviderError</code>, <code>ProviderBlocked</code> y <code>add_months</code>.
-          Las peticiones llevan un User-Agent que dice quiénes somos (<code>flight-watcher</code>).
+          Las peticiones llevan un User-Agent que dice quiénes somos (<code>flight-watcher</code>), salvo con medidas anti-bot.
+        </p>
+        <p>
+          Opcional: <code className="text-fg">BROWSER_PAGE = &quot;https://…&quot;</code>, la página de la web que abre Chrome
+          cuando las peticiones van por él (si no, la portada del dominio de la API). Hace falta si la API solo acepta
+          peticiones desde otra página o el anti-bot solo corre en ella.
         </p>
       </div>
     </details>
@@ -278,8 +296,15 @@ function ProviderForm({ initial, existing, editable }: { initial: FormState; exi
             placeholder="https://www.ejemplo.com/vuelos?o={origin}&d={destination}&f={date}"
             onChange={(e) => set('link_template', e.target.value)} />}
         </Field>
-        <Switch checked={f.stealth} onChange={(v) => set('stealth', v)} label="Aplicar medidas anti-bot"
-          description="Sus peticiones se hacen pasar por las de una persona con Chrome: huella TLS y HTTP/2 de Chrome, sus cabeceras en español, cookies que se conservan, visita previa a la portada y pausas más variables. Si aun así la web bloquea, repite la petición desde Chrome de verdad (más lento). No resuelve CAPTCHA que pidan intervención. Úsalo solo con las webs que bloquean." />
+        <Field label="Medidas anti-bot"
+          hint={`${STEALTH.find((s) => s.value === f.stealth)?.hint ?? ''} No resuelven CAPTCHA que pidan intervención.`}>
+          {(id, hint) => (
+            <Select id={id} aria-describedby={hint} value={f.stealth}
+              onChange={(e) => set('stealth', Number(e.target.value) as StealthLevel)}>
+              {STEALTH.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+            </Select>
+          )}
+        </Field>
         <Field label="Notas (opcional)" hint="Para los administradores: de dónde salen los precios, límites conocidos…">
           {(id, hint) => <Textarea id={id} aria-describedby={hint} rows={2} maxLength={1000} value={f.notes}
             onChange={(e) => set('notes', e.target.value)} />}
@@ -384,7 +409,7 @@ export function ProviderFormPage() {
 
   const initial: FormState = existing.data ? fromProvider(existing.data) : {
     key: '', label: '', color: '#64748b', coverage: 'network', max_routes: '', health_origin: '', health_destination: '',
-    link_template: '', notes: '', min_interval: '1.5', code: list.data.template, enabled: true, stealth: false,
+    link_template: '', notes: '', min_interval: '1.5', code: list.data.template, enabled: true, stealth: 0,
   }
 
   return (

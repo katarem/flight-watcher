@@ -35,7 +35,9 @@ function ProviderCard({ p, onTest, testing, disabled, selected, onSelect }: {
               <h2 id={`prov-${p.key}`} className="text-base font-semibold tracking-tight">{p.label}</h2>
               <span className="font-mono text-xs text-muted">{p.key}</span>
               {p.error ? <Badge tone="danger">No carga</Badge> : !p.enabled ? <Badge>Desactivado</Badge> : null}
-              {p.stealth && <Badge tone="accent"><ShieldCheck aria-hidden="true" /> Anti-bot</Badge>}
+              {p.stealth > 0 && (
+                <Badge tone="accent"><ShieldCheck aria-hidden="true" /> {p.stealth === 2 ? 'Siempre Chrome' : 'Anti-bot'}</Badge>
+              )}
               {p.loaded && (p.last ? <StatusBadge status={p.last.status} /> : <Badge>sin probar</Badge>)}
             </div>
             <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">

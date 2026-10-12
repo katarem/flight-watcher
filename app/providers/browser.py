@@ -4,9 +4,11 @@
   si no, el Chromium de patchright (o el de `FW_CHROMIUM`). **Con ventana** si «Modo sin ventana» está desactivado
   en Ajustes y hay pantalla (`DISPLAY`; en Docker, la pantalla virtual de Xvfb, así que no hace falta monitor); si
   no hay pantalla, sin ventana. No se cambian el User-Agent ni las cabeceras: las del navegador cuadran con su huella.
-- `BrowserFetch`: Chrome abierto en la portada de una web; las peticiones de la API se hacen con `fetch()` desde la
-  propia página, así llevan sus cookies, su huella TLS y los retos de JavaScript del anti-bot ya resueltos. Lo usan
-  las medidas anti-bot (`stealth.py`) cuando la petición normal choca con un anti-bot. Las cookies se guardan en
+- `BrowserFetch`: Chrome abierto en una página de la web (la portada o la `BROWSER_PAGE` del script); las peticiones
+  de la API se hacen con `fetch()` desde ella, así llevan sus cookies, su huella TLS, los retos de JavaScript del
+  anti-bot ya resueltos y lo que su script añada a cada petición. Si la API no admite cookies de otro origen (CORS
+  sin `Access-Control-Allow-Credentials`), se repite sin ellas. Lo usan las medidas anti-bot (`stealth.py`): cuando
+  la petición normal choca con un anti-bot o, con «Siempre Chrome», en todas. Las cookies se guardan en
   `DATA_DIR/navegador/<clave>.json` para la próxima vez, como haría un navegador de verdad.
 
 Lo usa también `CalendarProvider` (proveedores que recorren la web) a través de `checker.browser_session`.
@@ -29,11 +31,20 @@ GOTO_TIMEOUT_MS = 45_000
 FETCH_JS = """async ({url, method, headers, body, timeoutMs}) => {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const call = (credentials) => fetch(url, {method, headers, body, credentials, signal: ctrl.signal});
   try {
-    const r = await fetch(url, {method, headers, body, credentials: 'include', signal: ctrl.signal});
+    let r, credentials = 'include';
+    try {
+      r = await call(credentials);
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+      // CORS: la API no admite cookies desde este origen (sin Access-Control-Allow-Credentials): sin ellas.
+      credentials = 'omit';
+      r = await call(credentials);
+    }
     const h = {};
     r.headers.forEach((v, k) => { h[k] = v; });
-    return {status: r.status, url: r.url, headers: h, text: await r.text()};
+    return {status: r.status, url: r.url, headers: h, text: await r.text(), credentials};
   } catch (e) {
     return {error: String(e && e.name === 'AbortError' ? 'tiempo agotado' : e)};
   } finally {
@@ -89,7 +100,7 @@ class BrowserResponse:
 
 
 class BrowserFetch:
-    """Chrome abierto (al primer uso) en la portada de cada web, para hacer las peticiones desde ella.
+    """Chrome abierto (al primer uso) en una página de cada web, para hacer las peticiones desde ella.
 
     Usa la API síncrona de patchright, que solo funciona en el hilo que la abrió: se crea y se cierra dentro del
     mismo `with` de la sesión del proveedor.
@@ -100,6 +111,7 @@ class BrowserFetch:
         self.trace = trace or (lambda level, text: None)
         self._pw = self._browser = self._ctx = None
         self._pages: dict = {}
+        self._no_cookies: set[str] = set()
 
     def _state_path(self):
         from .. import config
@@ -117,15 +129,16 @@ class BrowserFetch:
         )
         self.trace("info", f"  Chrome abierto ({'sin ventana' if not has_display() or settings.get('headless', '1') == '1' else 'con ventana'})")
 
-    def page_for(self, site: str):
-        page = self._pages.get(site)
+    def page_for(self, url: str):
+        """Pestaña abierta en `url` (la portada «https://www.web.com/» o la página que pida el script)."""
+        page = self._pages.get(url)
         if page is not None:
             return page
         if self._ctx is None:
             self._open()
         page = self._ctx.new_page()
-        self.trace("info", f"  Chrome: abro {site}/ (resuelve los retos del anti-bot y guarda sus cookies)")
-        resp = page.goto(site + "/", wait_until="domcontentloaded", timeout=GOTO_TIMEOUT_MS)
+        self.trace("info", f"  Chrome: abro {url} (resuelve los retos del anti-bot y guarda sus cookies)")
+        resp = page.goto(url, wait_until="domcontentloaded", timeout=GOTO_TIMEOUT_MS)
         try:
             page.wait_for_load_state("networkidle", timeout=15_000)
         except Exception:  # noqa: BLE001 - hay webs que nunca dejan de pedir cosas
@@ -133,11 +146,11 @@ class BrowserFetch:
         time.sleep(random.uniform(*WARMUP_PAUSE))
         status = resp.status if resp is not None else "?"
         self.trace("ok" if resp is not None and resp.status < 400 else "warn",
-                   f"  ← portada {status} en Chrome, {len(self._ctx.cookies())} cookies")
-        self._pages[site] = page
+                   f"  ← página {status} en Chrome, {len(self._ctx.cookies())} cookies")
+        self._pages[url] = page
         return page
 
-    def request(self, site: str, method: str, url: str, params=None, json=None, data=None, headers=None,
+    def request(self, page_url: str, method: str, url: str, params=None, json=None, data=None, headers=None,
                 timeout=None, **_kw) -> BrowserResponse:
         if params:
             url += ("&" if "?" in url else "?") + urlencode({k: v for k, v in params.items() if v is not None})
@@ -151,11 +164,16 @@ class BrowserFetch:
             headers.setdefault("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8")
         elif data is not None:
             body = data if isinstance(data, str) else data.decode()
-        page = self.page_for(site)
+        page = self.page_for(page_url)
+        # En el mundo de la página (patchright, por defecto, evalúa en uno aislado): así el fetch() pasa por lo que
+        # su script le enganche, como el token que añade a cada petición el anti-bot de algunas webs (Imperva).
         result = page.evaluate(FETCH_JS, {"url": url, "method": method.upper(), "headers": headers, "body": body,
-                                          "timeoutMs": int((timeout or 30) * 1000)})
+                                          "timeoutMs": int((timeout or 30) * 1000)}, isolated_context=False)
         if result.get("error"):
             raise BrowserError(f"fetch() en Chrome: {result['error']}")
+        if result.get("credentials") == "omit" and page_url not in self._no_cookies:
+            self._no_cookies.add(page_url)
+            self.trace("info", "  Chrome: la API no admite cookies desde esta página (CORS); las peticiones van sin ellas")
         return BrowserResponse(result)
 
     def close(self):
