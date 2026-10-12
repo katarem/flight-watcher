@@ -29,6 +29,10 @@ WARMUP_PAUSE = (1.5, 3.5)
 GOTO_TIMEOUT_MS = 45_000
 #: Veces que se repite un fetch() cortado porque la página navegó (retos de anti-bot que recargan, redirecciones).
 NAV_RETRIES = 3
+#: Una página recién abierta se da por asentada cuando su URL no cambia en STABLE_CHECKS comprobaciones seguidas,
+#: separadas STABLE_STEP segundos (como mucho STABLE_MAX): hay webs que, ya «cargadas», redirigen con JavaScript a
+#: la página buena (la intermedia aún no tiene el script del anti-bot).
+STABLE_CHECKS, STABLE_STEP, STABLE_MAX = 2, 1.0, 15.0
 
 FETCH_JS = """async ({url, method, headers, body, timeoutMs}) => {
   const ctrl = new AbortController();
@@ -145,12 +149,27 @@ class BrowserFetch:
             page.wait_for_load_state("networkidle", timeout=15_000)
         except Exception:  # noqa: BLE001 - hay webs que nunca dejan de pedir cosas
             pass
+        self._wait_stable(page)
         time.sleep(random.uniform(*WARMUP_PAUSE))
         status = resp.status if resp is not None else "?"
         self.trace("ok" if resp is not None and resp.status < 400 else "warn",
                    f"  ← página {status} en Chrome, {len(self._ctx.cookies())} cookies")
         self._pages[url] = page
         return page
+
+    def _wait_stable(self, page):
+        """Espera a que la URL de la página deje de cambiar (redirecciones con JavaScript tras cargar)."""
+        last, same, deadline = page.url, 0, time.monotonic() + STABLE_MAX
+        while same < STABLE_CHECKS and time.monotonic() < deadline:
+            # wait_for_timeout y no time.sleep: con la API síncrona, solo así llegan los eventos de navegación y
+            # page.url se actualiza.
+            page.wait_for_timeout(STABLE_STEP * 1000)
+            if page.url == last:
+                same += 1
+                continue
+            self.trace("info", f"  Chrome: la página ha seguido navegando ({page.url}); espero a que se asiente")
+            _settle(page)
+            last, same = page.url, 0
 
     def request(self, page_url: str, method: str, url: str, params=None, json=None, data=None, headers=None,
                 timeout=None, **_kw) -> BrowserResponse:
@@ -220,7 +239,7 @@ def _settle(page):
             page.wait_for_load_state(state, timeout=ms)
         except Exception:  # noqa: BLE001 - hay webs que nunca dejan de pedir cosas
             pass
-    time.sleep(1)
+    page.wait_for_timeout(1000)
 
 
 class BrowserError(RuntimeError):

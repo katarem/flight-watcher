@@ -119,8 +119,13 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"cors": True}).encode() if ok else b"<html>Access Denied</html>")
             return
         if self.path.startswith("/navega"):
-            # Como el reto de Imperva: la página se recarga/redirige sola un poco después de cargar.
-            page = "<!doctype html><script>setTimeout(() => location.replace('/antibot'), 1500)</script>Espera"
+            # La página se recarga/redirige sola cuando ya parecía asentada (a mitad de una petición lenta).
+            page = "<!doctype html><script>setTimeout(() => location.replace('/antibot'), 4000)</script>Espera"
+            return self._send(200, page.encode(), "text/html; charset=utf-8")
+        if self.path.startswith("/redirige"):
+            # Como digital.aireuropa.com/booking: ya «cargada», su JavaScript lleva a la página buena (con el script
+            # del anti-bot), que es /con-token.
+            page = "<!doctype html><script>setTimeout(() => location.replace('/con-token'), 1200)</script>Un momento"
             return self._send(200, page.encode(), "text/html; charset=utf-8")
         if self.path.startswith("/api/lenta"):
             time.sleep(3)
@@ -208,6 +213,9 @@ def browser_fetch():
               "API de otro origen: lleva el token del script de la página y, sin cookies por CORS, se repite sin ellas")
         old_pause, browser.WARMUP_PAUSE = browser.WARMUP_PAUSE, (0, 0)
         try:
+            r = fetcher.request(site + "/redirige", "GET", other + "/api/cors")
+            check(r.status_code == 200 and r.json() == {"cors": True} and any("ha seguido navegando" in line for line in lines),
+                  "si la página redirige con JavaScript tras cargar, espera a la buena antes de pedir")
             r = fetcher.request(site + "/navega", "GET", site + "/api/lenta")
         finally:
             browser.WARMUP_PAUSE = old_pause
