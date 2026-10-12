@@ -69,7 +69,7 @@ Es la versión que decide cuánto cuestan las siguientes: generaliza lo que hoy 
 
 ### Proveedores `HOTEL`
 - [ ] Contrato de script para alojamiento (`fetch_stay` o similar)
-- [ ] Un agregador primero (p. ej. Google Hotels), que cubra muchos alojamientos con un solo proveedor; en vuelos cada aerolínea es el suyo (p. ej. Iberia Express)
+- [ ] Un agregador primero, que cubra muchos alojamientos con un solo proveedor; en vuelos cada aerolínea es el suyo (p. ej. Iberia Express)
 - [ ] Booking (estudiar viabilidad: su API es solo para afiliados)
 - [ ] Airbnb (estudiar viabilidad: no tiene API pública)
 
