@@ -1,5 +1,21 @@
 # Cambios
 
+## 1.8.2 — 2026-10-12
+
+### Añadido
+- **Iberia Express** en el catálogo (verificado contra la web real): calendario de su buscador, dos meses por petición, y su red de rutas. Necesita «Siempre Chrome» (Imperva y un token XSRF). La web trabaja por ciudades: en Tenerife, donde vuela a TFN y a TFS, el precio se guarda como TCI porque el calendario no dice a qué aeropuerto va.
+- **Binter** en el catálogo (verificado contra la web real, sin medidas anti-bot): directos y, si la vigilancia admite escalas, conexiones. Su GraphQL es lento (de 3 a 15 s por consulta); con «solo directos» no pide el calendario de conexiones.
+- Los scripts pueden leer una cookie de la sesión con `api.cookie("NOMBRE")` (de Chrome si las peticiones van por él), para las webs que piden copiarla en una cabecera (XSRF/CSRF), y mandar cabeceras propias con `headers=` en `api.get_json` y `api.post_json`.
+
+### Corregido
+- **Wizz Air** (catálogo): su web ya no tiene `/buildnumber`; la versión de la API sale ahora de la portada. Viene con «Huella de Chrome» (la portada rechaza a quien no parece un navegador). Verificado contra la web real; se actualiza al importarlo de nuevo desde el catálogo.
+
+### Cambiado
+- Al crear o editar una vigilancia, la comprobación de qué webs operan la ruta ya no se corta a los 25 s: espera a todas, porque hay webs lentas (Binter, o las que van por Chrome) que sí la operan pero tardan.
+
+### Quitado
+- **Google Flights** sale del catálogo: Google firma cada petición de su calendario con un token de BotGuard que solo genera su JavaScript en el navegador, sobre el cuerpo exacto de esa petición. Si lo tenías importado, bórralo en **Proveedores**.
+
 ## 1.8.1 — 2026-10-12
 
 ### Corregido

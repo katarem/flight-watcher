@@ -166,13 +166,17 @@ class StealthClient:
             self.trace("warn", f"  ← la portada no responde ({type(exc).__name__}); sigo con la API")
         time.sleep(random.uniform(*WARMUP_PAUSE))
 
-    def request(self, method: str, url: str, headers: dict | None = None, timeout=None, **kw):
-        site = site_of(url)
+    def visit(self, site: str, timeout=None):
+        """Visita la portada de `site` la primera vez que se le pide algo (para sus cookies)."""
         with self._lock:
             first = site not in self._visited
             self._visited.add(site)
         if first:
             self._warm_up(site, timeout)
+
+    def request(self, method: str, url: str, headers: dict | None = None, timeout=None, **kw):
+        site = site_of(url)
+        self.visit(site, timeout)
         same_origin = url.startswith(site + "/") or url == site
         browser = {
             "Accept": "application/json, text/plain, */*", "Accept-Language": ACCEPT_LANGUAGE,
@@ -230,6 +234,35 @@ class StealthSession:
             raise ProviderError("Falta patchright para usar Chrome (pip install patchright)") from exc
         except Exception as exc:  # noqa: BLE001 - un fallo del navegador es un error del proveedor, no de la ronda
             raise ProviderError(f"Chrome no ha podido hacer la petición: {exc}"[:300]) from exc
+
+    def cookie(self, name: str, url: str | None = None) -> str | None:
+        """Valor de la cookie `name`. Si las peticiones van por Chrome, la de Chrome en la misma página que ellas
+        (`BROWSER_PAGE` o la portada de `url`, que se abre si hace falta); si no, la del cliente con la huella, tras
+        visitar la portada de `url` si se indica."""
+        from .base import ProviderError
+        if self.always_browser or self.shared.prefer_browser:
+            if not (self.page or url):
+                raise ProviderError("api.cookie(): indica de qué web (url=…) o define BROWSER_PAGE en el script")
+            from . import browser
+            try:
+                if self._browser is None:
+                    self._browser = browser.BrowserFetch(self.key, self.trace)
+                return self._browser.cookie(self.page or site_of(url) + "/", name)
+            except ImportError as exc:
+                raise ProviderError("Falta patchright para usar Chrome (pip install patchright)") from exc
+            except Exception as exc:  # noqa: BLE001 - un fallo del navegador es un error del proveedor, no de la ronda
+                raise ProviderError(f"Chrome no ha podido leer la cookie: {exc}"[:300]) from exc
+        if url:
+            self.shared.visit(site_of(url))
+        return jar_value(self.shared.client.cookies, name)
+
+
+def jar_value(cookies, name: str) -> str | None:
+    """Cookie `name` de las de requests o curl_cffi (sin el error de `get` si hay dos con el mismo nombre)."""
+    for c in getattr(cookies, "jar", cookies):
+        if c.name == name:
+            return c.value
+    return None
 
 
 def describe(lvl: int, page: str | None = None) -> str:

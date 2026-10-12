@@ -3,7 +3,7 @@
 Tres formas, declaradas por cada proveedor (`Provider.coverage`):
 - «network»: publica su red de rutas; se descarga por aeropuerto de origen (en memoria 1 h).
 - «probe»: se le pregunta por cada par (Vueling: un 404 es que no la opera).
-- «universal»: cubre cualquier ruta (Google Flights), con un máximo de pares (`max_routes`).
+- «universal»: cubre cualquier ruta (un buscador de todas las aerolíneas), con un máximo de pares (`max_routes`).
 
 Las respuestas se guardan en `provider_routes`. Al crear una vigilancia, `check_many` consulta los
 proveedores en paralelo con un tiempo límite por proveedor; cada semana `revalidate` repasa las
@@ -25,8 +25,9 @@ log = logging.getLogger("coverage")
 
 #: Validez de lo guardado en provider_routes al comprobar una ruta desde el formulario.
 CACHE_DAYS = 3
-#: Tiempo máximo por proveedor al comprobar una ruta desde el formulario.
-CHECK_TIMEOUT = 25.0
+#: Tiempo máximo por proveedor al comprobar una ruta desde el formulario. None = sin límite: hay webs lentas que sí
+#: operan la ruta pero tardan (cada petición ya tiene su propio tiempo límite y se repite una vez como mucho).
+CHECK_TIMEOUT: float | None = None
 NETWORK_TTL = 3600
 
 _networks: dict[tuple[str, str], tuple[float, set[str]]] = {}
@@ -152,10 +153,12 @@ def _check(prov, pairs, max_age_days) -> Result:
     return Result(prov.key, "none", [], f"{prov.label} no opera esta ruta.")
 
 
-def check_many(keys, pairs, timeout: float = CHECK_TIMEOUT, max_age_days: float | None = CACHE_DAYS) -> list[Result]:
+def check_many(keys, pairs, timeout: float | None = CHECK_TIMEOUT,
+               max_age_days: float | None = CACHE_DAYS) -> list[Result]:
     """Comprueba varios proveedores en paralelo (cada uno con su turno de peticiones).
 
-    El que no termina a tiempo sale como «timeout»; sigue en segundo plano y deja su respuesta en la caché.
+    Por defecto espera a todos. Con `timeout`, el que no termina a tiempo sale como «timeout»; sigue en segundo
+    plano y deja su respuesta en la caché.
     """
     keys = ordered(keys)
     if not keys:
@@ -178,7 +181,7 @@ def check_many(keys, pairs, timeout: float = CHECK_TIMEOUT, max_age_days: float 
 
 
 def coverage_for(keys, origin: str, destination: str, current: dict | None = None,
-                 timeout: float = CHECK_TIMEOUT) -> tuple[dict[str, dict], list[str]]:
+                 timeout: float | None = CHECK_TIMEOUT) -> tuple[dict[str, dict], list[str]]:
     """Cobertura para guardar una vigilancia y errores de validación.
 
     Un proveedor que seguro no opera la ruta es un error, salvo que la vigilancia ya lo tuviera (ruta

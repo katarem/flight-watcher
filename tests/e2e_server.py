@@ -72,7 +72,7 @@ if __name__ == "__main__":
     db.init()
     bundle.seed()
     scripted.reload()
-    fakes.import_extra()  # Wizz Air y Google Flights, para tener los cuatro proveedores
+    fakes.import_extra()  # Wizz Air y el Buscador de pruebas, para tener los cuatro proveedores
     db.seed_defaults(_bootstrap_admin())
     seed()
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

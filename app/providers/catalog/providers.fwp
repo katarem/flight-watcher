@@ -1,5 +1,5 @@
 #flight-watcher:proveedores v1 separador=%%fw%%
-# 5 proveedores exportados el 2026-10-12 desde flight-watcher 1.8.1.
+# 6 proveedores exportados el 2026-10-12 desde flight-watcher 1.8.2.
 # Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual.
 %%fw%% {"key": "vueling", "label": "Vueling", "color": "#e8a800", "coverage": "probe", "max_routes": null, "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://tickets.vueling.com/booking?o={origin}&d={destination}&dd={date}&adt=1&chd=0&inf=0&c=es-ES&cur=EUR", "notes": "Calendario de ~1 año en una petición. Verificado contra la web real el 2026-09-30. Bloquea las IP de centros de datos: ejecutar desde una IP residencial. Residentes en islas/Ceuta: añade &dt=1 a la plantilla de enlace.", "min_interval": 1.5, "stealth": 0}
 """Vueling.
@@ -82,23 +82,25 @@ def fetch_route(api, origin, destination, start, max_months):
             if day >= start and (day not in out or float(value) < out[day].price):
                 out[day] = DayPrice(day, float(value), currency=(price.get("currencyCode") or "EUR").upper())
     return out
-%%fw%% {"key": "wizzair", "label": "Wizz Air", "color": "#c6007e", "coverage": "network", "max_routes": null, "health_origin": "BCN", "health_destination": "BUD", "link_template": "https://wizzair.com/es-es/booking/select-flight/{origin}/{destination}/{date}/null/1/0/0/null", "notes": "Sin verificar contra la web real. Mapa de rutas y calendario por mes de la API de la web. Precios en la moneda de salida (se pasan a euros).", "min_interval": 1.5, "stealth": 0}
-"""Wizz Air (sin verificar contra la web real: pruébalo desde la IP donde corre el panel).
+%%fw%% {"key": "wizzair", "label": "Wizz Air", "color": "#c6007e", "coverage": "network", "max_routes": null, "health_origin": "BCN", "health_destination": "BUD", "link_template": "https://wizzair.com/es-es/booking/select-flight/{origin}/{destination}/{date}/null/1/0/0/null", "notes": "Verificado contra la web real el 2026-10-12 (BCN→BUD). Mapa de rutas y calendario por mes de la API de la web; la versión de la API sale de la portada, que necesita la huella de Chrome. Precios en la moneda de salida (se pasan a euros).", "min_interval": 1.5, "stealth": 1}
+"""Wizz Air (verificado contra la web real el 2026-10-12).
 
 Sin navegador, con las APIs JSON que usa wizzair.com:
 
-- Versión de la API: `https://wizzair.com/buildnumber` devuelve «SSR https://be.wizzair.com/X.Y.Z».
-- Cobertura «network»: `{api}/Api/asset/map?languageCode=es-es` lista las ciudades con sus conexiones.
+- Versión de la API: solo responde la versión actual (`https://be.wizzair.com/X.Y.Z`; la anterior da 404).
+  La portada la lleva en su configuración (`window.__NUXT__.config.public.apiUrl`). El antiguo
+  `wizzair.com/buildnumber` ya no existe (404 desde 2026).
+- Cobertura «network»: `{api}/Api/asset/map?languageCode=es-es` lista las ciudades con sus conexiones directas.
 - Precios: `POST {api}/Api/search/timetable` con un tramo de fechas (un mes por petición). Devuelve el precio
   más bajo por día en la moneda del aeropuerto de salida (HUF, PLN, EUR…): el panel lo pasa a euros.
 
-Wizz Air es conocido por cortar a los clientes que no son un navegador (403/429): si pasa, la prueba lo muestra
-como «bloqueado».
+La portada responde 405 a quien no parece un navegador, así que necesita «Medidas anti-bot» con la huella de
+Chrome. La API (be.wizzair.com) responde también sin ellas.
 """
 import threading
 import time
 
-BUILD_URL = "https://wizzair.com/buildnumber"
+HOME_URL = "https://www.wizzair.com/es-es"
 API_RE = re.compile(r"https://be\.wizzair\.com/[\d.]+")
 
 # Caché del script (vive mientras el proveedor esté cargado): versión de la API (6 h) y mapa de rutas (1 h).
@@ -119,10 +121,10 @@ def cached(name, max_age, load):
 
 def api_base(api):
     def load():
-        r = api.request("GET", BUILD_URL, headers={"Accept": "text/plain, */*"})
+        r = api.request("GET", HOME_URL, headers={"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
         m = API_RE.search(r.text if r is not None else "")
         if not m:
-            raise ProviderError("Wizz Air: no encuentro la versión de su API en /buildnumber (¿ha cambiado?)")
+            raise ProviderError("Wizz Air: no encuentro la versión de su API en la portada (¿ha cambiado?)")
         return m[0]
     return cached("api", 6 * 3600, load)
 
@@ -163,104 +165,6 @@ def fetch_route(api, origin, destination, start, max_months):
             day = date.fromisoformat(str(f.get("departureDate", ""))[:10])
             if day >= start and (day not in out or float(amount) < out[day].price):
                 out[day] = DayPrice(day, float(amount), currency=(price.get("currencyCode") or "EUR").upper())
-    return out
-%%fw%% {"key": "google", "label": "Google Flights", "color": "#1a73e8", "coverage": "universal", "max_routes": 12, "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://www.google.com/travel/flights?hl=es&gl=ES&curr=EUR&q=Vuelos%20de%20{origin}%20a%20{destination}%20el%20{date}%20solo%20ida", "notes": "Sin verificar contra Google. Busca en todas las aerolíneas (también con escalas). API interna del calendario, sin documentar; como mucho 12 pares de aeropuertos por vigilancia.", "min_interval": 3.0, "stealth": 0}
-"""Google Flights (sin verificar contra Google: pruébalo desde la IP donde corre el panel).
-
-Cobertura «universal»: busca cualquier ruta (directa o con escalas) entre todas las aerolíneas, así que no hay red
-que consultar; lo que limita es el número de pares por vigilancia.
-
-Precios: la llamada interna `GetCalendarGraph` que pinta el calendario de precios de google.com/travel/flights
-(el precio más bajo de cada día de un tramo de fechas), sin navegador. Es una API sin documentar: si cambia el
-formato, la ronda falla con un error claro en lugar de guardar datos malos. Como `fetch_route` acepta
-`max_stops`, recibe el filtro de escalas de la vigilancia.
-"""
-
-API_URL = ("https://www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/"
-           "GetCalendarGraph")
-ISO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-#: Días por petición (el calendario de Google no admite tramos muy largos).
-WINDOW_DAYS = 60
-#: Escalas de la vigilancia → filtro de Google (0 = cualquiera, 1 = directo, 2 = ≤ 1 escala, 3 = ≤ 2).
-STOPS = {None: 0, 0: 1, 1: 2, 2: 3}
-
-
-def request_body(origin, destination, start, end, max_stops):
-    """`f.req` de un viaje de solo ida, 1 adulto, turista, entre dos aeropuertos."""
-    segment = [[[[origin, 0]]], [[[destination, 0]]], None, STOPS.get(max_stops, 0), None, None,
-               start.isoformat(), None, None, None, None, None, None, None, 3]
-    query = [None, [None, None, 2, None, [], 1, [1, 0, 0, 0], None, None, None, None, None, None, [segment],
-                    None, None, None, 1], [start.isoformat(), end.isoformat()]]
-    return json.dumps([None, json.dumps(query, separators=(",", ":"))], separators=(",", ":"))
-
-
-def first_price(node):
-    """Primer `[null, número]` dentro de un nodo (así viene el precio de cada día)."""
-    if isinstance(node, list):
-        if len(node) >= 2 and node[0] is None and isinstance(node[1], (int, float)) and not isinstance(node[1], bool):
-            return float(node[1])
-        for item in node:
-            p = first_price(item)
-            if p is not None:
-                return p
-    return None
-
-
-def walk(node, out):
-    if not isinstance(node, list):
-        return
-    if node and isinstance(node[0], str) and ISO.match(node[0]):
-        p = first_price(node[1:])
-        if p is not None and 1 <= p <= 20000:
-            d = date.fromisoformat(node[0])
-            out[d] = min(p, out.get(d, p))
-            return
-    for item in node:
-        walk(item, out)
-
-
-def parse_response(text):
-    """Precios por día de la respuesta (`)]}'` + trozos JSON con [["wrb.fr", …, "<json>"]])."""
-    out = {}
-    found = False
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("["):
-            continue
-        try:
-            chunk = json.loads(line)
-        except ValueError:
-            continue
-        for item in chunk if isinstance(chunk, list) else []:
-            if isinstance(item, list) and len(item) > 2 and item[0] == "wrb.fr" and isinstance(item[2], str):
-                found = True
-                try:
-                    walk(json.loads(item[2]), out)
-                except ValueError:
-                    continue
-    if not found:
-        raise ProviderError("Google Flights: respuesta con un formato inesperado (¿ha cambiado la API?)")
-    return out
-
-
-def fetch_route(api, origin, destination, start, max_months, max_stops=None):
-    end = start + timedelta(days=max_months * 30)
-    out = {}
-    lo = start
-    while lo < end:
-        hi = min(end, lo + timedelta(days=WINDOW_DAYS - 1))
-        r = api.request(
-            "POST", API_URL, params={"hl": "es", "gl": "ES", "curr": "EUR", "rt": "c"},
-            data={"f.req": request_body(origin, destination, lo, hi, max_stops)},
-            headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8", "Accept": "*/*"},
-        )
-        if r is None:
-            raise ProviderError("Google Flights: la API del calendario ya no existe (HTTP 404)")
-        for d, p in parse_response(r.text).items():
-            if lo <= d <= hi:
-                # El calendario no dice cuántas escalas tiene el más barato, solo que cumple el filtro.
-                out[d] = DayPrice(d, p, currency="EUR", stops=0 if max_stops == 0 else None)
-        lo = hi + timedelta(days=1)
     return out
 %%fw%% {"key": "aireuropa", "label": "Air Europa", "color": "#2d69e1", "coverage": "probe", "max_routes": null, "health_origin": "SVQ", "health_destination": "MAD", "link_template": "https://www.aireuropa.com/es/es/home", "notes": "Sin verificar desde el servidor (2026-10-12): API de Amadeus (api-des.aireuropa.com) vista en la web real. Calendario de 31 días por petición, escalas incluidas; solo sabe filtrar «solo directos». Rellena CLIENT_ID y CLIENT_SECRET en el script (su cabecera dice de dónde salen). Necesita «Siempre Chrome».", "min_interval": 2.0, "stealth": 2}
 """Air Europa (sin verificar contra la API real desde el servidor: pruébalo desde la IP donde corre el panel).
@@ -410,4 +314,377 @@ def fetch_route(api, origin, destination, start, max_months, max_stops=None):
                 # Con max_stops=1 o más no se puede filtrar: None (el checker lo da por bueno).
                 out[d] = DayPrice(d, price, currency=currency, stops=0 if direct else None)
         lo += timedelta(days=WINDOW)
+    return out
+%%fw%% {"key": "iberiaexpress", "label": "Iberia Express", "color": "#c8102e", "coverage": "network", "max_routes": null, "health_origin": "MAD", "health_destination": "TFN", "link_template": "https://booking.iberiaexpress.com/?triptype=OW&from={origin}&to={destination}&depdate={date}&retdate={date}&exactdates=0&adt=1&chd=0&inf=0", "notes": "Verificado contra la web real el 2026-10-12 (MAD→TFN, desde una IP residencial): calendario de dos meses por petición y red de rutas del buscador de iberiaexpress.com. Solo vuelos directos. Trabaja por ciudades: con varios aeropuertos (Tenerife) el precio se guarda con el de la ciudad (TCI). Necesita «Siempre Chrome».", "min_interval": 2.0, "stealth": 2}
+"""Iberia Express (verificado contra la web real el 2026-10-12, MAD→TCI).
+
+Con las APIs JSON del buscador de iberiaexpress.com, las mismas que pintan su calendario de precios:
+
+- Cobertura «network»: `POST /api/searchbar/routes/origins` (ciudades de salida con sus aeropuertos) y
+  `POST /api/searchbar/routes/destinations?originCityCode=MAD` (destinos directos desde una ciudad).
+- Precios: `POST /api/searchbar/calendarrealtime` con `{originCityCode, destinationCityCode, tripType: "OW",
+  outboundDate: null, month, year}`: el precio más bajo de cada día del mes pedido y del siguiente, en euros.
+
+Trabaja con **ciudades** (MAD, TCI, LON), no con aeropuertos: con TFN o TFS responde 400. Si una ciudad tiene
+varios aeropuertos (a Tenerife vuela a TFN y a TFS), el precio no dice a cuál, así que se guarda con el código de la
+ciudad (TCI) en vez de inventarse uno. De las demás ciudades solo cuenta el aeropuerto con su mismo código (BER,
+AMS…): el resto de sus códigos son estaciones de tren o aeropuertos cerrados.
+
+Protección: Imperva en la web y, en la API, un token XSRF (la cookie `XSRF-TOKEN` copiada en la cabecera
+`X-XSRF-TOKEN`; sin él, 403). Desde Python la portada es el reto de Imperva y no da esa cookie: necesita
+«Siempre Chrome».
+"""
+import threading
+import time
+
+SITE = "https://www.iberiaexpress.com"
+BROWSER_PAGE = SITE + "/"
+
+# Caché del script (vive mientras el proveedor esté cargado): ciudades (6 h), destinos (1 h) y calendarios
+# (10 min, para no repetir la misma ciudad con cada uno de sus aeropuertos: TCI = TFN y TFS).
+_lock = threading.Lock()
+_cache = {}
+
+
+def cached(name, max_age, load):
+    with _lock:
+        hit = _cache.get(name)
+        if hit and time.monotonic() - hit[0] < max_age:
+            return hit[1]
+    value = load()
+    with _lock:
+        _cache[name] = (time.monotonic(), value)
+    return value
+
+
+def call(api, path, body=None, **params):
+    """POST a la API del buscador con el token XSRF de la sesión."""
+    token = api.cookie("XSRF-TOKEN")
+    if not token:
+        raise ProviderError("Iberia Express: la web no ha dado su cookie XSRF-TOKEN (¿le falta «Siempre Chrome»?)")
+    headers = {"X-XSRF-TOKEN": token, "Content-Type": "application/json", "Accept": "application/json, text/plain, */*"}
+    return api.post_json(SITE + path, body, headers=headers, **params)
+
+
+def airports(city):
+    """Aeropuertos de una ciudad de su red: el de su mismo código si lo tiene; si no, todos (TCI = TFN y TFS)."""
+    codes = [c for c in city.get("airportCodes") or [] if isinstance(c, str)]
+    return [city["code"]] if city["code"] in codes else codes
+
+
+def cities(api):
+    """{ciudad: [aeropuertos]} de las ciudades desde las que vuela."""
+    def load():
+        data = call(api, "/api/searchbar/routes/origins", ln="es")
+        if not isinstance(data, list):
+            raise ProviderError("Iberia Express: la lista de ciudades tiene un formato inesperado (¿ha cambiado?)")
+        return {c["code"]: airports(c) for c in data if isinstance(c, dict) and c.get("code")}
+    return cached("cities", 6 * 3600, load)
+
+
+def city_of(api, airport):
+    for city, codes in cities(api).items():
+        if airport in codes:
+            return city
+    return None
+
+
+def network(api, origin):
+    city = city_of(api, origin)
+    if city is None:
+        return set()
+
+    def load():
+        data = call(api, "/api/searchbar/routes/destinations", originCityCode=city)
+        if not isinstance(data, list):
+            raise ProviderError("Iberia Express: los destinos tienen un formato inesperado (¿ha cambiado?)")
+        return {a for c in data if isinstance(c, dict) and c.get("code") for a in airports(c)}
+    return cached(f"dest-{city}", 3600, load)
+
+
+def shown(api, airport, city):
+    """Aeropuerto con el que se guarda el precio: el de la ciudad si tiene varios (no se sabe a cuál va)."""
+    return city if len(cities(api).get(city) or [airport]) > 1 else airport
+
+
+def fetch_route(api, origin, destination, start, max_months):
+    oc, dc = city_of(api, origin) or origin, city_of(api, destination) or destination
+    o, d = shown(api, origin, oc), shown(api, destination, dc)
+    out = {}
+    for i in range(0, max_months, 2):  # cada respuesta trae dos meses
+        month = add_months(start, i)
+        body = {"originCityCode": oc, "destinationCityCode": dc, "tripType": "OW", "outboundDate": None,
+                "month": month.month, "year": month.year}
+        data = cached(f"cal-{oc}-{dc}-{month:%Y-%m}", 600,
+                      lambda body=body: call(api, "/api/searchbar/calendarrealtime", body))
+        if data is None:
+            break
+        if not isinstance(data, dict) or "dateYears" not in data:
+            raise ProviderError("Iberia Express: el calendario tiene un formato inesperado (¿ha cambiado?)")
+        for year, months in (data.get("dateYears") or {}).items():
+            for mon, days in (months or {}).items():
+                for cell in days or []:
+                    price = cell.get("p") if isinstance(cell, dict) else None
+                    if not price or price <= 0:
+                        continue
+                    day = date(int(year), int(mon), int(cell["d"]))
+                    if day >= start and (day not in out or price < out[day].price):
+                        out[day] = DayPrice(day, float(price), origin=o, destination=d)
+    return out
+%%fw%% {"key": "binter", "label": "Binter", "color": "#2bff00", "coverage": "probe", "max_routes": null, "health_origin": "TFN", "health_destination": "SVQ", "link_template": "", "notes": "Verificado contra la web real el 2026-10-12 (TFN→SVQ, desde una IP residencial, sin medidas anti-bot): GraphQL de su web, lento (de 3 a 15 s por consulta). Directos y, si la vigilancia admite escalas, conexiones. Con «Siempre Chrome» sin ventana, Cloudflare da 403 a la portada: déjalo en «Ninguna».", "min_interval": 1.5, "stealth": 0}
+"""Proveedor Binter (bintercanarias.com).
+
+La web es una SPA Angular que consulta un GraphQL público:
+    POST https://services.bintercanarias.com/main/graphql
+
+Cabeceras obligatorias: X-ENVIRONMENT y X-LANG (sin ellas responde
+"Generic Error"). X-HASH1 / X-HASH2 / X-AUTH-TOKEN solo llevan valor con un
+usuario logueado; en anónimo la web las manda vacías y no hacen falta.
+
+Cobertura: el script vale para «Red de rutas» (`network`) y para «Pregunta por
+cada ruta» (`probe`). Mejor `probe`: una sola consulta por ruta, frente a una
+por cada destino del aeropuerto con `network` (más de un minuto desde TFN).
+
+Escalas: `fetch_route` recibe el máximo de la vigilancia (`max_stops`). Con
+«solo directos» no pide el calendario con conexiones (la mitad de consultas).
+
+Consultas usadas:
+    destination_get           -> destinos vendibles desde un aeropuerto
+    timetable_get             -> horarios: separa directos (1 tramo) de conexiones
+    booking_availabilityDays  -> qué días opera la ruta (evita pedir meses vacíos)
+    booking_calendar MONTHLY  -> precio más barato de cada día de un mes
+
+El GraphQL es lento (de 2 a 15 s por consulta, a veces más de 30): cada
+petición espera hasta TIMEOUT segundos y, si no responde, Flight Watcher la
+repite una vez antes de darla por perdida.
+"""
+
+GRAPHQL_URL = "https://services.bintercanarias.com/main/graphql"
+LANG = "es"
+
+TIMEOUT = 60                # segundos de espera por consulta (el panel usa 30 por defecto)
+
+RESIDENT = False            # True -> precio con el 75 % de descuento de residente
+INCLUDE_TAXES = True        # suma las tasas de aeropuerto (taxAmount) a la tarifa
+INCLUDE_CONNECTIONS = True  # mira también vuelos con escala (stops=1) si la vigilancia los admite; dobla las consultas
+SERVICE_FEE = 0.0           # el calendario no incluye el cargo de servicio por billete
+                            # (~12 € sin residente, ~3 € con residente en nacionales)
+
+# Fechas (días desde hoy) en las que se miran horarios para decidir si un
+# destino es directo; varias para no perder rutas de temporada.
+TIMETABLE_PROBE_DAYS = (14, 120, 240)
+
+_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "X-ENVIRONMENT": "desktop",
+    "X-LANG": LANG,
+}
+
+Q_DESTINATIONS = """
+query destination_get($field: DestinationFieldEnum, $value: String!, $language: LanguageInput) {
+  destination_get(field: $field, value: $value, language: $language) {
+    iata
+    destinations { iata }
+  }
+}"""
+
+Q_TIMETABLE = """
+query timetable_get($trips: [TripInput!]!) {
+  timetable_get(trips: $trips) {
+    trip { destination { iata } }
+    flights { flightSegments { origin { iata } destination { iata } } }
+  }
+}"""
+
+Q_AVAILABILITY = """
+query booking_availabilityDays($origin: String!, $destination: String!, $stopover: Boolean) {
+  booking_availabilityDays(origin: $origin, destination: $destination, stopover: $stopover) {
+    init_date
+    availability
+  }
+}"""
+
+Q_CALENDAR = """
+query booking_calendar($search: BookingSearchInput!, $calendarRange: String!) {
+  booking_calendar(search: $search, calendarRange: $calendarRange) {
+    days {
+      date
+      enabled
+      fareAmounts { resident noResident }
+      taxAmount
+      currency { code }
+    }
+  }
+}"""
+
+
+# --------------------------------------------------------------------------
+# Contrato
+# --------------------------------------------------------------------------
+def network(api, origin):
+    """Códigos IATA con vuelo directo desde `origin`."""
+    data = _gql(api, "destination_get", Q_DESTINATIONS,
+                {"field": "IATA", "value": origin, "language": LANG})
+    if not data:  # el aeropuerto no está en su red
+        return []
+    candidates = sorted({d["iata"] for d in data.get("destinations") or [] if d.get("iata")})
+
+    # destination_get incluye destinos solo con conexión (p. ej. SVQ -> VDE vía
+    # Tenerife): se filtran con los horarios, un destino por consulta.
+    direct = []
+    for n, dest in enumerate(candidates, 1):
+        api.log(f"Binter: horarios {origin}-{dest} ({n}/{len(candidates)})")
+        try:
+            found = _has_direct(api, origin, dest)
+        except ProviderBlocked:
+            raise
+        except ProviderError as exc:
+            if not _timed_out(exc):
+                raise
+            # Un destino que no responde no tumba toda la red: se incluye por si
+            # acaso (fetch_route dirá luego si hay vuelos de verdad).
+            api.log(f"Binter: {origin}-{dest} no responde; se incluye sin comprobar")
+            direct.append(dest)
+            continue
+        if found is None:
+            api.log(f"Binter: sin horarios para {origin}-{dest}, se descarta")
+        elif found:
+            direct.append(dest)
+    api.log(f"Binter: {origin} -> {len(direct)} directos de {len(candidates)} destinos")
+    return direct
+
+
+def probe(api, origin, destination):
+    """¿Hay vuelo directo origin→destination? Una sola consulta de horarios."""
+    return bool(_has_direct(api, origin, destination))
+
+
+def fetch_route(api, origin, destination, start, max_months, max_stops=None):
+    """Precio más barato de cada día. {} si no opera la ruta. Con `max_stops=0`
+    (solo directos) no se piden las conexiones."""
+    open_months = _months_with_flights(api, origin, destination)
+    if not open_months:
+        return {}  # Binter no conoce la ruta o no tiene ningún vuelo a la venta
+    last_open = date(*max(open_months), 1)
+
+    modes = [("ONLY_DIRECT_FLIGHTS", 0)]
+    if INCLUDE_CONNECTIONS and max_stops != 0:
+        modes.append(("ALL_FLIGHTS", 1))
+
+    best = {}  # día -> (precio, moneda, escalas)
+    today = date.today()
+    for i in range(max_months):
+        month = add_months(start, i)
+        month = date(month.year, month.month, 1)
+        if month > last_open:
+            break  # más allá del último mes a la venta
+        if (month.year, month.month) not in open_months:
+            continue  # mes sin ningún vuelo
+
+        # Binter devuelve el mes entero de la fecha pedida; no admite días pasados.
+        query_day = max(month, start, today)
+        for flag, stops in modes:
+            for day, price, currency in _calendar_month(api, origin, destination, query_day, flag):
+                if day < start:
+                    continue
+                prev = best.get(day)
+                # Con ALL_FLIGHTS, un precio igual al directo es el propio directo.
+                if prev is None or price < prev[0]:
+                    best[day] = (price, currency, stops)
+
+    out = {}
+    for day, (price, currency, stops) in sorted(best.items()):
+        if currency == "EUR" and not stops:
+            out[day] = price
+        else:
+            out[day] = DayPrice(day, price, currency=currency, stops=stops)
+    return out
+
+
+# --------------------------------------------------------------------------
+# Auxiliares
+# --------------------------------------------------------------------------
+def _has_direct(api, origin, destination):
+    """True si los horarios tienen algún vuelo de un solo tramo, False si no y
+    None si Binter no da horarios para la ruta."""
+    today = date.today()
+    trips = [{"origin": origin, "destination": destination, "date": (today + timedelta(days=n)).isoformat()}
+             for n in TIMETABLE_PROBE_DAYS]
+    rows = _gql(api, "timetable_get", Q_TIMETABLE, {"trips": trips})
+    if rows is None:
+        return None
+    return any(len(f.get("flightSegments") or []) == 1
+               for row in rows for f in row.get("flights") or [])
+
+
+def _timed_out(exc):
+    """La consulta no respondió ni al repetirla (ProviderTimeout de Flight Watcher)."""
+    return "tiempo agotado" in str(exc)
+
+
+def _gql(api, operation, query, variables):
+    """`data[operation]`, o None si GraphQL responde con error (ruta/aeropuerto
+    desconocido: Binter lo indica con un error genérico, no con 404).
+
+    Espera hasta TIMEOUT segundos; sin respuesta, la petición se repite una vez
+    y, si tampoco llega, la prueba lo marca como «sin respuesta» (ProviderTimeout).
+    """
+    # Cabeceras en cada petición (no en la sesión): así también van cuando las peticiones salen por Chrome.
+    payload = api.post_json(GRAPHQL_URL,
+                            {"operationName": operation, "variables": variables, "query": query},
+                            timeout=TIMEOUT, headers=_HEADERS)
+    if payload is None:  # 404 en el endpoint: han movido la API
+        raise ProviderError(f"Binter: {GRAPHQL_URL} devuelve 404")
+    if not isinstance(payload, dict):
+        raise ProviderError(f"Binter: respuesta inesperada en {operation}")
+    if payload.get("errors"):
+        msg = "; ".join(str(e.get("message")) for e in payload["errors"])
+        api.log(f"Binter {operation} {json.dumps(variables)[:200]}: {msg}")
+        return None
+    return (payload.get("data") or {}).get(operation)
+
+
+def _months_with_flights(api, origin, destination):
+    """Set de (año, mes) con algún día operativo; vacío si la ruta no existe.
+
+    `availability` es una cadena con un carácter por día desde `init_date`:
+    '0' = sin vuelos; cualquier otro dígito = hay vuelos (directos o con escala).
+    """
+    data = _gql(api, "booking_availabilityDays", Q_AVAILABILITY,
+                {"origin": origin, "destination": destination, "stopover": False})
+    if not data:
+        return set()
+    try:
+        first = date.fromisoformat(data["init_date"][:10])
+    except (KeyError, TypeError, ValueError):
+        raise ProviderError(f"Binter: init_date inesperado: {data!r}")
+    months = set()
+    for offset, ch in enumerate(data.get("availability") or ""):
+        if ch.isdigit() and ch != "0":
+            d = first + timedelta(days=offset)
+            months.add((d.year, d.month))
+    return months
+
+
+def _calendar_month(api, origin, destination, query_day, flag):
+    """[(día, precio, moneda)] del mes que contiene `query_day`."""
+    search = {
+        "trips": [{"origin": origin, "destination": destination, "date": query_day.isoformat()}],
+        "passengers": [{"type": {"code": "ADT", "discounts": []}, "quantity": 1}],
+        "flags": [flag],
+    }
+    data = _gql(api, "booking_calendar", Q_CALENDAR, {"search": search, "calendarRange": "MONTHLY"})
+    out = []
+    for block in data or []:
+        for d in block.get("days") or []:
+            if not d.get("enabled"):
+                continue
+            fare = (d.get("fareAmounts") or {}).get("resident" if RESIDENT else "noResident")
+            if fare is None:  # día operativo pero sin plazas / sin vuelo de ese tipo
+                continue
+            price = float(fare) + SERVICE_FEE
+            if INCLUDE_TAXES and d.get("taxAmount") is not None:
+                price += float(d["taxAmount"])
+            currency = (d.get("currency") or {}).get("code") or "EUR"
+            out.append((date.fromisoformat(d["date"][:10]), round(price, 2), currency))
     return out

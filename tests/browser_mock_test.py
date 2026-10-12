@@ -207,6 +207,8 @@ def browser_fetch():
               and r.headers["content-type"] == "application/json", "GET desde Chrome con la cookie del reto")
         r = fetcher.request(site + "/antibot", "POST", site + "/api/protegida", json={"a": 1})
         check(r.status_code == 200 and r.json() == {"recibido": {"a": 1}, "metodo": "POST"}, "POST con cuerpo JSON desde Chrome")
+        check(fetcher.cookie(site + "/antibot", "reto") == "superado" and fetcher.cookie(site + "/antibot", "nada") is None,
+              "api.cookie() desde Chrome: la cookie que la página puso con JavaScript")
         r = fetcher.request(site + "/con-token", "GET", other + "/api/cors")
         check(r.status_code == 200 and r.json() == {"cors": True}
               and any("CORS" in line for line in lines),

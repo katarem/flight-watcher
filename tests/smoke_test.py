@@ -424,14 +424,14 @@ def providers_flow(admin: Api, admin_id: int, admin_chan: int):
           "cada proveedor dice qué pares opera (Vueling → TFN, Ryanair → TFS)")
     check(res["wizzair"]["status"] == "none" and "no tiene vuelos directos" in res["wizzair"]["reason"],
           "…y por qué no vale el que no la opera")
-    check(res["google"]["ok"] and res["google"]["coverage"] == "universal" and len(res["google"]["routes"]) == 2,
-          "Google Flights cubre cualquier ruta")
+    check(res["buscador"]["ok"] and res["buscador"]["coverage"] == "universal" and len(res["buscador"]["routes"]) == 2,
+          "el Buscador cubre cualquier ruta")
     asked = len(ASKED)
     admin.post("/route-check", {"origin": "SVQ", "destination": "TCI"})
     check(len(ASKED) == asked, "la cobertura se guarda en caché (no se vuelve a preguntar)")
     r = admin.post("/route-check", {"origin": "andalucia", "destination": "canarias"})
     res = {p["key"]: p for p in r.json()["providers"]}
-    check(res["google"]["status"] == "too_many" and "como mucho 12" in res["google"]["reason"], "límite de pares de Google Flights")
+    check(res["buscador"]["status"] == "too_many" and "como mucho 12" in res["buscador"]["reason"], "límite de pares del Buscador")
     bad = admin.post("/route-check", {"origin": "ES", "destination": "canarias"})
     check(bad.status_code == 422 and "combinaciones" in errors(bad), "demasiadas combinaciones de aeropuertos")
 
@@ -463,18 +463,18 @@ def providers_flow(admin: Api, admin_id: int, admin_chan: int):
     check(SENT and "12.000 HUF" in "\n".join(SENT[0][0]) and "30 €" in "\n".join(SENT[0][0]), "el aviso muestra euros y la moneda original")
     detail = admin.get(f"/watches/{w['id']}").json()
     check(detail["prices"][0]["currency"] == "HUF" and detail["stats"][0]["best"]["orig_price"] == 12000, "el panel recibe la moneda original")
-    bad = admin.post("/watches", {"origin": "MAD", "destination": "BCN", "providers": ["google"], "max_stops": "7"})
+    bad = admin.post("/watches", {"origin": "MAD", "destination": "BCN", "providers": ["buscador"], "max_stops": "7"})
     check("máximo de escalas" in errors(bad), "validación del máximo de escalas")
 
-    g = admin.post("/watches", {"origin": "MAD", "destination": "BCN", "providers": ["google"], "max_stops": "0"}).json()["watch"]
+    g = admin.post("/watches", {"origin": "MAD", "destination": "BCN", "providers": ["buscador"], "max_stops": "0"}).json()["watch"]
     checker.run_checks(watch_id=g["id"], trigger="manual")
     with db.connect() as con:
-        days = {r["flight_date"]: r for r in db.latest_snapshot(con, g["id"], "google")}
+        days = {r["flight_date"]: r for r in db.latest_snapshot(con, g["id"], "buscador")}
     check((TODAY + timedelta(days=11)).isoformat() not in days and len(days) == 2, "solo directos: el día con escala no cuenta")
-    admin.put(f"/watches/{g['id']}", {"origin": "MAD", "destination": "BCN", "providers": ["google"], "max_stops": ""})
+    admin.put(f"/watches/{g['id']}", {"origin": "MAD", "destination": "BCN", "providers": ["buscador"], "max_stops": ""})
     checker.run_checks(watch_id=g["id"], trigger="manual")
     with db.connect() as con:
-        snap = db.latest_snapshot(con, g["id"], "google")
+        snap = db.latest_snapshot(con, g["id"], "buscador")
     check(snap[0]["price"] == 70 and snap[0]["stops"] == 1, "sin límite de escalas: entra y se guarda cuántas tiene")
     admin.delete(f"/watches/{g['id']}")
 
@@ -539,12 +539,12 @@ def providers_flow(admin: Api, admin_id: int, admin_chan: int):
     # --- prueba de acceso a los proveedores (solo admin)
     r = admin.post("/providers/health", {})
     res = {x["key"]: x for x in r.json()["results"]}
-    check(r.status_code == 200 and set(res) >= {"vueling", "ryanair", "wizzair", "google"}
-          and res["vueling"]["status"] == res["google"]["status"] == "ok", "prueba de acceso de todos los proveedores")
+    check(r.status_code == 200 and set(res) >= {"vueling", "ryanair", "wizzair", "buscador"}
+          and res["vueling"]["status"] == res["buscador"]["status"] == "ok", "prueba de acceso de todos los proveedores")
     check([s["name"] for s in res["ryanair"]["steps"]] == ["Cobertura", "Precios (1 mes)"]
           and "1 destino directo desde SVQ (no incluye BCN)" in res["ryanair"]["steps"][0]["detail"]
           and res["ryanair"]["status"] == "empty", "pasos: cobertura y precios (accesible pero sin precios en esa ruta)")
-    check(res["google"]["steps"][0]["status"] == "skipped" and res["mockweb"]["steps"][1]["status"] == "skipped",
+    check(res["buscador"]["steps"][0]["status"] == "skipped" and res["mockweb"]["steps"][1]["status"] == "skipped",
           "pasos que no aplican: omitidos sin estropear el resultado")
     check(r.json()["fx"]["status"] == "ok" and "BCE" in r.json()["fx"]["name"], "también el cambio de divisas")
     fakes.BLOCKED.add("wizzair")
@@ -556,22 +556,12 @@ def providers_flow(admin: Api, admin_id: int, admin_chan: int):
     lst = admin.get("/providers").json()
     last = {p["key"]: p for p in lst["providers"]}
     check(last["wizzair"]["last"]["status"] == "blocked" and last["vueling"]["coverage"] == "probe"
-          and last["google"]["stops_filter"] and not last["vueling"]["stops_filter"] and "candidates" not in lst,
+          and last["buscador"]["stops_filter"] and not last["vueling"]["stops_filter"] and "candidates" not in lst,
           "último resultado guardado por proveedor")
     bad = admin.post("/providers/health", {"origin": "TCI", "destination": "SVQ"})
     check(bad.status_code == 422 and "aeropuerto" in errors(bad), "la ruta de prueba debe ser de aeropuertos")
 
-    # --- piezas sueltas: funciones del script de Google Flights y cambio del BCE
-    parse_response, request_body = PROVIDERS["google"].ns["parse_response"], PROVIDERS["google"].ns["request_body"]
-    body = ")]}'\n\n123\n" + json.dumps([["wrb.fr", None, json.dumps(
-        [None, [["2026-11-02", None, [[None, 54], "x"]], ["2026-11-03", None, [[None, 61.5], "y"]]]])]])
-    check(parse_response(body) == {date(2026, 11, 2): 54, date(2026, 11, 3): 61.5}, "Google Flights: precios por día")
-    check('[[[\\"SVQ\\",0]]]' in request_body("SVQ", "TFN", date(2026, 11, 1), date(2026, 12, 1), 0), "Google Flights: petición")
-    try:
-        parse_response("<html>consent</html>")
-        check(False, "Google Flights: formato inesperado")
-    except Exception as exc:  # noqa: BLE001
-        check("formato inesperado" in str(exc), "Google Flights: un formato inesperado es un error claro")
+    # --- piezas sueltas: cambio del BCE
     xml = "<Cube time='2026-10-09'><Cube currency='USD' rate='1.1012'/><Cube currency='HUF' rate='398.5'/></Cube>"
     check(fx.parse(xml) == {"date": "2026-10-09", "rates": {"USD": 1.1012, "HUF": 398.5}}, "lectura del XML del BCE")
     check(fx.to_eur(110, "USD") == 100 and fx.to_eur(5, "EUR") == 5, "conversión a euros")
@@ -650,10 +640,13 @@ class FakeCurl:
 
     def __init__(self):
         self.headers, self.calls = {}, []
+        self.cookies = requests.cookies.RequestsCookieJar()
 
     def request(self, method, url, headers=None, timeout=None, **kw):
         self.calls.append((method, url, dict(headers or {}), kw))
         status = BLOCKS.get(url, 200)
+        if (headers or {}).get("Sec-Fetch-Mode") == "navigate":  # la portada deja su token XSRF
+            self.cookies.set("XSRF-TOKEN", "de-la-portada", domain=stealth.site_of(url).split("//")[1])
 
         class Resp:
             pass
@@ -673,13 +666,17 @@ class FakeBrowser:
     made: list = []
 
     def __init__(self, key, trace=None):
-        self.key, self.calls, self.closed = key, [], False
+        self.key, self.calls, self.cookie_calls, self.closed = key, [], [], False
         FakeBrowser.made.append(self)
 
     def request(self, site, method, url, **kw):
         self.calls.append((site, method, url))
         return browser.BrowserResponse({"status": 200, "url": url, "headers": {"Content-Type": "application/json"},
                                         "text": '{"desde": "chrome"}'})
+
+    def cookie(self, page, name):
+        self.cookie_calls.append((page, name))
+        return f"chrome:{name}"
 
     def close(self):
         self.closed = True
@@ -736,6 +733,17 @@ def stealth_flow(admin: Api, base: dict):
             pass
         check(s2.shared is s.shared and len(s.shared.client.calls) == 3, "la sesión (y sus cookies) se reutiliza entre rondas")
 
+        # api.cookie(): la cookie de la sesión (tras visitar la portada de esa web), para copiarla en una cabecera.
+        with REAL_NEW_SESSION(prov) as s5:
+            api = scripted.ScriptApi(prov, s5, None, "t")
+            token = api.cookie("XSRF-TOKEN", "https://www.iberiaexpress.com/api/x")
+            api.post_json("https://www.iberiaexpress.com/api/x", {"a": 1}, headers={"X-XSRF-TOKEN": token})
+            missing = api.cookie("nada")
+        calls = s5.shared.client.calls
+        check(token == "de-la-portada" and missing is None and calls[-2][1] == "https://www.iberiaexpress.com/"
+              and calls[-1][1] == "https://www.iberiaexpress.com/api/x" and calls[-1][2]["X-XSRF-TOKEN"] == "de-la-portada",
+              "api.cookie() con la huella de Chrome: visita la portada y da su cookie; post_json acepta cabeceras")
+
         # …y si aun así choca con un anti-bot, repite desde Chrome y sigue con él.
         BLOCKS["https://apiw.vueling.com/api/v1/bloqueada"] = 403
         with REAL_NEW_SESSION(prov) as s3:
@@ -760,6 +768,15 @@ def stealth_flow(admin: Api, base: dict):
         check(r1.json() == {"desde": "chrome"} and s4.shared.client.calls == [] and chrome.closed
               and chrome.calls == [("https://reservas.vueling.com/buscar", "GET", "https://apiw.vueling.com/api/v1/availability")],
               "siempre Chrome: va directo a Chrome, abierto en la BROWSER_PAGE del script")
+        with REAL_NEW_SESSION(always) as s6:
+            token = scripted.ScriptApi(always, s6, None, "t").cookie("XSRF-TOKEN")
+        chrome = FakeBrowser.made[-1]
+        check(token == "chrome:XSRF-TOKEN" and chrome.cookie_calls == [("https://reservas.vueling.com/buscar", "XSRF-TOKEN")]
+              and s6.shared.client.calls == [], "api.cookie() con «Siempre Chrome»: la de Chrome, en la BROWSER_PAGE")
+        plain = requests.Session()
+        plain.cookies.set("csrftoken", "abc", domain="www.ejemplo.test")
+        check(scripted.ScriptApi(always, plain, None, "t").cookie("csrftoken") == "abc",
+              "api.cookie() sin medidas anti-bot: la de la sesión de requests")
         admin.delete("/providers/chrome")
     finally:
         stealth.make_client, browser.BrowserFetch, stealth.WARMUP_PAUSE = old_client, old_browser, old_pause
@@ -915,11 +932,11 @@ def scripts_flow(admin: Api, admin_chan: int):
     check(r.status_code == 200 and "miaero" not in PROVIDERS and not r.json()["provider"]["loaded"],
           "desactivarlo lo saca del registro sin pedir contraseña")
     check(admin.get(f"/watches/{w['id']}").status_code == 200, "la vigilancia sigue funcionando sin él")
-    r = admin.put(f"/watches/{w['id']}", {"name": "Script", "origin": "SVQ", "destination": "TFN", "providers": ["google"],
+    r = admin.put(f"/watches/{w['id']}", {"name": "Script", "origin": "SVQ", "destination": "TFN", "providers": ["buscador"],
                                           "max_price": "30", "channel_ids": [admin_chan]})
     with db.connect() as con:
         kept = db.get_watch(con, w["id"])["coverage"]
-    check(r.status_code == 200 and set(kept) == {"google", "miaero"} and kept["miaero"]["routes"] == [("SVQ", "TFN")],
+    check(r.status_code == 200 and set(kept) == {"buscador", "miaero"} and kept["miaero"]["routes"] == [("SVQ", "TFN")],
           "editar la vigilancia mientras está desactivado no se lo quita")
     check(admin.put("/providers/miaero", base).status_code == 403, "reactivarlo pide la contraseña")
     r = admin.put("/providers/miaero", {**base, "password": "clave-de-prueba-1"})
@@ -958,7 +975,7 @@ def scripts_flow(admin: Api, admin_chan: int):
     # --- eliminar: se quita de las vigilancias, el histórico se conserva
     check(admin.delete("/providers/miaero").status_code == 204 and "miaero" not in PROVIDERS, "eliminar proveedor")
     detail = admin.get(f"/watches/{w['id']}")
-    check(detail.status_code == 200 and detail.json()["watch"]["providers"] == ["google"], "la vigilancia ya no lo tiene")
+    check(detail.status_code == 200 and detail.json()["watch"]["providers"] == ["buscador"], "la vigilancia ya no lo tiene")
     with db.connect() as con:
         kept = con.execute(text("SELECT count(*) FROM prices WHERE provider = 'miaero'")).scalar()
     check(kept == 2 and admin.get(f"/watches/{w['id']}/charts").status_code == 200, "sus precios se conservan como histórico")
@@ -1018,7 +1035,7 @@ def bundle_flow(admin: Api):
         scripted.load(p["key"], p["code"], p["coverage"])
         loaded.append(p["key"])
     offered = [c["url"] for c in admin.get("/providers").json()["catalogs"]]
-    check(loaded == ["vueling", "ryanair", "wizzair", "google", "aireuropa"]
+    check(loaded == ["vueling", "ryanair", "wizzair", "aireuropa", "iberiaexpress", "binter"]
           and offered == [bundle.CATALOG_URL + "providers.fwp"] and sorted(p.name for p in bundle.CATALOG_DIR.glob("*.fwp")) == ["providers.fwp"],
           "catálogo: providers.fwp tiene todos los proveedores, sus scripts cargan y el panel lo ofrece")
     check(bundle.raw_url("https://github.com/katarem/flight-watcher/blob/main/app/providers/catalog/sin-verificar.fwp")
@@ -1031,8 +1048,8 @@ def bundle_flow(admin: Api):
     prev = r.json()
     check(r.status_code == 200 and prev["source"] == bundle.CATALOG_URL + "providers.fwp"
           and [(p["key"], p["status"], p["errors"]) for p in prev["providers"]]
-          == [("vueling", "same", []), ("ryanair", "same", []), ("wizzair", "new", []), ("google", "new", []), ("aireuropa", "new", [])]
-          and "def fetch_route" in prev["providers"][3]["code"], "vista previa de un enlace: qué trae y qué haría")
+          == [("vueling", "same", []), ("ryanair", "same", []), ("wizzair", "new", []), ("aireuropa", "new", []), ("iberiaexpress", "new", []), ("binter", "new", [])]
+          and "def fetch_route" in prev["providers"][2]["code"], "vista previa de un enlace: qué trae y qué haría")
     bad = admin.post("/providers/import/preview", {"url": "https://ejemplo.test/nada.fwp"})
     check(bad.status_code == 422 and "no existe" in errors(bad), "un enlace que no existe")
     check("Indica un enlace" in errors(admin.post("/providers/import/preview", {})), "sin enlace ni archivo")
@@ -1047,7 +1064,7 @@ def bundle_flow(admin: Api):
           "la vista previa avisa de lo que no se podría importar")
 
     # --- importar: pide la contraseña, todo o nada, y guarda de dónde vino
-    body = {"text": prev["text"], "url": prev["source"], "keys": ["wizzair", "google"]}
+    body = {"text": prev["text"], "url": prev["source"], "keys": ["wizzair"]}
     r = admin.post("/providers/import", body)
     check(r.status_code == 403 and "Confirma tu contraseña" in errors(r), "importar pide la contraseña")
     check("Elige al menos un proveedor" in errors(admin.post("/providers/import", {**body, "keys": []})), "hay que elegir alguno")
@@ -1058,10 +1075,12 @@ def bundle_flow(admin: Api):
           "un script que no carga no se importa (y no se importa nada)")
     r = admin.post("/providers/import", {**body, "password": "clave-de-prueba-1"})
     lst = {p["key"]: p for p in admin.get("/providers").json()["providers"]}
-    check(r.status_code == 200 and r.json()["imported"] == r.json()["created"] == ["wizzair", "google"]
-          and PROVIDERS["google"].stops_filter and PROVIDERS["google"].max_routes == 12
+    check(r.status_code == 200 and r.json()["imported"] == r.json()["created"] == ["wizzair"]
           and lst["wizzair"]["source"] == bundle.CATALOG_URL + "providers.fwp" and lst["wizzair"]["updated_by"] == "admin"
-          and "aireuropa" not in lst, "importar desde un enlace solo los elegidos (Wizz Air y Google Flights quedan activos)")
+          and "aireuropa" not in lst, "importar desde un enlace solo los elegidos (Wizz Air queda activo)")
+    r = admin.post("/providers/import", {"text": fakes.BUSCADOR, "keys": ["buscador"], "password": "clave-de-prueba-1"})
+    check(r.status_code == 200 and r.json()["created"] == ["buscador"] and PROVIDERS["buscador"].stops_filter
+          and PROVIDERS["buscador"].max_routes == 12, "importar de un archivo: el Buscador (cualquier ruta, con escalas)")
     check(admin.get("/providers").json()["sources"] == [bundle.CATALOG_URL + "providers.fwp"],
           "los enlaces ya usados se recuerdan para volver a importar")
     r = admin.post("/providers/import", {"text": mine, "keys": ["ryanair"], "enabled": True, "password": "clave-de-prueba-1"})

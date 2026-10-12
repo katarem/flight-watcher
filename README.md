@@ -87,9 +87,9 @@ Todo funciona en **headless**. Siempre que se puede se usa la API JSON pública 
 
 Cada proveedor declara cómo se sabe qué rutas cubre:
 
-- **Red de rutas** (Ryanair, Wizz Air): publica su red; se descarga y se mira si incluye el par de aeropuertos.
-- **Pregunta por cada ruta** (Vueling): se le pregunta directamente (un 404 significa que no la opera).
-- **Cualquier ruta** (Google Flights): cubre cualquier ruta, directa o con escalas (como mucho 12 pares de aeropuertos por vigilancia).
+- **Red de rutas** (Ryanair, Wizz Air, Iberia Express): publica su red; se descarga y se mira si incluye el par de aeropuertos.
+- **Pregunta por cada ruta** (Vueling, Binter): se le pregunta directamente (un 404 significa que no la opera).
+- **Cualquier ruta** (un buscador que mire todas las aerolíneas): cubre cualquier ruta, directa o con escalas, con un máximo de pares de aeropuertos por vigilancia. Ninguno del catálogo lo usa ahora mismo.
 
 La cobertura se guarda (`provider_routes`) y cada vigilancia sabe qué pares opera cada proveedor. **Cada lunes** se revalida: si una ruta de temporada se abre o se cierra, se avisa a los canales de la vigilancia, y mientras está cerrada ese proveedor no se consulta.
 
@@ -99,8 +99,9 @@ Todos los proveedores son **scripts de Python** que se ven, se editan, se prueba
 |---|---|---|
 | Vueling | API `apiw.vueling.com/api/v1/availability` | ✅ verificado el 2026-09-30 (~1 año en una petición) |
 | Ryanair | API `ryanair.com/api/farfnd/v4/.../cheapestPerDay` + red de rutas del buscador | ✅ tarifas verificadas el 2026-09-30 (una petición por mes) |
-| Wizz Air | API de wizzair.com (`/Api/asset/map` y `/Api/search/timetable`) | ⚠️ sin verificar contra la web real: pruébalo en **Proveedores** |
-| Google Flights | Llamada interna `GetCalendarGraph` del calendario | ⚠️ sin verificar contra la web real: pruébalo en **Proveedores** |
+| Wizz Air | API de wizzair.com (`/Api/asset/map` y `/Api/search/timetable`; la versión de la API sale de la portada) | ✅ verificado el 2026-10-12; necesita «Huella de Chrome» |
+| Iberia Express | API del buscador de iberiaexpress.com (`/api/searchbar/calendarrealtime`, dos meses por petición, y su red de rutas) | ✅ verificado el 2026-10-12; necesita «Siempre Chrome». Trabaja por ciudades: en Tenerife (vuela a TFN y TFS) el precio se guarda como TCI |
+| Binter | GraphQL de su web (`services.bintercanarias.com/main/graphql`: horarios, días operativos y calendario mensual) | ✅ verificado el 2026-10-12 sin medidas anti-bot; lento (de 3 a 15 s por consulta). Directos y, si la vigilancia admite escalas, conexiones |
 | Air Europa | API de Amadeus de su motor de reservas (`api-des.aireuropa.com`, calendario de 31 días) | ⚠️ sin verificar desde el servidor; necesita «Siempre Chrome» y que pongas sus credenciales de cliente web (la cabecera del script explica de dónde salen) |
 
 Rutas Sevilla ↔ Tenerife:
@@ -109,7 +110,7 @@ Rutas Sevilla ↔ Tenerife:
 |---|---|---|
 | Vueling | SVQ ↔ TFN directo, todo el año | ✅ |
 | Ryanair | SVQ ↔ TFS directo, **estacional** (sin precios en invierno) | ✅ |
-| Binter | SVQ ↔ TFN directo, 5 días/semana | ❌ descartada: Cloudflare bloquea web y API a clientes automatizados |
+| Binter | SVQ ↔ TFN directo, 5 días/semana | ✅ en el catálogo desde el 2026-10-12 (el 2026-09-30, Cloudflare la bloqueaba) |
 | Iberia | Solo con escala (Madrid) | ❌ sin proveedor (el 2026-09-30, 403 al navegador headless) |
 | Air Europa | Solo con escala (Madrid) | ⚠️ en el catálogo desde el 2026-10-12, sin verificar desde el servidor |
 
@@ -147,7 +148,7 @@ Los administradores tienen el apartado **Proveedores**, una especie de *healthch
 
 ### Escalas y monedas
 
-Cada vigilancia tiene un **máximo de escalas** (solo directos por defecto). Las aerolíneas solo venden sus vuelos directos; con escalas solo busca Google Flights. Cada precio guarda sus escalas.
+Cada vigilancia tiene un **máximo de escalas** (solo directos por defecto). Vueling, Ryanair, Wizz Air e Iberia Express solo venden sus vuelos directos; Air Europa (casi siempre vía Madrid) y Binter (vía sus aeropuertos de Canarias) también los que tienen escala. Cada precio guarda sus escalas.
 
 Los precios se guardan en su **moneda original** y con su **equivalente en euros** según el tipo de referencia diario del **BCE** (Wizz Air cobra en la moneda del aeropuerto de salida). Las reglas de aviso, las gráficas y el calendario usan los euros; los avisos muestran también la moneda original.
 
@@ -160,7 +161,7 @@ Cada precio del panel y cada aviso lleva un enlace a esa fecha concreta, con la 
   Residentes en islas o Ceuta pueden añadir `&dt=1` a la plantilla de Vueling.
 - **Ryanair:** `https://www.ryanair.com/es/es/trip/flights/select?...&dateOut={date}&isReturn=false&originIata={origin}&destinationIata={destination}`.
 - **Wizz Air:** `https://wizzair.com/es-es/booking/select-flight/{origin}/{destination}/{date}/null/1/0/0/null`.
-- **Google Flights:** una búsqueda de solo ida en esa fecha (`google.com/travel/flights?q=…`).
+- **Iberia Express:** `https://booking.iberiaexpress.com/?triptype=OW&from={origin}&to={destination}&depdate={date}&retdate={date}&exactdates=0&adt=1&chd=0&inf=0`.
 
 ## Reglas de aviso
 
@@ -233,8 +234,9 @@ def fetch_route(api, origin, destination, start, max_months):
 ```
 
 - Opcional: `BROWSER_PAGE = "https://…"`, la página que abre Chrome cuando sus peticiones van por él (ver «Medidas anti-bot»).
-- `fetch_route` devuelve `{fecha: precio}`, `{fecha: DayPrice}` o una lista de `DayPrice` (`{}` si no opera la ruta). Si además acepta `max_stops=None`, recibe el máximo de escalas de la vigilancia y filtra él mismo (como Google Flights). Con la cobertura «Pregunta por cada ruta» hay que definir `probe(api, origin, destination)` → `True`/`False`; con «Cualquier ruta», nada más.
-- `api.get_json`, `api.post_json` y `api.request` respetan el turno y las pausas del proveedor, convierten 403/429/anti-bot en «bloqueado» y un 404 en `None`, y guardan la respuesta en Diagnóstico si está activo. Una petición que no responde en 30 s se repite una vez; para una web lenta, pasa `timeout=` en segundos (`api.post_json(url, cuerpo, timeout=60)`). `api.log(...)` y `print(...)` escriben en el log del servidor y en la consola de la prueba.
+- `fetch_route` devuelve `{fecha: precio}`, `{fecha: DayPrice}` o una lista de `DayPrice` (`{}` si no opera la ruta). Si además acepta `max_stops=None`, recibe el máximo de escalas de la vigilancia y filtra él mismo (como Air Europa). Con la cobertura «Pregunta por cada ruta» hay que definir `probe(api, origin, destination)` → `True`/`False`; con «Cualquier ruta», nada más.
+- `api.get_json`, `api.post_json` y `api.request` respetan el turno y las pausas del proveedor, convierten 403/429/anti-bot en «bloqueado» y un 404 en `None`, y guardan la respuesta en Diagnóstico si está activo. Una petición que no responde en 30 s se repite una vez; para una web lenta, pasa `timeout=` en segundos (`api.post_json(url, cuerpo, timeout=60)`). `api.get_json` y `api.post_json` aceptan también `headers=` (cabeceras de esa petición).
+- `api.cookie("NOMBRE")` da el valor de una cookie de la sesión (o `None`), para las webs que exigen copiarla en una cabecera (el token XSRF de Iberia Express, por ejemplo). Con las peticiones por Chrome la lee de Chrome, en la misma página desde la que pide; con la huella de Chrome, tras visitar la portada de `url=` si se indica. `api.log(...)` y `print(...)` escriben en el log del servidor y en la consola de la prueba.
 - **Probar el script** lo carga y hace la prueba de acceso sin guardar nada. Encima del código se abre una **consola** que cuenta en directo cada paso, cada petición (URL, estado, tiempo, tamaño y forma del JSON recibido), los mensajes del script y, si falla, la línea del script con su código. Debajo, una muestra de los precios.
 - Al guardarlo activo aparece en todo el panel. Desactivado no se carga; al eliminarlo se quita de las vigilancias y sus precios se conservan como histórico.
 - Los scripts de Vueling y Ryanair (en **Editar**) son buenos ejemplos de verdad.

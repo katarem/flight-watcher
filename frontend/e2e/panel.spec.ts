@@ -93,7 +93,7 @@ test.describe('panel', () => {
     await expect(webs.getByText('Vueling no opera esta ruta.')).toBeVisible()
     await expect(webs.getByRole('checkbox', { name: 'Vueling' })).toBeDisabled()
     await expect(webs.getByRole('checkbox', { name: 'MockWeb' })).toBeChecked()
-    await webs.getByRole('checkbox', { name: /Google Flights/ }).click()
+    await webs.getByRole('checkbox', { name: 'Buscador' }).click()
     await page.getByLabel('Escalas').selectOption({ label: 'Hasta 1 escala' })
     await page.getByLabel('Si cuesta como mucho (€)').fill('35')
     await expectAccessible(page)
@@ -351,9 +351,11 @@ test.describe('proveedores', () => {
     await page.getByRole('button', { name: 'Catálogo de Flight Watcher' }).click()
     const found = page.getByRole('region', { name: /Qué trae/ })
     await expect(found.getByRole('checkbox', { name: /Wizz Air/ })).toBeVisible()
-    // Del catálogo solo es nuevo Air Europa (los demás ya están): viene marcado y aquí no se quiere.
-    await expect(found.getByRole('checkbox', { name: /Air Europa/ })).toBeChecked()
-    await found.getByRole('checkbox', { name: /Air Europa/ }).click()
+    // Del catálogo son nuevos Air Europa, Iberia Express y Binter (los demás ya están): vienen marcados y aquí no se quieren.
+    for (const name of [/Air Europa/, /Iberia Express/, /Binter/]) {
+      await expect(found.getByRole('checkbox', { name })).toBeChecked()
+      await found.getByRole('checkbox', { name }).click()
+    }
     await expect(found.getByText('Igual que el guardado').first()).toBeVisible()
     await found.getByText('Ver el código').first().click()
     await expect(found.getByLabel('Código de Wizz Air')).toContainText('def fetch_route(api, origin, destination, start, max_months):')
