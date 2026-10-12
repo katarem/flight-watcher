@@ -157,7 +157,7 @@ export function ProviderImportPage() {
                   <p className="text-xs text-muted">Enlaces conocidos:</p>
                   <ul className="flex flex-wrap gap-2">
                     {suggestions.map((s) => (
-                      <li key={s.url}>
+                      <li key={s.url} className="min-w-0 max-w-full">
                         <Button type="button" size="sm" variant="ghost" className="max-w-full" title={s.url}
                           onClick={() => {
                             setUrl(s.url)

@@ -56,7 +56,7 @@ CATALOG_DIR = Path(__file__).resolve().parent / "catalog"
 #: Todos los proveedores que tenemos, en un solo paquete.
 CATALOG = CATALOG_DIR / "providers.fwp"
 #: Paquetes del catálogo que el panel ofrece importar desde GitHub (archivo, nombre en el panel).
-CATALOGS = ((CATALOG.name, "Catálogo de Flight Watcher (todos los proveedores: eliges cuáles)"),)
+CATALOGS = ((CATALOG.name, "Catálogo de Flight Watcher"),)
 #: Se crean al arrancar la primera vez (los demás del catálogo, solo si alguna vigilancia ya los usaba).
 SEEDED = ("vueling", "ryanair")
 #: Paquetes del catálogo de antes de la 1.8.0: sus enlaces llevan ahora a `CATALOG`.
