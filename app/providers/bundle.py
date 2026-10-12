@@ -19,11 +19,13 @@ comillas), pero el script quedaría en una sola línea ilegible. Así se puede l
 código antes de importarlo, que es lo importante cuando ese código se va a ejecutar en el servidor. El separador
 se elige al exportar para que ninguna línea de ningún script empiece por él.
 
-Proveedores incluidos
----------------------
-`catalog/incluidos.fwp` (Vueling y Ryanair, verificados) se crea en la BD la primera vez que arranca esta versión
-(`seed()`); `catalog/sin-verificar.fwp` (Wizz Air y Google Flights) solo si alguna vigilancia ya los usaba. Los
-dos se pueden volver a importar desde el panel (o desde su enlace en GitHub) para recuperarlos o actualizarlos.
+Catálogo
+--------
+Todos los proveedores que tenemos están en un solo paquete, `catalog/providers.fwp`, que el panel ofrece importar
+desde GitHub (`CATALOG_URL`; al importar se eligen cuáles). La primera vez que arranca la app (`seed()`) se crean
+los de `SEEDED` (Vueling y Ryanair, verificados) y, del resto, los que ya usara alguna vigilancia (Wizz Air y
+Google Flights de antes de la 1.7.0). Los paquetes antiguos del catálogo (`LEGACY`: incluidos.fwp,
+sin-verificar.fwp, aireuropa.fwp) apuntan ahora a ese archivo, también los enlaces ya guardados.
 """
 from __future__ import annotations
 
@@ -36,6 +38,7 @@ from pathlib import Path
 import requests
 
 from .. import __version__
+from . import stealth
 
 log = logging.getLogger("providers")
 
@@ -50,8 +53,14 @@ MAX_BYTES = 2_000_000
 MAX_PROVIDERS = 100
 
 CATALOG_DIR = Path(__file__).resolve().parent / "catalog"
-INCLUDED = CATALOG_DIR / "incluidos.fwp"
-EXTRA = CATALOG_DIR / "sin-verificar.fwp"
+#: Todos los proveedores que tenemos, en un solo paquete.
+CATALOG = CATALOG_DIR / "providers.fwp"
+#: Paquetes del catálogo que el panel ofrece importar desde GitHub (archivo, nombre en el panel).
+CATALOGS = ((CATALOG.name, "Catálogo de Flight Watcher"),)
+#: Se crean al arrancar la primera vez (los demás del catálogo, solo si alguna vigilancia ya los usaba).
+SEEDED = ("vueling", "ryanair")
+#: Paquetes del catálogo de antes de la 1.8.0: sus enlaces llevan ahora a `CATALOG`.
+LEGACY = ("incluidos.fwp", "sin-verificar.fwp", "aireuropa.fwp")
 #: Dónde están publicados los paquetes incluidos (para importarlos o actualizarlos desde el panel).
 CATALOG_URL = "https://raw.githubusercontent.com/katarem/flight-watcher/main/app/providers/catalog/"
 #: Ajuste que marca que ya se crearon los proveedores incluidos (así, si se borran, no vuelven solos).
@@ -75,7 +84,7 @@ def dumps(rows: list[dict]) -> str:
            f"{date.today().isoformat()} desde flight-watcher {__version__}.",
            "# Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual."]
     for row, code in zip(rows, codes):
-        meta = {k: row.get(k) for k in FIELDS} | {"stealth": bool(row.get("stealth"))}
+        meta = {k: row.get(k) for k in FIELDS} | {"stealth": stealth.level(row.get("stealth")) or stealth.OFF}
         out.append(f"{sep} {json.dumps(meta, ensure_ascii=False)}")
         out.append(code.rstrip("\n"))
     return "\n".join(out) + "\n"
@@ -131,9 +140,11 @@ def loads(text: str) -> list[dict]:
 
 
 def raw_url(url: str) -> str:
-    """Un enlace a un archivo de GitHub (…/blob/…) se cambia por el del archivo en bruto."""
+    """Un enlace a un archivo de GitHub (…/blob/…) se cambia por el del archivo en bruto, y el de un paquete antiguo
+    del catálogo, por el del catálogo."""
     m = re.match(r"^https://github\.com/([^/]+)/([^/]+)/blob/(.+)$", url)
-    return f"https://raw.githubusercontent.com/{m[1]}/{m[2]}/{m[3]}" if m else url
+    url = f"https://raw.githubusercontent.com/{m[1]}/{m[2]}/{m[3]}" if m else url
+    return CATALOG_URL + CATALOG.name if url in {CATALOG_URL + name for name in LEGACY} else url
 
 
 def download(url: str) -> str:
@@ -170,29 +181,31 @@ def values(p: dict) -> dict:
         "health_destination": (p.get("health_destination") or "BCN").upper(),
         "link_template": p.get("link_template") or "", "notes": p.get("notes") or "",
         "min_interval": float(p["min_interval"]) if p.get("min_interval") is not None else 1.5, "code": p["code"],
-        "stealth": int(bool(p.get("stealth"))),
+        "stealth": stealth.level(p.get("stealth")) or stealth.OFF,
     }
 
 
 def seed() -> list[str]:
-    """Primer arranque con los proveedores como scripts: crea los incluidos (y los del paquete sin verificar que ya
-    use alguna vigilancia) y pasa a cada proveedor la plantilla de enlace que tuviera en Ajustes. Solo una vez:
-    si después se borra uno, no vuelve solo. Devuelve las claves creadas."""
+    """Primer arranque con los proveedores como scripts: crea los de `SEEDED` (y los del catálogo que ya use alguna
+    vigilancia) y pasa a cada proveedor la plantilla de enlace que tuviera en Ajustes. Solo una vez: si después se
+    borra uno, no vuelve solo. En cada arranque, los enlaces guardados de los paquetes antiguos del catálogo pasan
+    al del catálogo. Devuelve las claves creadas."""
     from .. import db
 
     with db.connect() as con:
+        for name in LEGACY:
+            db.replace_provider_source(con, CATALOG_URL + name, CATALOG_URL + CATALOG.name)
         if db.get_setting(con, SEED_FLAG):
             return []
         used = db.providers_in_use(con)
         links = db.pop_link_settings(con)
         existing = {r["key"]: r for r in db.list_provider_scripts(con)}
-        bundled = [(p, INCLUDED) for p in loads(INCLUDED.read_text("utf-8"))]
-        bundled += [(p, EXTRA) for p in loads(EXTRA.read_text("utf-8")) if p["key"] in used]
+        bundled = [p for p in loads(CATALOG.read_text("utf-8")) if p["key"] in SEEDED or p["key"] in used]
         created = []
-        for p, path in bundled:
+        for p in bundled:
             if p["key"] in existing:
                 continue
-            row = values(p) | {"enabled": 1, "source": CATALOG_URL + path.name}
+            row = values(p) | {"enabled": 1, "source": CATALOG_URL + CATALOG.name}
             if links.get(p["key"]):
                 row["link_template"] = links[p["key"]]
             db.save_provider_script(con, p["key"], row, SEED_USER)

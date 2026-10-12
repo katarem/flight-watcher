@@ -98,7 +98,30 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, b"<html>Access Denied</html>", "text/html")
         self._send(200, json.dumps({"recibido": sent, "metodo": "POST"}).encode(), "application/json")
 
+    def do_OPTIONS(self):
+        """Preflight CORS de la API de otro origen: admite el origen y la cabecera del token, pero no cookies."""
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", self.headers.get("Origin") or "*")
+        self.send_header("Access-Control-Allow-Headers", "x-d-token, content-type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST")
+        self.end_headers()
+
     def do_GET(self):
+        if self.path.startswith("/api/cors"):
+            # Como api-des.aireuropa.com: otro origen, exige el token que añade el script de la página y su CORS
+            # no admite cookies (sin Access-Control-Allow-Credentials).
+            ok = self.headers.get("x-d-token") == "ok"
+            self.send_response(200 if ok else 403)
+            self.send_header("Content-Type", "application/json" if ok else "text/html")
+            self.send_header("Access-Control-Allow-Origin", self.headers.get("Origin") or "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"cors": True}).encode() if ok else b"<html>Access Denied</html>")
+            return
+        if self.path.startswith("/con-token"):
+            # Como digital.aireuropa.com: su script (el del anti-bot) engancha fetch() y añade un token a cada petición.
+            page = ("<!doctype html><script>const f = window.fetch; window.fetch = (u, o = {}) => "
+                    "f(u, {...o, headers: {...(o.headers || {}), 'x-d-token': 'ok'}});</script>Reservas")
+            return self._send(200, page.encode(), "text/html; charset=utf-8")
         if self.path.startswith("/antibot"):
             # La portada pone la cookie con JavaScript (un cliente sin navegador no la tendría).
             page = "<!doctype html><script>document.cookie = 'reto=superado; path=/';</script>Portada"
@@ -157,23 +180,27 @@ def browser_fetch():
     db.init()
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    api_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)  # otro puerto = otro origen
+    threading.Thread(target=api_server.serve_forever, daemon=True).start()
     site = f"http://127.0.0.1:{server.server_port}"
+    other = f"http://localhost:{api_server.server_port}"
     lines = []
     fetcher = BrowserFetch("prueba", lambda level, text: lines.append(text))
     try:
-        # La portada de esta web simulada es /antibot: se abre a mano (en una web real es «/»).
-        fetcher._open()
-        page = fetcher._ctx.new_page()
-        page.goto(site + "/antibot")
-        fetcher._pages[site] = page
-        r = fetcher.request(site, "GET", site + "/api/protegida", params={"o": "SVQ", "d": None})
+        # La página que pone la cookie del reto es /antibot (como la `BROWSER_PAGE` de un script).
+        r = fetcher.request(site + "/antibot", "GET", site + "/api/protegida", params={"o": "SVQ", "d": None})
         check(r.status_code == 200 and r.json() == {"ruta": "/api/protegida?o=SVQ"}
               and r.headers["content-type"] == "application/json", "GET desde Chrome con la cookie del reto")
-        r = fetcher.request(site, "POST", site + "/api/protegida", json={"a": 1})
+        r = fetcher.request(site + "/antibot", "POST", site + "/api/protegida", json={"a": 1})
         check(r.status_code == 200 and r.json() == {"recibido": {"a": 1}, "metodo": "POST"}, "POST con cuerpo JSON desde Chrome")
+        r = fetcher.request(site + "/con-token", "GET", other + "/api/cors")
+        check(r.status_code == 200 and r.json() == {"cors": True}
+              and any("CORS" in line for line in lines),
+              "API de otro origen: lleva el token del script de la página y, sin cookies por CORS, se repite sin ellas")
     finally:
         fetcher.close()
         server.shutdown()
+        api_server.shutdown()
     from app import config
     check((config.DATA_DIR / "navegador" / "prueba.json").is_file() and any("Chrome abierto" in line for line in lines),
           "las cookies del navegador se guardan para la próxima vez")

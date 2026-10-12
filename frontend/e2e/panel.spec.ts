@@ -348,9 +348,12 @@ test.describe('proveedores', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Importar proveedores' })).toBeVisible()
     await expectAccessible(page)
 
-    await page.getByRole('button', { name: 'Sin verificar (Wizz Air y Google Flights)' }).click()
+    await page.getByRole('button', { name: 'Catálogo de Flight Watcher' }).click()
     const found = page.getByRole('region', { name: /Qué trae/ })
     await expect(found.getByRole('checkbox', { name: /Wizz Air/ })).toBeVisible()
+    // Del catálogo solo es nuevo Air Europa (los demás ya están): viene marcado y aquí no se quiere.
+    await expect(found.getByRole('checkbox', { name: /Air Europa/ })).toBeChecked()
+    await found.getByRole('checkbox', { name: /Air Europa/ }).click()
     await expect(found.getByText('Igual que el guardado').first()).toBeVisible()
     await found.getByText('Ver el código').first().click()
     await expect(found.getByLabel('Código de Wizz Air')).toContainText('def fetch_route(api, origin, destination, start, max_months):')

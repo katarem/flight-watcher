@@ -690,21 +690,31 @@ REAL_NEW_SESSION = scripted.ScriptedProvider.new_session
 
 
 def stealth_flow(admin: Api, base: dict):
-    """«Aplicar medidas anti-bot»: se guarda, se exporta y su sesión se hace pasar por Chrome."""
+    """«Medidas anti-bot»: el nivel se guarda, se exporta y su sesión se hace pasar por Chrome (o es Chrome)."""
     check(stealth.site_of("https://apiw.vueling.com/api/v1/x?a=1") == "https://www.vueling.com"
           and stealth.site_of("https://www.ryanair.com/api/x") == "https://www.ryanair.com"
           and stealth.site_of("https://wizzair.com/buildnumber") == "https://wizzair.com"
           and stealth.site_of("https://api.ejemplo.co.uk/x") == "https://www.ejemplo.co.uk"
           and stealth.site_of("http://127.0.0.1:8000/api") == "http://127.0.0.1:8000", "portada de la web de cada URL")
+    # true/false (paquetes y clientes anteriores a los niveles) = huella de Chrome / ninguna.
     r = admin.post("/providers", {**base, "key": "sigilo", "label": "Sigilo", "stealth": True, "password": "clave-de-prueba-1"})
     prov = PROVIDERS["sigilo"]
-    check(r.status_code == 201 and r.json()["provider"]["stealth"] is True and prov.stealth and prov.jitter >= 2,
-          "proveedor con medidas anti-bot (y pausas más variables)")
+    check(r.status_code == 201 and r.json()["provider"]["stealth"] == stealth.FINGERPRINT
+          and prov.stealth == stealth.FINGERPRINT and prov.jitter >= 2,
+          "proveedor con medidas anti-bot (y pausas más variables); true = huella de Chrome")
     pkg = bundle.loads(admin.get("/providers/export", params={"keys": "sigilo,miaero"}).text)
-    check([p["stealth"] for p in pkg] == [False, True] or [p["stealth"] for p in pkg] == [True, False],
-          "el interruptor viaja en el paquete exportado")
+    check(sorted(p["stealth"] for p in pkg) == [0, 1], "el nivel viaja en el paquete exportado")
+    r = admin.post("/providers", {**base, "key": "sigilo2", "stealth": 7, "password": "clave-de-prueba-1"})
+    check(r.status_code == 422 and any("anti-bot" in e for e in r.json()["errors"]), "nivel de medidas anti-bot desconocido")
+    r = admin.post("/providers", {**base, "key": "sigilo2", "stealth": 2, "password": "clave-de-prueba-1",
+                                  "code": base["code"] + "\nBROWSER_PAGE = 'no es una url'\n"})
+    check(r.status_code == 422 and "BROWSER_PAGE" in " ".join(r.json()["errors"]), "BROWSER_PAGE tiene que ser una URL")
     r, res, events = run_test(admin, {**base, "stealth": True, "password": "clave-de-prueba-1"})
-    check("Medidas anti-bot activadas" in console_text(events), "la consola de la prueba dice qué medidas se aplican")
+    check("Medidas anti-bot: huella" in console_text(events), "la consola de la prueba dice qué medidas se aplican")
+    r, res, events = run_test(admin, {**base, "stealth": 2, "password": "clave-de-prueba-1",
+                                      "code": base["code"] + "\nBROWSER_PAGE = 'https://reservas.prueba.test/buscar'\n"})
+    check("siempre Chrome" in console_text(events) and "https://reservas.prueba.test/buscar" in console_text(events),
+          "la consola dice que todo va por Chrome y desde qué página")
 
     # La sesión: cliente con la huella de Chrome, visita previa a la portada y cabeceras de navegador…
     old_client, old_browser, old_pause = stealth.make_client, browser.BrowserFetch, stealth.WARMUP_PAUSE
@@ -735,8 +745,22 @@ def stealth_flow(admin: Api, base: dict):
         check(r1.status_code == 200 and r1.json() == {"desde": "chrome"} and r2.json() == {"desde": "chrome"}
               and [u for _, _, u in chrome.calls] == ["https://apiw.vueling.com/api/v1/bloqueada",
                                                       "https://apiw.vueling.com/api/v1/availability"]
-              and chrome.calls[0][0] == "https://www.vueling.com" and chrome.closed and s3.shared.prefer_browser,
+              and chrome.calls[0][0] == "https://www.vueling.com/" and chrome.closed and s3.shared.prefer_browser,
               "anti-bot: tras un bloqueo, lo repite desde Chrome (y lo cierra al acabar)")
+
+        # «Siempre Chrome»: ni huella ni portada, todo por Chrome desde la página que pide el script.
+        r = admin.post("/providers", {**base, "key": "chrome", "label": "Chrome", "stealth": 2, "password": "clave-de-prueba-1",
+                                      "code": base["code"] + "\nBROWSER_PAGE = 'https://reservas.vueling.com/buscar'\n"})
+        always = PROVIDERS["chrome"]
+        check(r.status_code == 201 and r.json()["provider"]["stealth"] == stealth.BROWSER
+              and always.browser_page == "https://reservas.vueling.com/buscar", "proveedor «Siempre Chrome» con su página")
+        with REAL_NEW_SESSION(always) as s4:
+            r1 = s4.request("GET", "https://apiw.vueling.com/api/v1/availability", timeout=5)
+        chrome = FakeBrowser.made[-1]
+        check(r1.json() == {"desde": "chrome"} and s4.shared.client.calls == [] and chrome.closed
+              and chrome.calls == [("https://reservas.vueling.com/buscar", "GET", "https://apiw.vueling.com/api/v1/availability")],
+              "siempre Chrome: va directo a Chrome, abierto en la BROWSER_PAGE del script")
+        admin.delete("/providers/chrome")
     finally:
         stealth.make_client, browser.BrowserFetch, stealth.WARMUP_PAUSE = old_client, old_browser, old_pause
         BLOCKS.clear()
@@ -753,7 +777,7 @@ def scripts_flow(admin: Api, admin_chan: int):
             {"fecha": days[2], "precio": 0}]}),
     })
     r = admin.get("/providers").json()
-    check(r["editable"] and "def fetch_route" in r["template"] and len(r["catalogs"]) == 2, "lista de proveedores y plantilla")
+    check(r["editable"] and "def fetch_route" in r["template"] and len(r["catalogs"]) == len(bundle.CATALOGS), "lista de proveedores y plantilla")
     base = {"key": "miaero", "label": "Mi Aerolínea", "color": "#0EA5E9", "coverage": "network", "health_origin": "svq",
             "health_destination": "tfn", "min_interval": "0", "code": SCRIPT,
             "link_template": "https://www.miaero.test/vuelos?o={origin}&d={destination}&f={date}"}
@@ -943,13 +967,20 @@ def scripts_flow(admin: Api, admin_chan: int):
 
 
 def bundle_flow(admin: Api):
-    """Proveedores incluidos (creados al arrancar) y paquetes: exportar, vista previa e importar."""
+    """Proveedores incluidos (creados al arrancar), el catálogo y paquetes: exportar, vista previa e importar."""
     lst = admin.get("/providers").json()["providers"]
     check([p["key"] for p in lst] == ["ryanair", "vueling"] and all(p["loaded"] and p["enabled"] for p in lst)
-          and lst[0]["updated_by"] == "flight-watcher" and lst[0]["source"] == bundle.CATALOG_URL + "incluidos.fwp"
+          and lst[0]["updated_by"] == "flight-watcher" and lst[0]["source"] == bundle.CATALOG_URL + "providers.fwp"
           and "wizzair" not in PROVIDERS, "al arrancar se crean Vueling y Ryanair como scripts (y nada más)")
     with db.connect() as con:
         check(db.get_setting(con, bundle.SEED_FLAG) == "1" and bundle.seed() == [], "la siembra ocurre una sola vez")
+        db.replace_provider_source(con, bundle.CATALOG_URL + "providers.fwp", bundle.CATALOG_URL + "incluidos.fwp")
+        before = db.get_provider_script(con, "vueling")["updated_at"]
+    bundle.seed()
+    with db.connect() as con:
+        row = db.get_provider_script(con, "vueling")
+    check(row["source"] == bundle.CATALOG_URL + "providers.fwp" and row["updated_at"] == before,
+          "al arrancar, el enlace guardado de un paquete antiguo del catálogo pasa al catálogo (sin contar como cambio)")
 
     # --- exportar: todos o los elegidos, con el código tal cual
     r = admin.get("/providers/export")
@@ -981,13 +1012,27 @@ def bundle_flow(admin: Api):
         except bundle.BundleError as exc:
             check(msg in str(exc), f"paquete no válido: {msg}")
 
+    # --- el catálogo: un solo paquete con todos; se lee, sus scripts cargan y el panel ofrece su enlace de GitHub
+    loaded = []
+    for p in bundle.loads(bundle.CATALOG.read_text("utf-8")):
+        scripted.load(p["key"], p["code"], p["coverage"])
+        loaded.append(p["key"])
+    offered = [c["url"] for c in admin.get("/providers").json()["catalogs"]]
+    check(loaded == ["vueling", "ryanair", "wizzair", "google", "aireuropa"]
+          and offered == [bundle.CATALOG_URL + "providers.fwp"] and sorted(p.name for p in bundle.CATALOG_DIR.glob("*.fwp")) == ["providers.fwp"],
+          "catálogo: providers.fwp tiene todos los proveedores, sus scripts cargan y el panel lo ofrece")
+    check(bundle.raw_url("https://github.com/katarem/flight-watcher/blob/main/app/providers/catalog/sin-verificar.fwp")
+          == bundle.raw_url(bundle.CATALOG_URL + "incluidos.fwp") == bundle.CATALOG_URL + "providers.fwp",
+          "los enlaces de los paquetes antiguos del catálogo llevan a providers.fwp")
+
     # --- vista previa desde un enlace (el de GitHub se cambia por el del archivo en bruto) y desde un archivo
-    url = "https://github.com/katarem/flight-watcher/blob/main/app/providers/catalog/sin-verificar.fwp"
+    url = "https://github.com/katarem/flight-watcher/blob/main/app/providers/catalog/providers.fwp"
     r = admin.post("/providers/import/preview", {"url": url})
     prev = r.json()
-    check(r.status_code == 200 and prev["source"] == bundle.CATALOG_URL + "sin-verificar.fwp"
-          and [(p["key"], p["status"], p["errors"]) for p in prev["providers"]] == [("wizzair", "new", []), ("google", "new", [])]
-          and "def fetch_route" in prev["providers"][1]["code"], "vista previa de un enlace: qué trae y qué haría")
+    check(r.status_code == 200 and prev["source"] == bundle.CATALOG_URL + "providers.fwp"
+          and [(p["key"], p["status"], p["errors"]) for p in prev["providers"]]
+          == [("vueling", "same", []), ("ryanair", "same", []), ("wizzair", "new", []), ("google", "new", []), ("aireuropa", "new", [])]
+          and "def fetch_route" in prev["providers"][3]["code"], "vista previa de un enlace: qué trae y qué haría")
     bad = admin.post("/providers/import/preview", {"url": "https://ejemplo.test/nada.fwp"})
     check(bad.status_code == 422 and "no existe" in errors(bad), "un enlace que no existe")
     check("Indica un enlace" in errors(admin.post("/providers/import/preview", {})), "sin enlace ni archivo")
@@ -1015,15 +1060,15 @@ def bundle_flow(admin: Api):
     lst = {p["key"]: p for p in admin.get("/providers").json()["providers"]}
     check(r.status_code == 200 and r.json()["imported"] == r.json()["created"] == ["wizzair", "google"]
           and PROVIDERS["google"].stops_filter and PROVIDERS["google"].max_routes == 12
-          and lst["wizzair"]["source"] == bundle.CATALOG_URL + "sin-verificar.fwp" and lst["wizzair"]["updated_by"] == "admin",
-          "importar desde un enlace (Wizz Air y Google Flights quedan activos)")
-    check(admin.get("/providers").json()["sources"] == [bundle.CATALOG_URL + "incluidos.fwp", bundle.CATALOG_URL + "sin-verificar.fwp"],
+          and lst["wizzair"]["source"] == bundle.CATALOG_URL + "providers.fwp" and lst["wizzair"]["updated_by"] == "admin"
+          and "aireuropa" not in lst, "importar desde un enlace solo los elegidos (Wizz Air y Google Flights quedan activos)")
+    check(admin.get("/providers").json()["sources"] == [bundle.CATALOG_URL + "providers.fwp"],
           "los enlaces ya usados se recuerdan para volver a importar")
     r = admin.post("/providers/import", {"text": mine, "keys": ["ryanair"], "enabled": True, "password": "clave-de-prueba-1"})
     check(r.status_code == 200 and r.json()["created"] == [] and PROVIDERS["ryanair"].label == "Ryanair (copia)",
           "importar sustituye a uno con la misma clave")
     admin.post("/providers/import", {"url": bundle.CATALOG_URL + "incluidos.fwp", "keys": ["ryanair"], "password": "clave-de-prueba-1"})
-    check(PROVIDERS["ryanair"].label == "Ryanair", "volver a importar el original")
+    check(PROVIDERS["ryanair"].label == "Ryanair", "volver a importar el original (con el enlace antiguo del catálogo)")
 
 
 def main():

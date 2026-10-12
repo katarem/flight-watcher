@@ -120,10 +120,9 @@ def fake_send(channels, lines):
 
 
 def fake_download(url):
-    """Los paquetes incluidos, desde el repositorio (como si se descargaran de GitHub); el resto, 404."""
-    for path in (bundle.INCLUDED, bundle.EXTRA):
-        if url == bundle.CATALOG_URL + path.name:
-            return path.read_text("utf-8")
+    """El catálogo, desde el repositorio (como si se descargara de GitHub); el resto, 404."""
+    if url == bundle.CATALOG_URL + bundle.CATALOG.name:
+        return bundle.CATALOG.read_text("utf-8")
     raise bundle.BundleError("El enlace no existe (HTTP 404).")
 
 
@@ -132,9 +131,11 @@ def fake_fx_fetch():
 
 
 def import_extra():
-    """Wizz Air y Google Flights (el paquete sin verificar) directamente en la BD, como si se hubieran importado."""
+    """Wizz Air y Google Flights (del catálogo) directamente en la BD, como si se hubieran importado."""
     with db.connect() as con:
-        for p in bundle.loads(bundle.EXTRA.read_text("utf-8")):
+        for p in bundle.loads(bundle.CATALOG.read_text("utf-8")):
+            if p["key"] not in ("wizzair", "google"):
+                continue
             if not db.get_provider_script(con, p["key"]):
                 db.save_provider_script(con, p["key"], bundle.values(p) | {"enabled": 1}, "admin")
     scripted.reload()
