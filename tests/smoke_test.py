@@ -967,13 +967,20 @@ def scripts_flow(admin: Api, admin_chan: int):
 
 
 def bundle_flow(admin: Api):
-    """Proveedores incluidos (creados al arrancar) y paquetes: exportar, vista previa e importar."""
+    """Proveedores incluidos (creados al arrancar), el catálogo y paquetes: exportar, vista previa e importar."""
     lst = admin.get("/providers").json()["providers"]
     check([p["key"] for p in lst] == ["ryanair", "vueling"] and all(p["loaded"] and p["enabled"] for p in lst)
-          and lst[0]["updated_by"] == "flight-watcher" and lst[0]["source"] == bundle.CATALOG_URL + "incluidos.fwp"
+          and lst[0]["updated_by"] == "flight-watcher" and lst[0]["source"] == bundle.CATALOG_URL + "providers.fwp"
           and "wizzair" not in PROVIDERS, "al arrancar se crean Vueling y Ryanair como scripts (y nada más)")
     with db.connect() as con:
         check(db.get_setting(con, bundle.SEED_FLAG) == "1" and bundle.seed() == [], "la siembra ocurre una sola vez")
+        db.replace_provider_source(con, bundle.CATALOG_URL + "providers.fwp", bundle.CATALOG_URL + "incluidos.fwp")
+        before = db.get_provider_script(con, "vueling")["updated_at"]
+    bundle.seed()
+    with db.connect() as con:
+        row = db.get_provider_script(con, "vueling")
+    check(row["source"] == bundle.CATALOG_URL + "providers.fwp" and row["updated_at"] == before,
+          "al arrancar, el enlace guardado de un paquete antiguo del catálogo pasa al catálogo (sin contar como cambio)")
 
     # --- exportar: todos o los elegidos, con el código tal cual
     r = admin.get("/providers/export")
@@ -1005,24 +1012,27 @@ def bundle_flow(admin: Api):
         except bundle.BundleError as exc:
             check(msg in str(exc), f"paquete no válido: {msg}")
 
-    # --- todo el catálogo: cada paquete se lee, sus scripts cargan y el panel ofrece su enlace de GitHub
+    # --- el catálogo: un solo paquete con todos; se lee, sus scripts cargan y el panel ofrece su enlace de GitHub
     loaded = []
-    for name, _label in bundle.CATALOGS:
-        for p in bundle.loads((bundle.CATALOG_DIR / name).read_text("utf-8")):
-            scripted.load(p["key"], p["code"], p["coverage"])
-            loaded.append(p["key"])
-    offered = {c["url"] for c in admin.get("/providers").json()["catalogs"]}
-    check({"vueling", "ryanair", "wizzair", "google", "aireuropa"} <= set(loaded)
-          and offered == {bundle.CATALOG_URL + name for name, _ in bundle.CATALOGS},
-          "catálogo: todos los paquetes se leen, sus scripts cargan y el panel los ofrece")
+    for p in bundle.loads(bundle.CATALOG.read_text("utf-8")):
+        scripted.load(p["key"], p["code"], p["coverage"])
+        loaded.append(p["key"])
+    offered = [c["url"] for c in admin.get("/providers").json()["catalogs"]]
+    check(loaded == ["vueling", "ryanair", "wizzair", "google", "aireuropa"]
+          and offered == [bundle.CATALOG_URL + "providers.fwp"] and sorted(p.name for p in bundle.CATALOG_DIR.glob("*.fwp")) == ["providers.fwp"],
+          "catálogo: providers.fwp tiene todos los proveedores, sus scripts cargan y el panel lo ofrece")
+    check(bundle.raw_url("https://github.com/katarem/flight-watcher/blob/main/app/providers/catalog/sin-verificar.fwp")
+          == bundle.raw_url(bundle.CATALOG_URL + "incluidos.fwp") == bundle.CATALOG_URL + "providers.fwp",
+          "los enlaces de los paquetes antiguos del catálogo llevan a providers.fwp")
 
     # --- vista previa desde un enlace (el de GitHub se cambia por el del archivo en bruto) y desde un archivo
-    url ="https://github.com/katarem/flight-watcher/blob/main/app/providers/catalog/sin-verificar.fwp"
+    url = "https://github.com/katarem/flight-watcher/blob/main/app/providers/catalog/providers.fwp"
     r = admin.post("/providers/import/preview", {"url": url})
     prev = r.json()
-    check(r.status_code == 200 and prev["source"] == bundle.CATALOG_URL + "sin-verificar.fwp"
-          and [(p["key"], p["status"], p["errors"]) for p in prev["providers"]] == [("wizzair", "new", []), ("google", "new", [])]
-          and "def fetch_route" in prev["providers"][1]["code"], "vista previa de un enlace: qué trae y qué haría")
+    check(r.status_code == 200 and prev["source"] == bundle.CATALOG_URL + "providers.fwp"
+          and [(p["key"], p["status"], p["errors"]) for p in prev["providers"]]
+          == [("vueling", "same", []), ("ryanair", "same", []), ("wizzair", "new", []), ("google", "new", []), ("aireuropa", "new", [])]
+          and "def fetch_route" in prev["providers"][3]["code"], "vista previa de un enlace: qué trae y qué haría")
     bad = admin.post("/providers/import/preview", {"url": "https://ejemplo.test/nada.fwp"})
     check(bad.status_code == 422 and "no existe" in errors(bad), "un enlace que no existe")
     check("Indica un enlace" in errors(admin.post("/providers/import/preview", {})), "sin enlace ni archivo")
@@ -1050,15 +1060,15 @@ def bundle_flow(admin: Api):
     lst = {p["key"]: p for p in admin.get("/providers").json()["providers"]}
     check(r.status_code == 200 and r.json()["imported"] == r.json()["created"] == ["wizzair", "google"]
           and PROVIDERS["google"].stops_filter and PROVIDERS["google"].max_routes == 12
-          and lst["wizzair"]["source"] == bundle.CATALOG_URL + "sin-verificar.fwp" and lst["wizzair"]["updated_by"] == "admin",
-          "importar desde un enlace (Wizz Air y Google Flights quedan activos)")
-    check(admin.get("/providers").json()["sources"] == [bundle.CATALOG_URL + "incluidos.fwp", bundle.CATALOG_URL + "sin-verificar.fwp"],
+          and lst["wizzair"]["source"] == bundle.CATALOG_URL + "providers.fwp" and lst["wizzair"]["updated_by"] == "admin"
+          and "aireuropa" not in lst, "importar desde un enlace solo los elegidos (Wizz Air y Google Flights quedan activos)")
+    check(admin.get("/providers").json()["sources"] == [bundle.CATALOG_URL + "providers.fwp"],
           "los enlaces ya usados se recuerdan para volver a importar")
     r = admin.post("/providers/import", {"text": mine, "keys": ["ryanair"], "enabled": True, "password": "clave-de-prueba-1"})
     check(r.status_code == 200 and r.json()["created"] == [] and PROVIDERS["ryanair"].label == "Ryanair (copia)",
           "importar sustituye a uno con la misma clave")
     admin.post("/providers/import", {"url": bundle.CATALOG_URL + "incluidos.fwp", "keys": ["ryanair"], "password": "clave-de-prueba-1"})
-    check(PROVIDERS["ryanair"].label == "Ryanair", "volver a importar el original")
+    check(PROVIDERS["ryanair"].label == "Ryanair", "volver a importar el original (con el enlace antiguo del catálogo)")
 
 
 def main():

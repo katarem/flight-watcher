@@ -200,7 +200,7 @@ export function ProvidersPage() {
       {providers.length === 0 ? (
         <Card aria-labelledby="sin-proveedores">
           <CardHeader id="sin-proveedores" title="No hay proveedores"
-            description="Sin proveedores no se consulta ninguna web. Importa los incluidos (Vueling y Ryanair) o crea uno." />
+            description="Sin proveedores no se consulta ninguna web. Importa los del catálogo (Vueling, Ryanair…) o crea uno." />
           {editable && <Link to="/admin/providers/import" className={buttonClass('primary')}><Upload /> Importar proveedores</Link>}
         </Card>
       ) : (

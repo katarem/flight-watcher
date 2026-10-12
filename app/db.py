@@ -918,6 +918,11 @@ def save_provider_script(con, key: str, values: dict, username: str):
         con.execute(insert(provider_scripts).values(key=key, created_at=now, **values))
 
 
+def replace_provider_source(con, old: str, new: str):
+    """Cambia el enlace de origen guardado de los proveedores (sin tocar `updated_at`: no es un cambio suyo)."""
+    con.execute(update(provider_scripts).where(provider_scripts.c.source == old).values(source=new))
+
+
 def delete_provider_script(con, key: str):
     """Borra el proveedor y lo que lo ata a las vigilancias (cobertura, caché y prueba de acceso).
 

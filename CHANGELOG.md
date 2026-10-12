@@ -7,7 +7,8 @@
 
 ### Añadido
 - Un script puede decir qué página tiene que abrir Chrome con `BROWSER_PAGE = "https://…"` (si no, la portada del dominio de la API, como antes). Hace falta cuando la API solo acepta peticiones desde otra página o el anti-bot solo corre en ella. La consola de la prueba dice qué nivel se aplica y desde qué página.
-- **Air Europa** en el catálogo (`catalog/aireuropa.fwp`, sin verificar desde el servidor): precios por día de la API de Amadeus que usa su motor de reservas, 31 días por petición, con escalas (casi siempre vía Madrid). Va con «Siempre Chrome»; hay que rellenar en el editor sus credenciales de cliente web (la cabecera del script explica de dónde salen). Se ofrece al importar, junto a los otros paquetes del catálogo de GitHub.
+- **Un solo catálogo**: todos los proveedores que tenemos (Vueling, Ryanair, Wizz Air, Google Flights y Air Europa) están en `app/providers/catalog/providers.fwp`, que se importa desde GitHub (en **Importar** sale como «Catálogo de Flight Watcher» y eliges cuáles). Sustituye a `incluidos.fwp` y `sin-verificar.fwp`: sus enlaces, también los ya guardados como origen de un proveedor, llevan ahora a `providers.fwp`.
+- **Air Europa** en el catálogo (sin verificar desde el servidor): precios por día de la API de Amadeus que usa su motor de reservas, 31 días por petición, con escalas (casi siempre vía Madrid). Va con «Siempre Chrome»; hay que rellenar en el editor sus credenciales de cliente web (la cabecera del script explica de dónde salen). Se ofrece al importar, junto a los otros paquetes del catálogo de GitHub.
 
 ### Corregido
 - Las peticiones desde Chrome se hacen en el contexto de la propia página (patchright las aislaba): así pasan por lo que el script de la web les añade, como el token del anti-bot.

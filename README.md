@@ -93,7 +93,7 @@ Cada proveedor declara cómo se sabe qué rutas cubre:
 
 La cobertura se guarda (`provider_routes`) y cada vigilancia sabe qué pares opera cada proveedor. **Cada lunes** se revalida: si una ruta de temporada se abre o se cierra, se avisa a los canales de la vigilancia, y mientras está cerrada ese proveedor no se consulta.
 
-Todos los proveedores son **scripts de Python** que se ven, se editan, se prueban, se exportan y se importan desde **Proveedores** (ver «Añadir otra aerolínea»). Vueling y Ryanair vienen incluidos: se crean en el primer arranque y puedes cambiarlos o borrarlos como cualquier otro. Wizz Air y Google Flights están en un paquete aparte (`app/providers/catalog/sin-verificar.fwp`) que se importa con un clic desde **Proveedores → Importar**.
+Todos los proveedores son **scripts de Python** que se ven, se editan, se prueban, se exportan y se importan desde **Proveedores** (ver «Añadir otra aerolínea»). Todos los que tenemos están en un solo paquete, [`app/providers/catalog/providers.fwp`](https://raw.githubusercontent.com/katarem/flight-watcher/main/app/providers/catalog/providers.fwp), que se importa desde **Proveedores → Importar** (sale como «Catálogo de Flight Watcher»; eliges cuáles) o pegando ese enlace en cualquier panel. Vueling y Ryanair se crean solos en el primer arranque y puedes cambiarlos o borrarlos como cualquier otro.
 
 | Proveedor | Método | Estado |
 |---|---|---|
@@ -101,6 +101,7 @@ Todos los proveedores son **scripts de Python** que se ven, se editan, se prueba
 | Ryanair | API `ryanair.com/api/farfnd/v4/.../cheapestPerDay` + red de rutas del buscador | ✅ tarifas verificadas el 2026-09-30 (una petición por mes) |
 | Wizz Air | API de wizzair.com (`/Api/asset/map` y `/Api/search/timetable`) | ⚠️ sin verificar contra la web real: pruébalo en **Proveedores** |
 | Google Flights | Llamada interna `GetCalendarGraph` del calendario | ⚠️ sin verificar contra la web real: pruébalo en **Proveedores** |
+| Air Europa | API de Amadeus de su motor de reservas (`api-des.aireuropa.com`, calendario de 31 días) | ⚠️ sin verificar desde el servidor; necesita «Siempre Chrome» y que pongas sus credenciales de cliente web (la cabecera del script explica de dónde salen) |
 
 Rutas Sevilla ↔ Tenerife:
 
@@ -110,19 +111,27 @@ Rutas Sevilla ↔ Tenerife:
 | Ryanair | SVQ ↔ TFS directo, **estacional** (sin precios en invierno) | ✅ |
 | Binter | SVQ ↔ TFN directo, 5 días/semana | ❌ descartada: Cloudflare bloquea web y API a clientes automatizados |
 | Iberia | Solo con escala (Madrid) | ❌ sin proveedor (el 2026-09-30, 403 al navegador headless) |
-| Air Europa | Solo con escala (TFN → Madrid → SVQ) | ❌ descartada: 403 al navegador headless |
+| Air Europa | Solo con escala (Madrid) | ⚠️ en el catálogo desde el 2026-10-12, sin verificar desde el servidor |
 
 Según Aena (2026-09-30), **no hay más aerolíneas directas**: SVQ ↔ TFN solo Vueling y Binter; SVQ ↔ TFS solo Ryanair.
 
-Si una web bloquea, la comprobación falla con un mensaje claro («rechaza la consulta (HTTP 403, límite o anti-bot)») y te avisa. Por defecto las peticiones dicen que son de `flight-watcher`. Para las webs que bloquean, cada proveedor tiene el interruptor **«Aplicar medidas anti-bot»** (ver abajo).
+Si una web bloquea, la comprobación falla con un mensaje claro («rechaza la consulta (HTTP 403, límite o anti-bot)») y te avisa. Por defecto las peticiones dicen que son de `flight-watcher`. Para las webs que bloquean, cada proveedor elige sus **«Medidas anti-bot»** (ver abajo).
 
 ### Medidas anti-bot
 
-Con el interruptor activado en el editor del proveedor, sus peticiones se hacen pasar por las de una persona con Chrome:
+En el editor de cada proveedor, **Medidas anti-bot** tiene tres niveles:
+
+- **Ninguna**: peticiones normales que dicen ser de `flight-watcher`. Lo más rápido; para las webs que no bloquean (Vueling, Ryanair).
+- **Huella de Chrome y, si bloquean, Chrome**: lo que se describe a continuación.
+- **Siempre Chrome**: todas las peticiones salen de Chrome de verdad, sin probar antes la huella. Para webs cuyo anti-bot solo deja pasar a su propio JavaScript (Imperva en Air Europa, que añade un token a cada petición). Es lo más lento y lo que más memoria gasta.
+
+Con la huella de Chrome, sus peticiones se hacen pasar por las de una persona con Chrome:
 
 - huella TLS y HTTP/2 de Chrome (`curl_cffi`), que es lo que miran Cloudflare, Akamai o DataDome además del User-Agent, y las cabeceras de Chrome en español (`Origin`, `Referer`, `Sec-Fetch-*`…);
 - una sesión con cookies que dura 30 minutos, una visita previa a la portada de la web antes de su API y pausas más variables entre peticiones;
 - si aun así la respuesta parece de un anti-bot (403/429 o su página de reto), la repite con `fetch()` desde **Chrome de verdad** abierto en la portada ([patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python), Playwright parcheado para que no se note la automatización), que resuelve los retos de JavaScript. Ese proveedor sigue con Chrome mientras dure la sesión y sus cookies se guardan en `DATA_DIR/navegador/`.
+
+Chrome abre la portada del dominio de la API o, si el script la define, otra página con `BROWSER_PAGE = "https://…"`: hace falta cuando la API solo acepta peticiones desde una página concreta o el anti-bot solo corre en ella. Las peticiones se hacen desde esa página, así que pasan por lo que su script les añada; si la API no admite cookies desde ella (CORS), van sin cookies.
 
 No resuelve CAPTCHA que pidan intervención ni arregla una IP ya bloqueada. En Docker, Chrome va «con ventana» en una pantalla virtual (Xvfb), que se parece más a una persona que el modo sin ventana; se cambia en **Ajustes → Modo sin ventana**. Úsalo solo con las webs que lo necesiten: es más lento y Chrome ocupa unos 300 MB de RAM mientras está abierto.
 
@@ -223,6 +232,7 @@ def fetch_route(api, origin, destination, start, max_months):
     return out
 ```
 
+- Opcional: `BROWSER_PAGE = "https://…"`, la página que abre Chrome cuando sus peticiones van por él (ver «Medidas anti-bot»).
 - `fetch_route` devuelve `{fecha: precio}`, `{fecha: DayPrice}` o una lista de `DayPrice` (`{}` si no opera la ruta). Si además acepta `max_stops=None`, recibe el máximo de escalas de la vigilancia y filtra él mismo (como Google Flights). Con la cobertura «Pregunta por cada ruta» hay que definir `probe(api, origin, destination)` → `True`/`False`; con «Cualquier ruta», nada más.
 - `api.get_json`, `api.post_json` y `api.request` respetan el turno y las pausas del proveedor, convierten 403/429/anti-bot en «bloqueado» y un 404 en `None`, y guardan la respuesta en Diagnóstico si está activo. Una petición que no responde en 30 s se repite una vez; para una web lenta, pasa `timeout=` en segundos (`api.post_json(url, cuerpo, timeout=60)`). `api.log(...)` y `print(...)` escriben en el log del servidor y en la consola de la prueba.
 - **Probar el script** lo carga y hace la prueba de acceso sin guardar nada. Encima del código se abre una **consola** que cuenta en directo cada paso, cada petición (URL, estado, tiempo, tamaño y forma del JSON recibido), los mensajes del script y, si falla, la línea del script con su código. Debajo, una muestra de los precios.
@@ -233,7 +243,7 @@ def fetch_route(api, origin, destination, start, max_months):
 
 - **Exportar**: en **Proveedores** elige los que quieras (o todos) y descarga un archivo `.fwp`; también desde el editor de cada uno.
 - **Importar** (**Proveedores → Importar**): desde un **enlace** (por ejemplo, un `.fwp` en GitHub; un enlace `…/blob/…` se cambia solo por el del archivo en bruto) o desde un **archivo**. Antes de importar se ve qué trae cada proveedor (nuevo, igual que el guardado o qué cambia), su código y si algo no se podría importar. Uno con la misma clave que uno guardado lo sustituye (se conservan sus vigilancias e histórico). Se guarda de qué enlace vino, para volver a usarlo.
-- El formato `.fwp` es texto: una línea de cabecera y, por proveedor, una línea con sus datos en JSON seguida del script **tal cual**. Ocupa lo mismo que un JSON (lo grande es el código), pero el script se puede leer y comparar antes de importarlo. Los paquetes incluidos están en `app/providers/catalog/`.
+- El formato `.fwp` es texto: una línea de cabecera y, por proveedor, una línea con sus datos en JSON seguida del script **tal cual**. Ocupa lo mismo que un JSON (lo grande es el código), pero el script se puede leer y comparar antes de importarlo. Todos los proveedores que tenemos están en [`app/providers/catalog/providers.fwp`](https://raw.githubusercontent.com/katarem/flight-watcher/main/app/providers/catalog/providers.fwp) (los antiguos `incluidos.fwp` y `sin-verificar.fwp` llevan ahora a ese archivo).
 
 **Ojo:** el script se ejecuta dentro del servidor con todos sus permisos (puede leer la base de datos y los secretos de los canales). Por eso solo lo escriben o importan administradores, hay que confirmar la contraseña para probarlo, importarlo y para guardarlo si cambia el código o se activa, y se anota quién lo guardó. Con `PROVIDER_SCRIPTS=0` los proveedores que hay siguen funcionando, pero desde el panel no se puede crear, importar, cambiar el código ni probar ninguno.
 
@@ -268,7 +278,7 @@ app/
   migrations/     migraciones de Alembic
   providers/      base.py (abstracción), extract.py, scripted.py (contrato, carga y registro de los scripts),
                   bundle.py (formato .fwp para importar y exportar), stealth.py y browser.py (medidas anti-bot y
-                  Chrome con patchright) y catalog/ (paquetes incluidos)
+                  Chrome con patchright) y catalog/providers.fwp (todos los proveedores)
 scripts/          build_places.py (regenera el catálogo de aeropuertos desde OurAirports)
 frontend/         panel React + Vite + TypeScript (src/pages, src/components, src/api) y pruebas e2e
 tests/
