@@ -23,8 +23,8 @@ Catálogo
 --------
 Todos los proveedores que tenemos están en un solo paquete, `catalog/providers.fwp`, que el panel ofrece importar
 desde GitHub (`CATALOG_URL`; al importar se eligen cuáles). La primera vez que arranca la app (`seed()`) se crean
-los de `SEEDED` (Vueling y Ryanair, verificados) y, del resto, los que ya usara alguna vigilancia (Wizz Air y
-Google Flights de antes de la 1.7.0). Los paquetes antiguos del catálogo (`LEGACY`: incluidos.fwp,
+los de `SEEDED` (Vueling y Ryanair, verificados) y, del resto, los que ya usara alguna vigilancia (Wizz Air de
+antes de la 1.7.0). Los paquetes antiguos del catálogo (`LEGACY`: incluidos.fwp,
 sin-verificar.fwp, aireuropa.fwp) apuntan ahora a ese archivo, también los enlaces ya guardados.
 """
 from __future__ import annotations

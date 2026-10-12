@@ -22,7 +22,10 @@ y, según la cobertura elegida en el formulario:
 `api` (`ScriptApi`) hace las peticiones en el turno del proveedor: una a la vez y con pausas, 403/429/página
 anti-bot → bloqueado, 404 → None y copia en diagnóstico si está activo. Una petición que no responde en 30 s se
 repite una vez (otra vez sin respuesta → `ProviderTimeout`); para una web lenta, `timeout=` en segundos
-(`api.post_json(url, body, timeout=60)`, `api.get_json(url, timeout=60, **params)`, `api.request(…, timeout=60)`). En el espacio de nombres del script ya
+(`api.post_json(url, body, timeout=60)`, `api.get_json(url, timeout=60, **params)`, `api.request(…, timeout=60)`).
+`get_json`/`post_json` aceptan `headers=` y `api.cookie(name, url=None)` da el valor de una cookie de la sesión
+(de Chrome si las peticiones van por él), para las webs que piden copiarla en una cabecera (XSRF/CSRF). En el
+espacio de nombres del script ya
 están `date`, `datetime`, `timedelta`, `re`, `json`, `math`, `DayPrice`, `ProviderError`, `ProviderBlocked` y
 `add_months`. `api.log(…)` y `print(…)` escriben en el log del servidor y en la consola de la prueba del editor,
 que además muestra cada petición (URL, estado, tiempo, tamaño y forma del JSON) y en qué línea falla el script.
@@ -238,13 +241,27 @@ class ScriptApi:
             self._prov.trace("info", f"  JSON: {shape(data)}")
         return data
 
-    def get_json(self, url: str, timeout: float | None = None, **params):
-        """JSON de un GET (None si 404). `timeout`: segundos de espera (30 si no se indica)."""
-        return self._json(self.request("GET", url, params=params, timeout=timeout))
+    def get_json(self, url: str, timeout: float | None = None, headers: dict | None = None, **params):
+        """JSON de un GET (None si 404). `timeout`: segundos de espera (30 si no se indica); `headers`: cabeceras
+        de esta petición."""
+        extra = {"headers": headers} if headers else {}
+        return self._json(self.request("GET", url, params=params, timeout=timeout, **extra))
 
-    def post_json(self, url: str, body, timeout: float | None = None, **params):
-        """JSON de un POST con cuerpo JSON (None si 404). `timeout`: segundos de espera (30 si no se indica)."""
-        return self._json(self.request("POST", url, params=params, json=body, timeout=timeout))
+    def post_json(self, url: str, body, timeout: float | None = None, headers: dict | None = None, **params):
+        """JSON de un POST con cuerpo JSON (None si 404). `timeout`: segundos de espera (30 si no se indica);
+        `headers`: cabeceras de esta petición."""
+        extra = {"headers": headers} if headers else {}
+        return self._json(self.request("POST", url, params=params, json=body, timeout=timeout, **extra))
+
+    def cookie(self, name: str, url: str | None = None) -> str | None:
+        """Valor de la cookie `name` de la sesión, o None. Para las webs que piden copiar una cookie en una cabecera
+        (XSRF/CSRF). Con las peticiones por Chrome, la de Chrome (abre la página si hace falta); si no, la de la
+        sesión (con medidas anti-bot y `url`, tras visitar su portada)."""
+        prov = self._prov
+        reader = getattr(self.session, "cookie", None)
+        value = reader(name, url) if callable(reader) else stealth.jar_value(self.session.cookies, name)
+        prov.trace("info", f"  cookie {name}: " + (f"sí ({len(value)} caracteres)" if value else "no está"))
+        return value
 
     def log(self, *parts):
         """Mensaje para el log del servidor y para la consola de la prueba del editor."""

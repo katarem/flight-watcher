@@ -2,7 +2,7 @@
 
 Importar **después** de fijar DATA_DIR (app.config lo lee al importarse). Sustituye el navegador, los
 proveedores conocidos (precios y cobertura simulados, sin red ni pausas: los scripts de Vueling, Ryanair, Wizz Air y
-Google Flights se cargan de verdad, pero sus llamadas a la web se cambian por las de aquí), las descargas de
+el Buscador de pruebas se cargan de verdad, pero sus llamadas a la web se cambian por las de aquí), las descargas de
 paquetes de proveedores (sirve los incluidos desde el repositorio), el cambio de divisas del BCE y el envío de
 avisos (se guardan en SENT/TARGETS). Los demás scripts (los que crean los tests) se ejecutan tal cual.
 """
@@ -51,10 +51,10 @@ class MockWebProvider(CalendarProvider):
 
 # 2.º día, el más barato. Wizz Air cobra en florines (HUF; 1 € = 400 HUF en el cambio simulado).
 PRICES = {"vueling": [55, 30, 70], "ryanair": [60, 45, 80], "mockweb": [120, 95, 140],
-          "wizzair": [24000, 12000, 30000], "google": [90, 70, 85]}
+          "wizzair": [24000, 12000, 30000], "buscador": [90, 70, 85]}
 CURRENCY = {"wizzair": "HUF"}
 # Con TCI el checker consulta TFN y TFS: Vueling solo opera TFN y Ryanair solo TFS (como en la realidad).
-# Wizz Air solo vuela entre BCN y BUD. Google Flights y MockWeb, cualquier ruta.
+# Wizz Air solo vuela entre BCN y BUD. El Buscador y MockWeb, cualquier ruta.
 OPERATES = {"vueling": {"TFN"}, "ryanair": {"TFS"}, "wizzair": {"BCN", "BUD"}}
 RATES = {"date": "2026-10-09", "rates": {"USD": 1.1, "HUF": 400.0, "GBP": 0.85}}
 #: Pares por los que se ha preguntado a cada proveedor (para comprobar la caché y el paralelismo).
@@ -81,7 +81,7 @@ def _blocked(key):
 #: Precios a medida por proveedor (el servidor de e2e pone unos meses de precios variados).
 FETCH: dict = {}
 #: Proveedores cuyas llamadas a la web se simulan aquí.
-FAKE_KEYS = {"vueling", "ryanair", "wizzair", "google", "mockweb"}
+FAKE_KEYS = {"vueling", "ryanair", "wizzair", "buscador", "mockweb"}
 
 
 def make_fetch(key):
@@ -92,7 +92,7 @@ def make_fetch(key):
         if not operates(key, origin, destination):
             return []
         return [DayPrice(TODAY + timedelta(days=10 + i), p, currency=CURRENCY.get(key, "EUR"), origin=origin,
-                         destination=destination, stops=1 if key == "google" and i == 1 else 0)
+                         destination=destination, stops=1 if key == "buscador" and i == 1 else 0)
                 for i, p in enumerate(PRICES.get(key, [100, 90, 110]))]
     return fetch
 
@@ -130,12 +130,21 @@ def fake_fx_fetch():
     return {**RATES, "fetched_at": datetime.now().isoformat(timespec="seconds")}
 
 
+#: Buscador de pruebas: cubre cualquier ruta (como mucho 12 pares) y recibe el máximo de escalas, lo que no hace
+#: ninguna aerolínea del catálogo. Solo existe en los tests; sus llamadas a la web se simulan como las de los demás.
+BUSCADOR = bundle.dumps([{
+    "key": "buscador", "label": "Buscador", "color": "#1a73e8", "coverage": "universal", "max_routes": 12,
+    "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://buscador.test/{origin}/{destination}/{date}",
+    "notes": "Solo para los tests.", "min_interval": 0, "stealth": 0,
+    "code": "def fetch_route(api, origin, destination, start, max_months, max_stops=None):\n    return {}\n",
+}])
+
+
 def import_extra():
-    """Wizz Air y Google Flights (del catálogo) directamente en la BD, como si se hubieran importado."""
+    """Wizz Air (del catálogo) y el Buscador directamente en la BD, como si se hubieran importado."""
+    catalog = [p for p in bundle.loads(bundle.CATALOG.read_text("utf-8")) if p["key"] == "wizzair"]
     with db.connect() as con:
-        for p in bundle.loads(bundle.CATALOG.read_text("utf-8")):
-            if p["key"] not in ("wizzair", "google"):
-                continue
+        for p in catalog + bundle.loads(BUSCADOR):
             if not db.get_provider_script(con, p["key"]):
                 db.save_provider_script(con, p["key"], bundle.values(p) | {"enabled": 1}, "admin")
     scripted.reload()

@@ -93,7 +93,7 @@ test.describe('panel', () => {
     await expect(webs.getByText('Vueling no opera esta ruta.')).toBeVisible()
     await expect(webs.getByRole('checkbox', { name: 'Vueling' })).toBeDisabled()
     await expect(webs.getByRole('checkbox', { name: 'MockWeb' })).toBeChecked()
-    await webs.getByRole('checkbox', { name: /Google Flights/ }).click()
+    await webs.getByRole('checkbox', { name: 'Buscador' }).click()
     await page.getByLabel('Escalas').selectOption({ label: 'Hasta 1 escala' })
     await page.getByLabel('Si cuesta como mucho (€)').fill('35')
     await expectAccessible(page)

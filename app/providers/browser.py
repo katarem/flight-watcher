@@ -207,6 +207,14 @@ class BrowserFetch:
             self.trace("info", "  Chrome: la API no admite cookies desde esta página (CORS); las peticiones van sin ellas")
         return BrowserResponse(result)
 
+    def cookie(self, page_url: str, name: str) -> str | None:
+        """Valor de la cookie `name` que Chrome manda a la página (que se abre si aún no lo está)."""
+        page = self.page_for(page_url)
+        for c in self._ctx.cookies(page.url):
+            if c["name"] == name:
+                return c["value"]
+        return None
+
     def close(self):
         try:
             if self._ctx is not None:

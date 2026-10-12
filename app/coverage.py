@@ -3,7 +3,7 @@
 Tres formas, declaradas por cada proveedor (`Provider.coverage`):
 - «network»: publica su red de rutas; se descarga por aeropuerto de origen (en memoria 1 h).
 - «probe»: se le pregunta por cada par (Vueling: un 404 es que no la opera).
-- «universal»: cubre cualquier ruta (Google Flights), con un máximo de pares (`max_routes`).
+- «universal»: cubre cualquier ruta (un buscador de todas las aerolíneas), con un máximo de pares (`max_routes`).
 
 Las respuestas se guardan en `provider_routes`. Al crear una vigilancia, `check_many` consulta los
 proveedores en paralelo con un tiempo límite por proveedor; cada semana `revalidate` repasa las

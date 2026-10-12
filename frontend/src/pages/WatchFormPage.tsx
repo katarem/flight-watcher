@@ -241,7 +241,7 @@ function WatchForm({ initial, watchId, trips = [], forTrip }: {
             <RefreshCw /> Volver a comprobar
           </Button>
         )}
-        <Field label="Escalas" hint="Las aerolíneas solo venden sus vuelos directos; con escalas solo busca Google Flights.">
+        <Field label="Escalas" hint="La mayoría de las webs solo venden vuelos directos; Air Europa y Binter también con escala.">
           {(id, hint) => (
             <Select id={id} aria-describedby={hint} value={f.max_stops} onChange={(e) => set('max_stops', e.target.value)}
               className="sm:max-w-64">

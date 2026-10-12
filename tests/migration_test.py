@@ -42,7 +42,7 @@ def main():
               "VALUES (1, 'admin', 'Admin', 'x', 'admin', 1, 1, '2026-01-01T00:00:00')")
     c.execute("INSERT INTO watches(id, user_id, name, origin, destination, providers, discount_pct, enabled, created_at) "
               "VALUES (1, 1, 'Sevilla → Tenerife', 'SVQ', 'TCI', 'vueling,ryanair', 30, 1, '2026-01-01'), "
-              "(2, 1, 'Madrid → Barcelona', 'MAD', 'BCN', 'vueling,google', 30, 0, '2026-01-01')")
+              "(2, 1, 'Madrid → Barcelona', 'MAD', 'BCN', 'vueling,wizzair', 30, 0, '2026-01-01')")
     c.execute("INSERT INTO settings(key, value) VALUES ('link_vueling', 'https://www.vueling.com/x?d={date}'), "
               "('link_ryanair', ''), ('schedule_hours', '9')")
     c.execute("INSERT INTO channels(id, user_id, kind, name, config, enabled, created_at) "
@@ -69,7 +69,7 @@ def main():
           and w1["coverage"]["vueling"]["checked_at"] is None and w1["coverage"]["vueling"]["active"],
           "el CSV de proveedores pasa a watch_providers (todos los pares, sin comprobar)")
     check(w2["coverage"]["vueling"]["routes"] == [("MAD", "BCN")] and w1["max_stops"] == 0 == w2["max_stops"]
-          and set(w2["coverage"]) == {"vueling", "google"},
+          and set(w2["coverage"]) == {"vueling", "wizzair"},
           "vigilancias sin ciudades y máximo de escalas 0 (como antes)")
     with db.connect() as con:
         check(db.latest_snapshot(con, 1, "vueling")[0]["orig_price"] is None, "los precios antiguos quedan en euros")
@@ -79,12 +79,12 @@ def main():
     with db.connect() as con:
         rows = {r["key"]: r for r in db.list_provider_scripts(con)}
     settings = dict(c.execute("SELECT key, value FROM settings").fetchall())
-    check(created == ["vueling", "ryanair", "google"] and set(rows) == {"vueling", "ryanair", "google"}
+    check(created == ["vueling", "ryanair", "wizzair"] and set(rows) == {"vueling", "ryanair", "wizzair"}
           and rows["vueling"]["link_template"] == "https://www.vueling.com/x?d={date}"
           and rows["ryanair"]["link_template"].startswith("https://www.ryanair.com/")
           and not any(k.startswith("link_") for k in settings) and settings["schedule_hours"] == "9"
           and settings[bundle.SEED_FLAG] == "1" and bundle.seed() == [],
-          "al arrancar: Vueling, Ryanair y el Google que ya se usaba, con la plantilla de Ajustes (una sola vez)")
+          "al arrancar: Vueling, Ryanair y el Wizz Air que ya se usaba, con la plantilla de Ajustes (una sola vez)")
     with db.connect() as con:
         tid = db.create_trip(con, 1, {"name": "Viaje", "outbound_id": 1, "return_id": 2, "min_nights": 2, "max_nights": 4,
                                       "date_from": None, "date_to": None, "max_total": None, "discount_pct": 30,
@@ -109,7 +109,7 @@ def main():
           "downgrade a 0004 quita los viajes sin tocar lo demás")
     migrate("0003", down=True)
     check(counts() == before and dict(c.execute("SELECT id, providers FROM watches").fetchall())
-          == {1: "ryanair,vueling", 2: "google,vueling"}, "downgrade a 0003 recupera el CSV sin perder filas")
+          == {1: "ryanair,vueling", 2: "vueling,wizzair"}, "downgrade a 0003 recupera el CSV sin perder filas")
     db.init()
     check(counts() == before, "y vuelta a head")
     print("\nTodo correcto.")
