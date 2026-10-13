@@ -78,11 +78,23 @@ export function fmtStops(stops: number | null | undefined): string {
   return stops === 0 ? 'directo' : `${stops} ${stops === 1 ? 'escala' : 'escalas'}`
 }
 
-/** Moneda original y escalas de un precio en una frase corta (vacía si es en euros y directo). */
-export function priceExtras(p: { currency?: string; orig_price?: number | null; stops?: number | null }): string {
+/** «06:35–08:10», «22:40–00:15 (+1)», «sale 06:35» o '' (el mismo criterio que `fmt_clock` de los avisos). */
+export function fmtClock(departs: string | null | undefined, arrives?: string | null): string {
+  if (!departs) return arrives ? `llega ${arrives.slice(11, 16)}` : ''
+  if (!arrives) return `sale ${departs.slice(11, 16)}`
+  const days = Math.round((parseDay(arrives).getTime() - parseDay(departs).getTime()) / 86_400_000)
+  return `${departs.slice(11, 16)}–${arrives.slice(11, 16)}${days > 0 ? ` (+${days})` : ''}`
+}
+
+/** Moneda original, escalas y horas de un precio en una frase corta (vacía si es en euros, directo y sin horas). */
+export function priceExtras(p: {
+  currency?: string; orig_price?: number | null; stops?: number | null; departs_at?: string | null; arrives_at?: string | null
+}): string {
   const parts = []
   if (p.currency && p.currency !== 'EUR' && p.orig_price != null) parts.push(fmtMoney(p.orig_price, p.currency))
   if (p.stops) parts.push(fmtStops(p.stops))
+  const clock = fmtClock(p.departs_at, p.arrives_at)
+  if (clock) parts.push(clock)
   return parts.join(' · ')
 }
 

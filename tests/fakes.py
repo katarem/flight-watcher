@@ -6,6 +6,7 @@ el Buscador de pruebas se cargan de verdad, pero sus llamadas a la web se cambia
 paquetes de proveedores (sirve los incluidos desde el repositorio), el cambio de divisas del BCE y el envío de
 avisos (se guardan en SENT/TARGETS). Los demás scripts (los que crean los tests) se ejecutan tal cual.
 """
+import json
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 
@@ -113,8 +114,12 @@ def make_probe(key):
     return probe
 
 
-def fake_send(channels, lines):
-    SENT.append((list(lines["markdown"]), list(lines["html"])))
+def fake_send(channels, msg):
+    """Guarda cómo se pintaría el aviso: (líneas de Discord, líneas de Telegram, el `Message`). Las de Discord son el
+    texto del mensaje (el título, la primera) y los `embeds` en JSON; las de Telegram, el HTML y el teclado en JSON."""
+    texts, keyboard = notify.telegram_parts(msg)
+    SENT.append((msg.text().split("\n") + [json.dumps(notify.discord_payloads(msg), ensure_ascii=False)],
+                 "\n".join(texts).split("\n") + [json.dumps(keyboard, ensure_ascii=False)], msg))
     TARGETS.append(tuple(c["name"] for c in channels))
     return [c["name"] for c in channels], []
 

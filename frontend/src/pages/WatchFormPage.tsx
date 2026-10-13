@@ -5,7 +5,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { ApiError, del, errorList, get, post, put } from '@/api/client'
 import { keys, useChannels, useMeta, useWatch } from '@/api/queries'
-import type { Place, ProviderMeta, RouteCheck, RouteCheckProvider, Watch } from '@/api/types'
+import type { KindKey, Place, ProviderMeta, RouteCheck, RouteCheckProvider, Watch } from '@/api/types'
 import { Button, buttonClass } from '@/components/ui/button'
 import { Badge, PageHeader } from '@/components/ui/card'
 import { ConfirmDialog } from '@/components/ui/dialog'
@@ -14,6 +14,7 @@ import { Checkbox, Field, FormSection, Input, Select, Switch } from '@/component
 import { PlaceCombobox } from '@/components/watch/PlaceCombobox'
 import { cn } from '@/lib/cn'
 import { useTitle } from '@/lib/hooks'
+import { kindSection, useKind, watchPath } from '@/lib/kinds'
 
 interface FormState {
   name: string
@@ -92,7 +93,8 @@ function ProviderOption({ p, checked, onChange, result, checking, kept }: {
   )
 }
 
-function WatchForm({ initial, watchId, trips = [], forTrip }: {
+function WatchForm({ kind, initial, watchId, trips = [], forTrip }: {
+  kind: KindKey
   initial: FormState
   watchId?: number
   /** Viajes de los que es tramo (se borran con ella). */
@@ -102,6 +104,10 @@ function WatchForm({ initial, watchId, trips = [], forTrip }: {
 }) {
   const isNew = watchId == null
   const meta = useMeta().data
+  const k = useKind(kind)
+  const section = kindSection(kind)
+  // Solo las webs de este transporte (una vigilancia de vuelos no consulta las de trenes).
+  const providers = (meta?.providers ?? []).filter((p) => p.kind === kind)
   const channelData = useChannels('').data
   const channels = channelData ?? []
   const qc = useQueryClient()
@@ -115,8 +121,8 @@ function WatchForm({ initial, watchId, trips = [], forTrip }: {
   // Comprobación de la ruta: qué webs la operan (en paralelo en el servidor, con tiempo límite por web).
   const routeKey = ready(f.origin, f.originPlace) && ready(f.destination, f.destinationPlace) ? `${f.origin}|${f.destination}` : ''
   const check = useQuery({
-    queryKey: ['route-check', routeKey],
-    queryFn: () => post<RouteCheck>('/route-check', { origin: f.origin, destination: f.destination }),
+    queryKey: ['route-check', kind, routeKey],
+    queryFn: () => post<RouteCheck>('/route-check', { kind, origin: f.origin, destination: f.destination }),
     enabled: !!routeKey,
     staleTime: 5 * 60_000,
     retry: false,
@@ -151,7 +157,7 @@ function WatchForm({ initial, watchId, trips = [], forTrip }: {
         return kept.has(k) || !r || (r.status !== 'none' && r.status !== 'too_many')
       })
       const body = {
-        name: f.name, origin: f.origin, destination: f.destination, providers, max_price: f.max_price || null,
+        kind, name: f.name, origin: f.origin, destination: f.destination, providers, max_price: f.max_price || null,
         discount_pct: f.discount_pct, date_from: f.date_from || null, date_to: f.date_to || null,
         max_stops: f.max_stops, enabled: f.enabled, channel_ids: f.channel_ids,
       }
@@ -162,7 +168,7 @@ function WatchForm({ initial, watchId, trips = [], forTrip }: {
       toast.success(isNew ? 'Vigilancia creada' : 'Cambios guardados', {
         description: isNew ? 'Pulsa «Comprobar ahora» para traer los primeros precios.' : undefined,
       })
-      navigate(isNew && forTrip ? `/trips/new?outbound=${forTrip}&return=${watch.id}` : `/watches/${watch.id}`)
+      navigate(isNew && forTrip ? `/trips/new?outbound=${forTrip}&return=${watch.id}` : watchPath(watch.kind, watch.id))
     },
     onError: (e) => {
       setErrors(errorList(e))
@@ -176,7 +182,7 @@ function WatchForm({ initial, watchId, trips = [], forTrip }: {
       qc.removeQueries({ queryKey: keys.watch(watchId!) })
       qc.invalidateQueries({ queryKey: keys.watches })
       toast.success('Vigilancia eliminada junto con su histórico')
-      navigate('/')
+      navigate(section)
     },
     onError: (e) => toast.error(errorList(e)[0]),
   })
@@ -198,7 +204,7 @@ function WatchForm({ initial, watchId, trips = [], forTrip }: {
           {(id) => <Input id={id} value={f.name} onChange={(e) => set('name', e.target.value)} placeholder="Sevilla → Tenerife" maxLength={200} />}
         </Field>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
-          <PlaceCombobox key={`o${swaps}`} label="Origen" code={f.origin} place={f.originPlace} placeholder="Sevilla, SVQ…"
+          <PlaceCombobox key={`o${swaps}`} kind={kind} label="Origen" code={f.origin} place={f.originPlace} placeholder="Sevilla, SVQ…"
             onChange={(code, place) => setF((s) => ({ ...s, origin: code, originPlace: place }))} />
           <Button variant="ghost" size="icon" className="self-center sm:mt-7" aria-label="Intercambiar origen y destino"
             onClick={() => {
@@ -208,12 +214,13 @@ function WatchForm({ initial, watchId, trips = [], forTrip }: {
             }}>
             <ArrowLeftRight className="rotate-90 sm:rotate-0" />
           </Button>
-          <PlaceCombobox key={`d${swaps}`} label="Destino" code={f.destination} place={f.destinationPlace} placeholder="Tenerife, TCI…"
+          <PlaceCombobox key={`d${swaps}`} kind={kind} label="Destino" code={f.destination} place={f.destinationPlace} placeholder="Tenerife, TCI…"
             onChange={(code, place) => setF((s) => ({ ...s, destination: code, destinationPlace: place }))} />
         </div>
         <p className="text-xs text-muted">
-          Una ciudad, un país o un grupo buscan en todos sus aeropuertos a la vez (p. ej. <code className="font-mono">TCI</code> =
-          Tenerife Norte y Sur) y se quedan con el más barato de cada día. Como mucho {meta?.max_pairs ?? 60} combinaciones de aeropuertos.
+          Una ciudad, un país o un grupo buscan en todos sus {k.node === 'airport' ? 'aeropuertos' : 'lugares'} a la vez (p. ej.{' '}
+          <code className="font-mono">TCI</code> = Tenerife Norte y Sur) y se quedan con el más barato de cada día. Como mucho{' '}
+          {meta?.max_pairs ?? 60} combinaciones de origen y destino.
         </p>
         <p className="text-xs text-muted">
           ¿Ida y vuelta? Crea las dos vigilancias y júntalas en un{' '}
@@ -223,11 +230,11 @@ function WatchForm({ initial, watchId, trips = [], forTrip }: {
 
       <FormSection
         title="Webs a vigilar"
-        description={check.data ? `Comprobado para ${check.data.pairs.length === 1 ? 'la ruta' : `${check.data.pairs.length} combinaciones de aeropuertos`}.` : undefined}
+        description={check.data ? `Comprobado para ${check.data.pairs.length === 1 ? 'la ruta' : `${check.data.pairs.length} combinaciones de origen y destino`}.` : undefined}
       >
         <ErrorBox errors={checkError} />
         <div className="grid gap-2 sm:grid-cols-2" role="group" aria-label="Webs a vigilar" aria-busy={check.isFetching || undefined}>
-          {meta?.providers.map((p) => (
+          {providers.map((p) => (
             <ProviderOption key={p.key} p={p} checked={f.providers.includes(p.key)} result={check.isFetching ? undefined : results.get(p.key)}
               checking={check.isFetching} kept={kept.has(p.key)}
               onChange={(v) => {
@@ -241,7 +248,7 @@ function WatchForm({ initial, watchId, trips = [], forTrip }: {
             <RefreshCw /> Volver a comprobar
           </Button>
         )}
-        <Field label="Escalas" hint="La mayoría de las webs solo venden vuelos directos; Air Europa y Binter también con escala.">
+        <Field label="Escalas" hint={`La mayoría de las webs solo venden ${k.plural} directos; algunas (como Air Europa o Binter) también con escala.`}>
           {(id, hint) => (
             <Select id={id} aria-describedby={hint} value={f.max_stops} onChange={(e) => set('max_stops', e.target.value)}
               className="sm:max-w-64">
@@ -268,7 +275,7 @@ function WatchForm({ initial, watchId, trips = [], forTrip }: {
         </div>
       </FormSection>
 
-      <FormSection title="Fechas de vuelo" description="Sin límites se comprueban todas las fechas con precio desde hoy.">
+      <FormSection title={`Fechas de ${k.noun}`} description="Sin límites se comprueban todas las fechas con precio desde hoy.">
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Desde (opcional)">
             {(id) => <Input id={id} type="date" value={f.date_from} onChange={(e) => set('date_from', e.target.value)} />}
@@ -305,7 +312,7 @@ function WatchForm({ initial, watchId, trips = [], forTrip }: {
 
       <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" loading={save.isPending}>{isNew ? 'Crear vigilancia' : 'Guardar cambios'}</Button>
-        <Link to={isNew ? '/' : `/watches/${watchId}`} className={buttonClass('ghost')}>Cancelar</Link>
+        <Link to={isNew ? section : watchPath(kind, watchId)} className={buttonClass('ghost')}>Cancelar</Link>
         {!isNew && (
           <div className="ml-auto">
             <ConfirmDialog
@@ -333,7 +340,7 @@ const BLANK: FormState = {
 const fetchPlace = (code: string) =>
   code ? get<{ place: Place }>(`/places/${encodeURIComponent(code)}`).then((r) => r.place, () => null) : Promise.resolve(null)
 
-export function WatchFormPage() {
+export function WatchFormPage({ kind = 'flight' }: { kind?: KindKey }) {
   const params = useParams()
   const [search] = useSearchParams()
   const id = params.id ? Number(params.id) : undefined
@@ -363,7 +370,7 @@ export function WatchFormPage() {
         title={id ? 'Editar vigilancia' : 'Nueva vigilancia'}
         description={id ? existing.data?.watch.name : 'Elige la ruta, las webs y cuándo quieres que te avisemos.'}
       />
-      <WatchForm key={id ?? 'new'} initial={initial} watchId={id} trips={existing.data?.trips} forTrip={search.get('for_trip')} />
+      <WatchForm key={id ?? 'new'} kind={existing.data?.watch.kind ?? kind} initial={initial} watchId={id} trips={existing.data?.trips} forTrip={search.get('for_trip')} />
     </div>
   )
 }

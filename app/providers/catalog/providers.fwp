@@ -1,7 +1,7 @@
 #flight-watcher:proveedores v1 separador=%%fw%%
-# 6 proveedores exportados el 2026-10-12 desde flight-watcher 1.8.2.
+# 6 proveedores exportados el 2026-10-13 desde flight-watcher 1.9.0.
 # Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual.
-%%fw%% {"key": "vueling", "label": "Vueling", "color": "#e8a800", "coverage": "probe", "max_routes": null, "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://tickets.vueling.com/booking?o={origin}&d={destination}&dd={date}&adt=1&chd=0&inf=0&c=es-ES&cur=EUR", "notes": "Calendario de ~1 año en una petición. Verificado contra la web real el 2026-09-30. Bloquea las IP de centros de datos: ejecutar desde una IP residencial. Residentes en islas/Ceuta: añade &dt=1 a la plantilla de enlace.", "min_interval": 1.5, "stealth": 0}
+%%fw%% {"key": "vueling", "kind": "flight", "label": "Vueling", "color": "#e8a800", "coverage": "probe", "max_routes": null, "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://tickets.vueling.com/booking?o={origin}&d={destination}&dd={date}&adt=1&chd=0&inf=0&c=es-ES&cur=EUR", "notes": "Calendario de ~1 año en una petición. Verificado contra la web real el 2026-09-30. Bloquea las IP de centros de datos: ejecutar desde una IP residencial. Residentes en islas/Ceuta: añade &dt=1 a la plantilla de enlace.", "min_interval": 1.5, "stealth": 0}
 """Vueling.
 
 Precios: API JSON pública que usa la propia web para pintar el calendario (`apiw.vueling.com/api/v1/availability`).
@@ -37,7 +37,7 @@ def fetch_route(api, origin, destination, start, max_months):
         if start <= day < end:
             out[day] = min(float(row["price"]), out.get(day, math.inf))
     return out
-%%fw%% {"key": "ryanair", "label": "Ryanair", "color": "#073590", "coverage": "network", "max_routes": null, "health_origin": "SVQ", "health_destination": "BCN", "link_template": "https://www.ryanair.com/es/es/trip/flights/select?adults=1&teens=0&children=0&infants=0&dateOut={date}&isReturn=false&originIata={origin}&destinationIata={destination}", "notes": "Tarifas por mes de la API del calendario y red de rutas del buscador de la web. Solo vuelos directos. Precios verificados el 2026-09-30 (la red de rutas, sin verificar).", "min_interval": 1.5, "stealth": 0}
+%%fw%% {"key": "ryanair", "kind": "flight", "label": "Ryanair", "color": "#073590", "coverage": "network", "max_routes": null, "health_origin": "SVQ", "health_destination": "BCN", "link_template": "https://www.ryanair.com/es/es/trip/flights/select?adults=1&teens=0&children=0&infants=0&dateOut={date}&isReturn=false&originIata={origin}&destinationIata={destination}", "notes": "Tarifas por mes de la API del calendario y red de rutas del buscador de la web. Solo vuelos directos. Precios verificados el 2026-09-30 (la red de rutas, sin verificar). Guarda la hora de salida y de llegada de cada precio (desde la 1.9, sin verificar aún contra la web real).", "min_interval": 1.5, "stealth": 0}
 """Ryanair.
 
 Precios: API JSON pública de tarifas (`/api/farfnd/v4/oneWayFares/.../cheapestPerDay`), la misma que pinta el
@@ -47,12 +47,19 @@ ciudad (TCI): el checker ya los expande a aeropuertos.
 Cobertura «network»: la red de rutas que usa el buscador de la web
 (`/api/views/locate/searchWidget/routes/es/airport/{origen}`): los destinos directos desde un aeropuerto.
 
+Cada tarifa trae la salida y la llegada de ese vuelo (`departureDate`/`arrivalDate`): se guardan con el precio.
+
 Si la ruta no existe, la API de tarifas devuelve todos los días sin precio: se trata como «sin precios», no como
 error de la web. La ruta SVQ↔TFS es estacional (en invierno no hay precios).
 """
 
 API_URL = "https://www.ryanair.com/api/farfnd/v4/oneWayFares/{origin}/{destination}/cheapestPerDay"
 ROUTES_URL = "https://www.ryanair.com/api/views/locate/searchWidget/routes/es/airport/{origin}"
+
+
+def moment(value):
+    """Salida o llegada del vuelo más barato del día («2026-11-03T06:35:00»), si la trae."""
+    return value if isinstance(value, str) and "T" in value else None
 
 
 def network(api, origin):
@@ -80,9 +87,10 @@ def fetch_route(api, origin, destination, start, max_months):
                 continue
             day = date.fromisoformat(fare["day"])
             if day >= start and (day not in out or float(value) < out[day].price):
-                out[day] = DayPrice(day, float(value), currency=(price.get("currencyCode") or "EUR").upper())
+                out[day] = DayPrice(day, float(value), currency=(price.get("currencyCode") or "EUR").upper(),
+                                    departure=moment(fare.get("departureDate")), arrival=moment(fare.get("arrivalDate")))
     return out
-%%fw%% {"key": "wizzair", "label": "Wizz Air", "color": "#c6007e", "coverage": "network", "max_routes": null, "health_origin": "BCN", "health_destination": "BUD", "link_template": "https://wizzair.com/es-es/booking/select-flight/{origin}/{destination}/{date}/null/1/0/0/null", "notes": "Verificado contra la web real el 2026-10-12 (BCN→BUD). Mapa de rutas y calendario por mes de la API de la web; la versión de la API sale de la portada, que necesita la huella de Chrome. Precios en la moneda de salida (se pasan a euros).", "min_interval": 1.5, "stealth": 1}
+%%fw%% {"key": "wizzair", "kind": "flight", "label": "Wizz Air", "color": "#c6007e", "coverage": "network", "max_routes": null, "health_origin": "BCN", "health_destination": "BUD", "link_template": "https://wizzair.com/es-es/booking/select-flight/{origin}/{destination}/{date}/null/1/0/0/null", "notes": "Verificado contra la web real el 2026-10-12 (BCN→BUD). Mapa de rutas y calendario por mes de la API de la web; la versión de la API sale de la portada, que necesita la huella de Chrome. Precios en la moneda de salida (se pasan a euros). Si ese día hay un solo vuelo, guarda su hora de salida (desde la 1.9, sin verificar aún contra la web real).", "min_interval": 1.5, "stealth": 1}
 """Wizz Air (verificado contra la web real el 2026-10-12).
 
 Sin navegador, con las APIs JSON que usa wizzair.com:
@@ -92,7 +100,8 @@ Sin navegador, con las APIs JSON que usa wizzair.com:
   `wizzair.com/buildnumber` ya no existe (404 desde 2026).
 - Cobertura «network»: `{api}/Api/asset/map?languageCode=es-es` lista las ciudades con sus conexiones directas.
 - Precios: `POST {api}/Api/search/timetable` con un tramo de fechas (un mes por petición). Devuelve el precio
-  más bajo por día en la moneda del aeropuerto de salida (HUF, PLN, EUR…): el panel lo pasa a euros.
+  más bajo por día en la moneda del aeropuerto de salida (HUF, PLN, EUR…): el panel lo pasa a euros. Si ese día
+  solo hay un vuelo, también su hora de salida (`departureDates`).
 
 La portada responde 405 a quien no parece un navegador, así que necesita «Medidas anti-bot» con la huella de
 Chrome. La API (be.wizzair.com) responde también sin ellas.
@@ -164,9 +173,12 @@ def fetch_route(api, origin, destination, start, max_months):
                 continue
             day = date.fromisoformat(str(f.get("departureDate", ""))[:10])
             if day >= start and (day not in out or float(amount) < out[day].price):
-                out[day] = DayPrice(day, float(amount), currency=(price.get("currencyCode") or "EUR").upper())
+                # `departureDates`: salidas de ese día. Con una sola, es la del precio; con varias no se sabe cuál.
+                times = [t for t in f.get("departureDates") or [] if isinstance(t, str) and "T" in t]
+                out[day] = DayPrice(day, float(amount), currency=(price.get("currencyCode") or "EUR").upper(),
+                                    departure=times[0] if len(times) == 1 else None)
     return out
-%%fw%% {"key": "aireuropa", "label": "Air Europa", "color": "#2d69e1", "coverage": "probe", "max_routes": null, "health_origin": "SVQ", "health_destination": "MAD", "link_template": "https://www.aireuropa.com/es/es/home", "notes": "Sin verificar desde el servidor (2026-10-12): API de Amadeus (api-des.aireuropa.com) vista en la web real. Calendario de 31 días por petición, escalas incluidas; solo sabe filtrar «solo directos». Rellena CLIENT_ID y CLIENT_SECRET en el script (su cabecera dice de dónde salen). Necesita «Siempre Chrome».", "min_interval": 2.0, "stealth": 2}
+%%fw%% {"key": "aireuropa", "kind": "flight", "label": "Air Europa", "color": "#2d69e1", "coverage": "probe", "max_routes": null, "health_origin": "SVQ", "health_destination": "MAD", "link_template": "https://www.aireuropa.com/es/es/home", "notes": "Sin verificar desde el servidor (2026-10-12): API de Amadeus (api-des.aireuropa.com) vista en la web real. Calendario de 31 días por petición, escalas incluidas; solo sabe filtrar «solo directos». Rellena CLIENT_ID y CLIENT_SECRET en el script (su cabecera dice de dónde salen). Necesita «Siempre Chrome».", "min_interval": 2.0, "stealth": 2}
 """Air Europa (sin verificar contra la API real desde el servidor: pruébalo desde la IP donde corre el panel).
 
 El buscador de aireuropa.com manda al motor de reservas de Amadeus (digital.aireuropa.com), que pide los precios a
@@ -315,7 +327,7 @@ def fetch_route(api, origin, destination, start, max_months, max_stops=None):
                 out[d] = DayPrice(d, price, currency=currency, stops=0 if direct else None)
         lo += timedelta(days=WINDOW)
     return out
-%%fw%% {"key": "iberiaexpress", "label": "Iberia Express", "color": "#c8102e", "coverage": "network", "max_routes": null, "health_origin": "MAD", "health_destination": "TFN", "link_template": "https://booking.iberiaexpress.com/?triptype=OW&from={origin}&to={destination}&depdate={date}&retdate={date}&exactdates=0&adt=1&chd=0&inf=0", "notes": "Verificado contra la web real el 2026-10-12 (MAD→TFN, desde una IP residencial): calendario de dos meses por petición y red de rutas del buscador de iberiaexpress.com. Solo vuelos directos. Trabaja por ciudades: con varios aeropuertos (Tenerife) el precio se guarda con el de la ciudad (TCI). Necesita «Siempre Chrome».", "min_interval": 2.0, "stealth": 2}
+%%fw%% {"key": "iberiaexpress", "kind": "flight", "label": "Iberia Express", "color": "#c8102e", "coverage": "network", "max_routes": null, "health_origin": "MAD", "health_destination": "TFN", "link_template": "https://booking.iberiaexpress.com/?triptype=OW&from={origin}&to={destination}&depdate={date}&retdate={date}&exactdates=0&adt=1&chd=0&inf=0", "notes": "Verificado contra la web real el 2026-10-12 (MAD→TFN, desde una IP residencial): calendario de dos meses por petición y red de rutas del buscador de iberiaexpress.com. Solo vuelos directos. Trabaja por ciudades: con varios aeropuertos (Tenerife) el precio se guarda con el de la ciudad (TCI). Necesita «Siempre Chrome».", "min_interval": 2.0, "stealth": 2}
 """Iberia Express (verificado contra la web real el 2026-10-12, MAD→TCI).
 
 Con las APIs JSON del buscador de iberiaexpress.com, las mismas que pintan su calendario de precios:
@@ -431,7 +443,7 @@ def fetch_route(api, origin, destination, start, max_months):
                     if day >= start and (day not in out or price < out[day].price):
                         out[day] = DayPrice(day, float(price), origin=o, destination=d)
     return out
-%%fw%% {"key": "binter", "label": "Binter", "color": "#2bff00", "coverage": "probe", "max_routes": null, "health_origin": "TFN", "health_destination": "SVQ", "link_template": "", "notes": "Verificado contra la web real el 2026-10-12 (TFN→SVQ, desde una IP residencial, sin medidas anti-bot): GraphQL de su web, lento (de 3 a 15 s por consulta). Directos y, si la vigilancia admite escalas, conexiones. Con «Siempre Chrome» sin ventana, Cloudflare da 403 a la portada: déjalo en «Ninguna».", "min_interval": 1.5, "stealth": 0}
+%%fw%% {"key": "binter", "kind": "flight", "label": "Binter", "color": "#2bff00", "coverage": "probe", "max_routes": null, "health_origin": "TFN", "health_destination": "SVQ", "link_template": "", "notes": "Verificado contra la web real el 2026-10-12 (TFN→SVQ, desde una IP residencial, sin medidas anti-bot): GraphQL de su web, lento (de 3 a 15 s por consulta). Directos y, si la vigilancia admite escalas, conexiones. Con «Siempre Chrome» sin ventana, Cloudflare da 403 a la portada: déjalo en «Ninguna».", "min_interval": 1.5, "stealth": 0}
 """Proveedor Binter (bintercanarias.com).
 
 La web es una SPA Angular que consulta un GraphQL público:

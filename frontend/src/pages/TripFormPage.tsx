@@ -12,6 +12,7 @@ import { ConfirmDialog } from '@/components/ui/dialog'
 import { EmptyState, ErrorBox, LoadError, PageLoading } from '@/components/ui/feedback'
 import { Checkbox, Field, FormSection, Input, Select, Switch } from '@/components/ui/form'
 import { useTitle } from '@/lib/hooks'
+import { kindSection } from '@/lib/kinds'
 
 interface FormState {
   name: string
@@ -38,9 +39,12 @@ const toggle = <T,>(list: T[], v: T, on: boolean) => (on ? [...new Set([...list,
 
 const overlap = (a: string[], b: string[]) => a.some((x) => b.includes(x))
 
-/** La vigilancia que hace el camino de vuelta de `w` (la ruta al revés), si la hay. */
+/** Lugares reales del transporte de la vigilancia que incluye un lugar (TCI → TFN y TFS en los vuelos). */
+const nodesOf = (w: WatchCard, place: WatchCard['origin_place']) => place.nodes?.[w.kind] ?? place.airports
+
+/** La vigilancia que hace el camino de vuelta de `w` (la ruta al revés, en el mismo transporte), si la hay. */
 const reverseOf = (w: WatchCard, all: WatchCard[]) =>
-  all.find((x) => x.id !== w.id && x.origin === w.destination && x.destination === w.origin)
+  all.find((x) => x.id !== w.id && x.kind === w.kind && x.origin === w.destination && x.destination === w.origin)
 
 const watchLabel = (w: WatchCard) => `${w.name} (${w.origin} → ${w.destination})${w.enabled ? '' : ' · en pausa'}`
 
@@ -59,8 +63,8 @@ function TripForm({ initial, tripId, watches }: { initial: FormState; tripId?: n
   const ret = watches.find((w) => String(w.id) === f.return_id)
   const reverse = out && reverseOf(out, watches)
   const mismatch = out && ret && (
-    !overlap(out.destination_place.airports, ret.origin_place.airports)
-    || !overlap(ret.destination_place.airports, out.origin_place.airports))
+    !overlap(nodesOf(out, out.destination_place), nodesOf(ret, ret.origin_place))
+    || !overlap(nodesOf(ret, ret.destination_place), nodesOf(out, out.origin_place)))
 
   // Canales nuevos: por defecto, todos los activos (como en las vigilancias).
   const defaulted = useRef(!isNew)
@@ -111,7 +115,7 @@ function TripForm({ initial, tripId, watches }: { initial: FormState; tripId?: n
     save.mutate()
   }
 
-  const newReturn = out && `/watches/new?origin=${encodeURIComponent(out.destination)}&destination=${encodeURIComponent(out.origin)}&for_trip=${out.id}`
+  const newReturn = out && `${kindSection(out.kind)}/new?origin=${encodeURIComponent(out.destination)}&destination=${encodeURIComponent(out.origin)}&for_trip=${out.id}`
 
   return (
     <form onSubmit={submit} className="space-y-5" noValidate>
@@ -258,7 +262,7 @@ export function TripFormPage() {
         <EmptyState
           icon={<Plus />}
           title="Hacen falta dos vigilancias"
-          action={<Link to="/watches/new" className={buttonClass()}><Plus /> Nueva vigilancia</Link>}
+          action={<Link to={`${kindSection('flight')}/new`} className={buttonClass()}><Plus /> Nueva vigilancia</Link>}
         >
           Un viaje junta una vigilancia de ida y otra de vuelta. Crea primero las dos (p. ej. Sevilla → Tenerife y
           Tenerife → Sevilla).

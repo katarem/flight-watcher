@@ -1,14 +1,17 @@
-import { Building2, Globe2, MapPin, Plane } from 'lucide-react'
+import { Building2, Bus, Globe2, MapPin, Plane, Ship, TrainFront } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { usePlaces } from '@/api/queries'
-import type { Place } from '@/api/types'
+import type { KindKey, Place } from '@/api/types'
 import { Badge } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/feedback'
 import { cn } from '@/lib/cn'
 
-const KIND_ICON = { airport: Plane, city: Building2, country: Globe2, group: MapPin }
+const KIND_ICON = { airport: Plane, station: TrainFront, port: Ship, stop: Bus, city: Building2, country: Globe2, group: MapPin }
+/** Lugares de cada transporte: no se marcan con su tipo en la lista (es lo esperado). */
+const NODES = new Set(['airport', 'station', 'port', 'stop'])
 
-/** Código tal como lo guarda el servidor: IATA/ISO en mayúsculas, grupos (palabras) en minúsculas. */
+/** Código tal como lo guarda el servidor: IATA/ISO en mayúsculas, grupos (palabras) en minúsculas (el servidor pasa a
+ *  mayúsculas los códigos largos de estaciones o puertos que conoce). */
 export const cleanCode = (text: string) => {
   const t = text.trim()
   return t.length <= 3 ? t.toUpperCase() : t.toLowerCase()
@@ -23,15 +26,19 @@ function useDebounced<T>(value: T, ms = 150): T {
   return v
 }
 
-/** Origen o destino con autocompletado: aeropuertos, ciudades, países y grupos.
+/** Origen o destino con autocompletado: lugares del transporte `kind` (aeropuertos en los vuelos) y las ciudades,
+ *  países y grupos que tienen alguno.
  *  `onChange` recibe el código y el lugar elegido de la lista (o null si solo se ha escrito).
  *  El texto inicial sale de `place`/`code`: para cambiarlo desde fuera, vuelve a montarlo con otra `key`. */
-export function PlaceCombobox({ label, place, code, onChange, placeholder }: {
+export function PlaceCombobox({ label, place, code, onChange, placeholder, kind = 'flight', hint }: {
   label: string
   place: Place | null
   code: string
   onChange: (code: string, place: Place | null) => void
   placeholder?: string
+  kind?: KindKey
+  /** Ayuda bajo el campo mientras no se ha elegido un lugar. */
+  hint?: string
 }) {
   const id = useId()
   const listId = `${id}-lista`
@@ -40,7 +47,7 @@ export function PlaceCombobox({ label, place, code, onChange, placeholder }: {
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
   const query = useDebounced(open ? text : '')
-  const results = usePlaces(query)
+  const results = usePlaces(query, kind)
   const options = open && query ? (results.data ?? []) : []
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -130,7 +137,7 @@ export function PlaceCombobox({ label, place, code, onChange, placeholder }: {
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-1.5 text-sm font-medium">
                       {p.label}
-                      {p.kind !== 'airport' && <Badge tone="accent">{p.kind_label}</Badge>}
+                      {!NODES.has(p.kind) && <Badge tone="accent">{p.kind_label}</Badge>}
                     </span>
                     <span className="block truncate text-xs text-muted">{p.detail}</span>
                   </span>
@@ -141,7 +148,7 @@ export function PlaceCombobox({ label, place, code, onChange, placeholder }: {
         )}
       </div>
       <p id={hintId} className="text-xs text-muted">
-        {place ? `${place.kind_label}: ${place.detail}` : 'Aeropuerto, ciudad, país o grupo (p. ej. Sevilla, TCI, Canarias).'}
+        {place ? `${place.kind_label}: ${place.detail}` : hint ?? 'Aeropuerto, ciudad, país o grupo (p. ej. Sevilla, TCI, Canarias).'}
       </p>
     </div>
   )

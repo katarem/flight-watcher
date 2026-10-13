@@ -17,6 +17,7 @@ import { Menu, MenuContent, MenuItem, MenuLabel, MenuRadio, MenuSeparator, MenuT
 import { cn } from '@/lib/cn'
 import { fmtDateTime } from '@/lib/format'
 import { useRunNow } from '@/lib/hooks'
+import { KIND_ICONS } from '@/lib/kinds'
 import { useThemePref } from '@/lib/theme-context'
 
 interface NavItem {
@@ -28,8 +29,14 @@ interface NavItem {
 
 function useNavItems(): NavItem[] {
   const me = useMe().data
+  const kinds = useMeta().data?.kinds ?? []
   const items: NavItem[] = [
     { to: '/', label: 'Panel', icon: <LayoutDashboard />, end: true },
+    // Un apartado por transporte disponible (hoy, «Vuelos»).
+    ...kinds.filter((k) => k.transport && k.available && k.section).map((k) => {
+      const Icon = KIND_ICONS[k.key]
+      return { to: k.section, label: k.label, icon: <Icon /> }
+    }),
     { to: '/trips', label: 'Viajes', icon: <Luggage /> },
     { to: '/runs', label: 'Ejecuciones', icon: <History /> },
   ]
@@ -225,7 +232,7 @@ export function AppShell() {
             <span className="grid size-8 place-items-center rounded-xl bg-accent text-accent-fg shadow-sm">
               <Plane className="size-4 -rotate-45" aria-hidden="true" />
             </span>
-            <span className="hidden sm:inline">Flight Watcher</span>
+            <span className="hidden whitespace-nowrap sm:inline">Flight Watcher</span>
           </Link>
           <DesktopNav />
           <div className="ml-auto flex items-center gap-2">

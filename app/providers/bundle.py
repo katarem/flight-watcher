@@ -7,12 +7,15 @@ el separador y sus datos en JSON (una sola línea) y, debajo, el script **tal cu
 
     #flight-watcher:proveedores v1 separador=%%fw%%
     # Comentarios opcionales (empiezan por #) antes del primer bloque.
-    %%fw%% {"key": "vueling", "label": "Vueling", "color": "#e8a800", "coverage": "probe", …}
+    %%fw%% {"key": "vueling", "kind": "flight", "label": "Vueling", "color": "#e8a800", "coverage": "probe", …}
     \"\"\"Vueling.\"\"\"
     def fetch_route(api, origin, destination, start, max_months):
         …
     %%fw%% {"key": "ryanair", …}
     …
+
+`kind` es el tipo de proveedor (`flight`, `train`…, ver `app/kinds.py`); los paquetes de antes de la 1.9 no lo
+llevan y se importan como vuelos.
 
 ¿Por qué no JSON? Ocuparía casi lo mismo (lo grande es el código y en JSON solo se escapan saltos de línea y
 comillas), pero el script quedaría en una sola línea ilegible. Así se puede leer, revisar y comparar (diff) el
@@ -37,7 +40,7 @@ from pathlib import Path
 
 import requests
 
-from .. import __version__
+from .. import __version__, kinds
 from . import stealth
 
 log = logging.getLogger("providers")
@@ -47,8 +50,8 @@ VERSION = 1
 HEADER_RE = re.compile(r"^#flight-watcher:proveedores v(\d+) separador=(\S+)\s*$")
 DEFAULT_SEPARATOR = "%%fw%%"
 #: Lo que se exporta de cada proveedor además del código (la clave, la primera).
-FIELDS = ("key", "label", "color", "coverage", "max_routes", "health_origin", "health_destination", "link_template",
-          "notes", "min_interval", "stealth")
+FIELDS = ("key", "kind", "label", "color", "coverage", "max_routes", "health_origin", "health_destination",
+          "link_template", "notes", "min_interval", "stealth")
 MAX_BYTES = 2_000_000
 MAX_PROVIDERS = 100
 
@@ -84,7 +87,8 @@ def dumps(rows: list[dict]) -> str:
            f"{date.today().isoformat()} desde flight-watcher {__version__}.",
            "# Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual."]
     for row, code in zip(rows, codes):
-        meta = {k: row.get(k) for k in FIELDS} | {"stealth": stealth.level(row.get("stealth")) or stealth.OFF}
+        meta = {k: row.get(k) for k in FIELDS} | {"stealth": stealth.level(row.get("stealth")) or stealth.OFF,
+                                                  "kind": row.get("kind") or kinds.DEFAULT}
         out.append(f"{sep} {json.dumps(meta, ensure_ascii=False)}")
         out.append(code.rstrip("\n"))
     return "\n".join(out) + "\n"
@@ -175,6 +179,7 @@ def download(url: str) -> str:
 def values(p: dict) -> dict:
     """Columnas de `provider_scripts` de un proveedor de un paquete de confianza (los incluidos), sin validar."""
     return {
+        "kind": p.get("kind") or kinds.DEFAULT,
         "label": p.get("label") or p["key"], "color": (p.get("color") or "#64748b").lower(),
         "coverage": p.get("coverage") or "probe", "max_routes": p.get("max_routes"),
         "health_origin": (p.get("health_origin") or "MAD").upper(),

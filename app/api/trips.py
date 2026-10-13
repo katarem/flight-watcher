@@ -12,15 +12,21 @@ router = APIRouter()
 
 
 def _leg_view(w: dict) -> dict:
-    return {k: w[k] for k in ("id", "name", "origin", "destination")} | {"enabled": bool(w["enabled"])}
+    return {k: w[k] for k in ("id", "name", "origin", "destination", "kind")} | {"enabled": bool(w["enabled"])}
 
 
 def _warnings(out_w: dict, ret_w: dict) -> list[str]:
     """Avisos que no impiden guardar: tramos en pausa o que no encajan (p. ej. ida a TFN y vuelta desde TFS)."""
     out = []
-    if not set(places.airports(out_w["destination"])) & set(places.airports(ret_w["origin"])):
+    if out_w["kind"] != ret_w["kind"]:
+        out.append("La ida y la vuelta son de transportes distintos.")
+
+    def nodes(code: str, w: dict) -> set[str]:
+        return set(places.nodes(code, w["kind"]))
+
+    if not nodes(out_w["destination"], out_w) & nodes(ret_w["origin"], ret_w):
         out.append(f"La vuelta sale de {ret_w['origin']} y la ida llega a {out_w['destination']}.")
-    if not set(places.airports(ret_w["destination"])) & set(places.airports(out_w["origin"])):
+    if not nodes(ret_w["destination"], ret_w) & nodes(out_w["origin"], out_w):
         out.append(f"La vuelta llega a {ret_w['destination']} y la ida sale de {out_w['origin']}.")
     for label, w in (("ida", out_w), ("vuelta", ret_w)):
         if not w["enabled"]:
@@ -38,7 +44,7 @@ def trip_view(t: dict, out_w: dict, ret_w: dict) -> dict:
 
 def _price_view(r: dict) -> dict:
     return {k: r.get(k) for k in ("flight_date", "price", "provider", "route", "link", "orig_price", "stops",
-                                  "checked_at")} | {"currency": r.get("currency") or "EUR"}
+                                  "checked_at", "departs_at", "arrives_at")} | {"currency": r.get("currency") or "EUR"}
 
 
 def combo_view(c: dict, trip: dict, base: float | None) -> dict:

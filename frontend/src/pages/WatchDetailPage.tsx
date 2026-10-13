@@ -14,6 +14,7 @@ import { AlertsTable } from '@/components/watch/tables'
 import { cn } from '@/lib/cn'
 import { fmtDateTime, fmtDay, fmtPrice } from '@/lib/format'
 import { useRunNow, useTitle } from '@/lib/hooks'
+import { kindSection, useKind, watchPath } from '@/lib/kinds'
 
 export function WatchDetailPage() {
   const id = Number(useParams().id)
@@ -25,6 +26,7 @@ export function WatchDetailPage() {
   const [filter, setFilter] = useState('')
   const [picked, setPicked] = useState('')
   const historyRef = useRef<HTMLElement>(null)
+  const kind = useKind(detail.data?.watch.kind ?? 'flight')
   useTitle(detail.data?.watch.name)
 
   const rows = detail.data?.prices ?? []
@@ -46,8 +48,8 @@ export function WatchDetailPage() {
     <>
       <PageHeader
         back={
-          <Link to="/" className="inline-flex items-center gap-1 text-sm text-muted hover:text-fg">
-            <ChevronLeft className="size-4" aria-hidden="true" /> Panel
+          <Link to={kindSection(w.kind)} className="inline-flex items-center gap-1 text-sm text-muted hover:text-fg">
+            <ChevronLeft className="size-4" aria-hidden="true" /> {kind.label}
           </Link>
         }
         title={
@@ -67,7 +69,7 @@ export function WatchDetailPage() {
             <Button onClick={() => run.mutate(w.id)} disabled={running} loading={run.isPending}>
               {!run.isPending && <Play />} Comprobar ahora
             </Button>
-            <Link to={`/watches/${w.id}/edit`} className={buttonClass('secondary')}><Pencil /> Editar</Link>
+            <Link to={watchPath(w.kind, w.id, '/edit')} className={buttonClass('secondary')}><Pencil /> Editar</Link>
           </>
         }
       />
@@ -85,13 +87,13 @@ export function WatchDetailPage() {
       )}
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {stats.map((s) => <ProviderTile key={s.key} stat={s} detail className="bg-surface shadow-card" />)}
+        {stats.map((s) => <ProviderTile key={s.key} stat={s} detail className="bg-surface shadow-card" plural={kind.plural} />)}
       </div>
 
       <Card className="mb-6" aria-labelledby="calendario">
         <CardHeader
           id="calendario"
-          title="Precios por fecha de vuelo"
+          title={`Precios por fecha de ${kind.noun}`}
           description="Última comprobación. Pulsa un precio para abrir esa fecha en la web, o el número del día para ver su historial."
           actions={
             stats.length > 1 && (
@@ -128,8 +130,8 @@ export function WatchDetailPage() {
           {charts.data ? <PriceChart data={charts.data.min_over_time} label="Evolución del precio mínimo por web" /> : <Skeleton className="h-64" />}
         </Card>
         <Card aria-labelledby="por-fecha">
-          <CardHeader id="por-fecha" title="Precio actual por fecha de vuelo" description="Qué días salen más baratos en cada web." />
-          {charts.data ? <PriceChart data={charts.data.by_flight_date} label="Precio actual por fecha de vuelo" /> : <Skeleton className="h-64" />}
+          <CardHeader id="por-fecha" title={`Precio actual por fecha de ${kind.noun}`} description="Qué días salen más baratos en cada web." />
+          {charts.data ? <PriceChart data={charts.data.by_flight_date} label={`Precio actual por fecha de ${kind.noun}`} /> : <Skeleton className="h-64" />}
         </Card>
       </div>
 
@@ -137,10 +139,10 @@ export function WatchDetailPage() {
         <CardHeader
           id="historial-fecha"
           title="Historial de una fecha concreta"
-          description="Cómo ha cambiado el precio de un mismo vuelo con el paso de los días."
+          description={`Cómo ha cambiado el precio de un mismo ${kind.noun} con el paso de los días.`}
           actions={
             dates.length > 0 && (
-              <Field label={<span className="sr-only">Fecha de vuelo</span>} className="w-56">
+              <Field label={<span className="sr-only">Fecha de {kind.noun}</span>} className="w-56">
                 {(fid) => (
                   <Select id={fid} value={date} onChange={(e) => setPicked(e.target.value)}>
                     {dates.map((d) => <option key={d} value={d}>{fmtDay(d)}</option>)}

@@ -5,7 +5,7 @@ avisos y ejecuciones; aplica las migraciones pendientes como la app (`db.init`) 
 pierde nada (el ON DELETE CASCADE al recrear tablas en SQLite) y que los datos se convierten bien.
 Crea los proveedores incluidos como al arrancar (`bundle.seed`, con la plantilla de enlace que había en Ajustes y
 los del paquete sin verificar que ya usaba una vigilancia). Después crea un viaje (0005) y un proveedor (0006),
-baja a 0006, a 0005, a 0004 y a 0003 y vuelve a subir.
+comprueba los tipos y las horas (0008), baja a 0007, a 0006, a 0005, a 0004 y a 0003 y vuelve a subir.
 """
 import os
 import sqlite3
@@ -94,6 +94,21 @@ def main():
                                                 "max_routes": None, "health_origin": "SVQ", "health_destination": "TFN",
                                                 "link_template": "", "notes": "", "min_interval": 1.5,
                                                 "code": "def fetch_route(*a):\n    return {}\n", "enabled": 1}, "admin")
+    with db.connect() as con:
+        w1 = db.get_watch(con, 1)
+        snap = db.latest_snapshot(con, 1, "vueling")
+        kinds_ok = {r["kind"] for r in db.list_provider_scripts(con)} == {"flight"}
+    check(w1["kind"] == "flight" and kinds_ok and snap[0]["departs_at"] is None and snap[0]["origin"] == "SVQ",
+          "0008: lo que había es de vuelos y los precios antiguos no tienen horas")
+    c.execute("UPDATE prices SET departs_at = '2026-11-01T06:35' WHERE id = 1")
+    c.commit()
+    migrate("0007", down=True)
+    cols = {r[1] for r in c.execute("PRAGMA table_info(prices)")}
+    check(counts() == before and not cols & {"departs_at", "arrives_at"}
+          and "kind" not in {r[1] for r in c.execute("PRAGMA table_info(watches)")},
+          "downgrade a 0007 quita tipos y horas sin perder filas")
+    migrate("head")
+    check(counts() == before and c.execute("PRAGMA foreign_key_check").fetchall() == [], "y vuelta a 0008")
     migrate("0006", down=True)
     cols = {r[1] for r in c.execute("PRAGMA table_info(provider_scripts)")}
     check(counts() == before and not cols & {"source", "stealth"} and c.execute("SELECT count(*) FROM provider_scripts").fetchone()[0] == 4,

@@ -5,7 +5,13 @@ import { cn } from '@/lib/cn'
 import { fmtAgo, fmtDay, fmtPrice, priceExtras } from '@/lib/format'
 
 /** Mejor precio actual de una web dentro de una vigilancia. */
-export function ProviderTile({ stat, detail, className }: { stat: ProviderStat; detail?: boolean; className?: string }) {
+export function ProviderTile({ stat, detail, className, plural = 'vuelos' }: {
+  stat: ProviderStat
+  detail?: boolean
+  className?: string
+  /** «vuelos», «barcos»… (el transporte de la vigilancia). */
+  plural?: string
+}) {
   const best = stat.best
   return (
     <div
@@ -22,7 +28,7 @@ export function ProviderTile({ stat, detail, className }: { stat: ProviderStat; 
         )}
         {!stat.active && (
           <Badge tone="warn">
-            <CalendarOff aria-hidden="true" /> sin vuelos ahora
+            <CalendarOff aria-hidden="true" /> sin {plural} ahora
           </Badge>
         )}
       </div>

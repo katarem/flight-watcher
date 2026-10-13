@@ -1,5 +1,25 @@
 # Cambios
 
+## 1.9.0 — 2026-10-13
+
+Prepara el terreno para otros transportes y el alojamiento: lo que daba por hecho que todo eran vuelos ahora tiene tipo.
+
+### Añadido
+- **Avisos enriquecidos.** Cada aviso se arma como un mensaje estructurado (título, una sección por web, un elemento por fecha con su enlace, enlaces generales e imagen) y cada canal lo pinta a su manera:
+  - **Discord:** *embeds* con el color de cada web, un campo por fecha con el precio enlazado a esa fecha (y las escalas, la moneda original y las horas) y la cabecera enlazada al panel.
+  - **Telegram:** **botones con enlace** (uno por fecha, uno por tramo en los viajes y otro para abrir el panel) en lugar de enlaces en el texto. Si Telegram rechaza algún enlace como botón (la URL del panel en la red local, por ejemplo), el aviso se repite con los enlaces en el texto.
+  - **Calendario resumen en PNG** adjunto en los dos: los meses del aviso con el precio más bajo de cada día (del verde al rojo, como el calendario del panel) y con borde los días avisados; en los viajes, el total por fecha de ida.
+  - Los avisos de problemas de la ronda y de cambios de rutas también salen con formato, y **Probar** un canal manda un aviso de ejemplo con el formato de verdad.
+- **Horas en los precios**: un proveedor puede devolver la hora de salida y de llegada (`DayPrice(…, departure="06:35", arrival="08:10")`). Se guardan con cada precio y salen en el calendario, en las tarjetas, en los viajes, en la prueba del editor y en los avisos («06:35–08:10», «22:40–00:15 (+1)»). Ryanair las trae siempre y Wizz Air la de salida si ese día hay un solo vuelo (sin verificar aún contra la web real; se actualizan al importarlos de nuevo desde el catálogo).
+- **Tipos de proveedor**: cada proveedor es de un tipo (hoy, *Vuelos*; barcos, trenes y buses comparten contrato y ya se pueden escribir y probar). Se elige en su editor, viaja en los `.fwp` (los paquetes anteriores se importan como vuelos) y la zona **Proveedores** los agrupa y filtra por tipo. Un proveedor solo sale en las vigilancias de su transporte.
+- **Lugares genéricos**: además de aeropuertos, el catálogo admite estaciones, puertos y paradas de bus (`app/data/stations.csv`, `ports.csv` y `stops.csv`, vacíos hasta que lleguen sus transportes), y la **ciudad** es el nodo común que los agrupa. El autocompletado solo ofrece lugares del transporte de la vigilancia (en una de vuelos, nada sin aeropuerto).
+- **Panel por apartados**: el **Panel** pasa a ser un resumen (cada apartado con sus vigilancias, chollos y mejor precio, los chollos de ahora mismo y los últimos avisos y ejecuciones) y las vigilancias de vuelos tienen su apartado, **Vuelos** (`/flights`).
+- Migración `0008`: `watches.kind` y `provider_scripts.kind` (todo lo anterior queda como vuelos), `prices.departs_at`/`arrives_at`, y los códigos de lugar de precios, caché de rutas y ruta de prueba pasan de 3 a 10 caracteres.
+
+### Cambiado
+- Las vigilancias viven en `/flights/{id}`. Los enlaces antiguos (`/watches/{id}`, también los de los avisos ya enviados) llevan a su vigilancia en el apartado nuevo, y los avisos nuevos enlazan ya ahí.
+- La imagen Docker trae Pillow y las fuentes DejaVu (para el calendario de los avisos).
+
 ## 1.8.2 — 2026-10-12
 
 ### Añadido

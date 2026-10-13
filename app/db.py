@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import URL, Engine
 
-from . import config, places
+from . import config, kinds, places
 
 DEFAULT_SETTINGS = {
     "schedule_hours": "8",
@@ -48,8 +48,9 @@ BASELINE_REVISION = "0001"  # esquema de las BD creadas antes de usar Alembic
 # Double y no Float: en MySQL/MariaDB FLOAT es de precisión simple (29,99 → 29,9899997).
 _TABLE_OPTS = {"mysql_charset": "utf8mb4"}  # los nombres llevan «→»
 ISO = String(32)
-IATA = String(3)
-PLACE = String(places.CODE_MAX)  # aeropuerto, ciudad, país o grupo (ver app/places.py)
+NODE = String(places.NODE_MAX)  # lugar de un transporte: aeropuerto (IATA), estación, puerto o parada
+PLACE = String(places.CODE_MAX)  # lugar de una vigilancia: también ciudad, país o grupo (ver app/places.py)
+KIND = String(kinds.KEY_MAX)  # transporte de una vigilancia o tipo de un proveedor (ver app/kinds.py)
 
 metadata = MetaData()
 
@@ -105,6 +106,7 @@ watches = Table(
     Column("max_stops", Integer),  # escalas como máximo (0 = solo directos, NULL = sin límite)
     Column("enabled", Integer, nullable=False, server_default="1"),
     Column("created_at", ISO, nullable=False),
+    Column("kind", KIND, nullable=False, server_default=kinds.DEFAULT),  # transporte: flight (ver app/kinds.py)
     Index("idx_watches_user", "user_id"),
     **_TABLE_OPTS,
 )
@@ -121,12 +123,12 @@ watch_providers = Table(
     **_TABLE_OPTS,
 )
 
-# Caché de cobertura: si un proveedor opera un par de aeropuertos (red publicada o pregunta directa).
+# Caché de cobertura: si un proveedor opera un par de lugares (red publicada o pregunta directa).
 provider_routes = Table(
     "provider_routes", metadata,
     Column("provider", String(50), primary_key=True),
-    Column("origin", IATA, primary_key=True),
-    Column("destination", IATA, primary_key=True),
+    Column("origin", NODE, primary_key=True),
+    Column("destination", NODE, primary_key=True),
     Column("operated", Integer, nullable=False),
     Column("checked_at", ISO, nullable=False),
     **_TABLE_OPTS,
@@ -153,8 +155,8 @@ provider_scripts = Table(
     Column("color", String(7), nullable=False),
     Column("coverage", String(20), nullable=False),  # network | probe | universal
     Column("max_routes", Integer),
-    Column("health_origin", IATA, nullable=False),
-    Column("health_destination", IATA, nullable=False),
+    Column("health_origin", NODE, nullable=False),
+    Column("health_destination", NODE, nullable=False),
     Column("link_template", Text, nullable=False),
     Column("notes", Text, nullable=False),
     Column("min_interval", Double, nullable=False, server_default="1.5"),
@@ -164,7 +166,8 @@ provider_scripts = Table(
     Column("updated_at", ISO, nullable=False),
     Column("updated_by", String(32), nullable=False),  # usuario que lo guardó por última vez
     Column("source", String(500)),  # enlace del paquete del que se importó (NULL = escrito en el panel o archivo)
-    Column("stealth", Integer, nullable=False, server_default="0"),  # «Aplicar medidas anti-bot» (providers/stealth.py)
+    Column("stealth", Integer, nullable=False, server_default="0"),  # «Medidas anti-bot» 0/1/2 (providers/stealth.py)
+    Column("kind", KIND, nullable=False, server_default=kinds.DEFAULT),  # tipo: flight, train… (ver app/kinds.py)
     **_TABLE_OPTS,
 )
 
@@ -185,10 +188,13 @@ prices = Table(
     Column("price", Double, nullable=False),  # en euros (convertido con el cambio del BCE)
     Column("currency", String(3), nullable=False, server_default="EUR"),  # moneda original
     Column("checked_at", ISO, nullable=False),
-    Column("origin", IATA),       # aeropuerto real (NULL = el de la vigilancia)
-    Column("destination", IATA),
+    Column("origin", NODE),       # lugar real: aeropuerto, estación… (NULL = el de la vigilancia)
+    Column("destination", NODE),
     Column("orig_price", Double),  # precio en la moneda original (NULL = el mismo en euros)
     Column("stops", Integer),      # escalas (NULL = datos antiguos, directos)
+    # Salida y llegada (hora local de cada lugar, «AAAA-MM-DDTHH:MM») si la web las da; NULL = no se sabe.
+    Column("departs_at", String(16)),
+    Column("arrives_at", String(16)),
     Index("idx_prices_snap", "watch_id", "provider", "checked_at"),
     Index("idx_prices_date", "watch_id", "provider", "flight_date"),
     **_TABLE_OPTS,
@@ -545,6 +551,7 @@ def _watch_values(data: dict) -> dict:
         "name": data["name"], "origin": data["origin"], "destination": data["destination"],
         "max_price": data["max_price"], "discount_pct": data["discount_pct"], "date_from": data["date_from"],
         "date_to": data["date_to"], "max_stops": data.get("max_stops"), "enabled": int(data["enabled"]),
+        "kind": data.get("kind") or kinds.DEFAULT,
     }
 
 
@@ -557,9 +564,9 @@ def parse_pair(key: str) -> tuple[str, str]:
     return o, d
 
 
-def default_coverage(origin: str, destination: str, keys) -> dict[str, dict]:
-    """Cobertura sin comprobar: todos los pares de aeropuertos del origen y el destino."""
-    pairs = places.routes(origin, destination)
+def default_coverage(origin: str, destination: str, keys, mode: str = kinds.DEFAULT) -> dict[str, dict]:
+    """Cobertura sin comprobar: todos los pares de lugares (del transporte `mode`) del origen y el destino."""
+    pairs = places.routes(origin, destination, mode)
     return {k: {"routes": pairs, "active": True, "checked_at": None} for k in keys}
 
 
@@ -582,10 +589,12 @@ def _with_extras(con, ws: list[dict]) -> list[dict]:
     return ws
 
 
-def list_watches(con, user_id: int | None = None) -> list[dict]:
+def list_watches(con, user_id: int | None = None, kind: str | None = None) -> list[dict]:
     stmt = select(watches).order_by(watches.c.id)
     if user_id is not None:
         stmt = stmt.where(watches.c.user_id == user_id)
+    if kind is not None:
+        stmt = stmt.where(watches.c.kind == kind)
     return _with_extras(con, _all(con, stmt))
 
 
@@ -612,7 +621,8 @@ def update_watch_provider(con, watch_id: int, provider: str, routes, active: boo
 
 
 def _coverage_of(data: dict) -> dict[str, dict]:
-    return data.get("coverage") or default_coverage(data["origin"], data["destination"], data.get("providers", []))
+    return data.get("coverage") or default_coverage(data["origin"], data["destination"], data.get("providers", []),
+                                                    data.get("kind") or kinds.DEFAULT)
 
 
 def create_watch(con, user_id: int, data: dict) -> int:
@@ -645,16 +655,22 @@ def insert_prices(con, watch_id, provider, checked_at, rows):
         {"watch_id": watch_id, "provider": provider, "flight_date": r.day.isoformat(),
          "price": getattr(r, "price_eur", None) or r.price, "currency": r.currency, "checked_at": checked_at,
          "orig_price": r.price if r.currency != "EUR" else None, "stops": getattr(r, "stops", 0),
-         "origin": r.origin or None, "destination": r.destination or None}
+         "origin": r.origin or None, "destination": r.destination or None,
+         "departs_at": minutes(getattr(r, "departure", None)), "arrives_at": minutes(getattr(r, "arrival", None))}
         for r in rows
     ])
+
+
+def minutes(value) -> str | None:
+    """«AAAA-MM-DDTHH:MM» de una salida o llegada (`datetime`, ya normalizada por el proveedor) o None."""
+    return value.isoformat(timespec="minutes")[:16] if isinstance(value, datetime) else None
 
 
 def latest_snapshot(con, watch_id, provider) -> list[dict]:
     p = prices.c
     last = select(func.max(p.checked_at)).where(p.watch_id == watch_id, p.provider == provider).scalar_subquery()
     return _all(con, select(p.flight_date, p.price, p.checked_at, p.origin, p.destination, p.currency, p.orig_price,
-                            p.stops)
+                            p.stops, p.departs_at, p.arrives_at)
                 .where(p.watch_id == watch_id, p.provider == provider, p.checked_at == last)
                 .order_by(p.price, p.flight_date))
 
@@ -713,7 +729,8 @@ def add_alerts(con, watch_id, deals, sent_at):
 
 
 def list_alerts(con, limit=10, watch_id=None, user_id=None):
-    stmt = select(alerts, watches.c.name.label("watch_name")).join(watches, watches.c.id == alerts.c.watch_id)
+    stmt = (select(alerts, watches.c.name.label("watch_name"), watches.c.kind.label("watch_kind"))
+            .join(watches, watches.c.id == alerts.c.watch_id))
     if watch_id is not None:
         stmt = stmt.where(alerts.c.watch_id == watch_id)
     if user_id is not None:
@@ -843,7 +860,8 @@ def last_run(con, watch_id, provider):
 
 
 def list_runs(con, limit=50, user_id=None):
-    stmt = select(runs, watches.c.name.label("watch_name")).join(watches, watches.c.id == runs.c.watch_id)
+    stmt = (select(runs, watches.c.name.label("watch_name"), watches.c.kind.label("watch_kind"))
+            .join(watches, watches.c.id == runs.c.watch_id))
     if user_id is not None:
         stmt = stmt.where(watches.c.user_id == user_id)
     return _all(con, stmt.order_by(runs.c.id.desc()).limit(limit))

@@ -1,13 +1,10 @@
 """Abstracción de proveedores.
 
-Para añadir una aerolínea nueva:
-  1. Crea `app/providers/<nombre>.py` con una clase que herede de `ApiProvider` si la web
-     expone un endpoint JSON accesible sin navegador (preferible: más rápido y estable) o de
-     `CalendarProvider` si hay que recorrer la web con Playwright.
-  2. Declara su cobertura (`coverage`): «network» si publica su red de rutas (implementa `network`),
-     «probe» si hay que preguntarle por cada ruta (implementa `probe`) o «universal» si cubre cualquiera.
-  3. Regístrala en `app/providers/__init__.py`.
-El panel, el histórico, las gráficas, las notificaciones y la zona «Proveedores» la reconocen solos.
+Los proveedores de verdad son scripts guardados en la BD (`scripted.ScriptedProvider`, un `ApiProvider`); estas
+clases son su base y la de los dobles de los tests (`CalendarProvider`, con navegador). Cada proveedor es de un
+tipo (`kind`: flight, train…, ver `app/kinds.py`) y declara su cobertura (`coverage`): «network» si publica su red
+de rutas (implementa `network`), «probe» si hay que preguntarle por cada ruta (implementa `probe`) o «universal» si
+cubre cualquiera.
 
 Todas las peticiones de un proveedor pasan por `slot()`: una sola a la vez (aunque coincidan la ronda,
 la comprobación de una ruta y la prueba de acceso) y con una pausa entre ellas, para no acabar con la
@@ -22,7 +19,7 @@ import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
 
 import requests
@@ -69,6 +66,40 @@ class DayPrice:
     stops: int | None = 0
     #: Equivalente en euros (lo rellena el checker con el cambio del BCE).
     price_eur: float | None = None
+    #: Salida y llegada de ese precio (hora local de cada lugar), si la web las da: `datetime`, `time` o texto
+    #: («06:35», «2026-11-03T06:35»). Una llegada con solo la hora y anterior a la salida es del día siguiente.
+    #: `clock()` las deja como `datetime` (sin segundos ni zona).
+    departure: datetime | dtime | str | None = None
+    arrival: datetime | dtime | str | None = None
+
+    def clock(self) -> None:
+        """Normaliza `departure` y `arrival` a `datetime`. Lanza ValueError/TypeError si no son una hora."""
+        self.departure = moment(self.day, self.departure)
+        self.arrival = moment(self.day, self.arrival, self.departure)
+
+
+def moment(day: date, value, after: datetime | None = None) -> datetime | None:
+    """Fecha y hora (sin zona ni segundos) de una salida o llegada del día `day`. `after`: la salida, para pasar al
+    día siguiente una llegada que solo trae la hora."""
+    if value is None or value == "":
+        return None
+    only_time = False
+    if isinstance(value, datetime):
+        out = value
+    elif isinstance(value, dtime):
+        out, only_time = datetime.combine(day, value), True
+    elif isinstance(value, str):
+        text = value.strip()
+        if len(text) <= 8:  # «06:35» o «06:35:00»
+            out, only_time = datetime.combine(day, dtime.fromisoformat(text)), True
+        else:
+            out = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    else:
+        raise TypeError(f"hora no válida: {value!r}")
+    out = out.replace(tzinfo=None, second=0, microsecond=0)
+    if only_time and after is not None and out < after:
+        out += timedelta(days=1)
+    return out
 
 
 # Turno por proveedor: un candado y la hora de la última petición (compartidos por todos los hilos).
@@ -87,6 +118,8 @@ class Provider(ABC):
     key: str = ""
     label: str = ""
     color: str = "#888888"
+    #: Tipo de proveedor (transporte): flight, train, ship, bus (ver app/kinds.py).
+    kind: str = "flight"
     #: False si el proveedor consulta una API y no necesita Playwright (page llega como None).
     needs_browser: bool = True
     #: Plantilla de enlace. Marcadores: {origin} {destination} {date} (AAAA-MM-DD)
@@ -371,6 +404,10 @@ class ApiProvider(Provider):
         for d, p in sorted(found.items()):
             if isinstance(p, DayPrice):
                 p.origin, p.destination = p.origin or origin, p.destination or destination
+                try:
+                    p.clock()
+                except (TypeError, ValueError) as exc:
+                    raise ProviderError(f"{self.label}: hora de salida o llegada no válida ({exc})") from exc
                 out.append(p)
             else:
                 out.append(DayPrice(d, p, origin=origin, destination=destination))

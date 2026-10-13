@@ -5,6 +5,7 @@ import type { Trip, TripCombo, TripPrice } from '@/api/types'
 import { Badge } from '@/components/ui/card'
 import { cn } from '@/lib/cn'
 import { fmtDay, fmtNights, fmtNightsRange, fmtPrice, priceExtras } from '@/lib/format'
+import { watchPath } from '@/lib/kinds'
 
 /** «SVQ ⇄ TCI» con aspecto de billete. */
 export function TripPill({ trip }: { trip: Trip }) {
@@ -31,9 +32,9 @@ export function tripRulesText(t: Trip): string {
 export function TripLegs({ trip, className }: { trip: Trip; className?: string }) {
   return (
     <p className={cn('text-sm text-muted', className)}>
-      Ida: <Link to={`/watches/${trip.outbound.id}`} className="text-fg underline underline-offset-2">{trip.outbound.name}</Link>
+      Ida: <Link to={watchPath(trip.outbound.kind, trip.outbound.id)} className="text-fg underline underline-offset-2">{trip.outbound.name}</Link>
       {' · '}
-      Vuelta: <Link to={`/watches/${trip.return.id}`} className="text-fg underline underline-offset-2">{trip.return.name}</Link>
+      Vuelta: <Link to={watchPath(trip.return.kind, trip.return.id)} className="text-fg underline underline-offset-2">{trip.return.name}</Link>
     </p>
   )
 }

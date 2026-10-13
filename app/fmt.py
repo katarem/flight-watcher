@@ -19,6 +19,22 @@ def fmt_day(value) -> str:
     return f"{DIAS[d.weekday()]} {d:%d/%m/%Y}"
 
 
+def fmt_short_day(value) -> str:
+    """«03/11», para los botones."""
+    return f"{to_date(value):%d/%m}"
+
+
+def fmt_clock(departs_at: str | None, arrives_at: str | None = None) -> str:
+    """«06:35–08:10», «22:40–00:15 (+1)», «sale 06:35» o "" si no se sabe (ISO «AAAA-MM-DDTHH:MM»)."""
+    if not departs_at:
+        return f"llega {arrives_at[11:16]}" if arrives_at else ""
+    out = departs_at[11:16]
+    if not arrives_at:
+        return f"sale {out}"
+    days = (to_date(arrives_at) - to_date(departs_at)).days
+    return f"{out}–{arrives_at[11:16]}" + (f" (+{days})" if days > 0 else "")
+
+
 def fmt_price(value) -> str:
     if value is None:
         return "—"

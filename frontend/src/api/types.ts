@@ -19,22 +19,48 @@ export type Coverage = 'network' | 'probe' | 'universal'
 /** Medidas anti-bot de un proveedor: 0 ninguna, 1 huella de Chrome (y Chrome si bloquean), 2 siempre Chrome. */
 export type StealthLevel = 0 | 1 | 2
 
+/** Transporte de una vigilancia o tipo de un proveedor (`app/kinds.py`). */
+export type KindKey = 'flight' | 'ship' | 'train' | 'bus' | 'hotel'
+
+export interface KindMeta {
+  key: KindKey
+  /** «Vuelos»: nombre del apartado. */
+  label: string
+  noun: string
+  plural: string
+  /** Tipo de lugar donde empieza y acaba (airport, station, port, stop); '' si no es un transporte. */
+  node: string
+  node_label: string
+  /** Ruta del apartado en el panel ('' = aún no tiene). */
+  section: string
+  available: boolean
+  /** Versión prevista si aún no está disponible. */
+  since: string
+  transport: boolean
+}
+
 export interface ProviderMeta {
   key: string
+  kind: KindKey
   label: string
   color: string
   coverage: Coverage
   max_routes: number | null
 }
 
-/** Aeropuerto, ciudad, país o grupo (`app/places.py`). */
+/** Lugar (`app/places.py`): de un transporte (aeropuerto, estación, puerto, parada) o que los agrupa (ciudad, país,
+ *  grupo). */
 export interface Place {
   code: string
-  kind: 'airport' | 'city' | 'country' | 'group'
+  kind: 'airport' | 'station' | 'port' | 'stop' | 'city' | 'country' | 'group'
   kind_label: string
   label: string
   detail: string
   country: string
+  /** Transportes con algún lugar (flight, ship…). */
+  modes: string[]
+  /** Lugares reales por transporte. */
+  nodes: Record<string, string[]>
   airports: string[]
 }
 
@@ -53,6 +79,7 @@ export interface ChannelKind {
 
 export interface Meta {
   version: string
+  kinds: KindMeta[]
   providers: ProviderMeta[]
   channel_kinds: ChannelKind[]
   avatar_max_bytes: number
@@ -67,6 +94,7 @@ export interface Status {
 
 export interface Watch {
   id: number
+  kind: KindKey
   name: string
   origin: string
   destination: string
@@ -93,11 +121,14 @@ export interface WatchCoverage {
   checked_at: string | null
 }
 
-/** Moneda original y escalas de un precio (el precio siempre va en euros). */
+/** Moneda original, escalas y horas de un precio (el precio siempre va en euros). */
 export interface PriceExtras {
   currency: string
   orig_price: number | null
   stops: number | null
+  /** Salida y llegada («AAAA-MM-DDTHH:MM», hora local de cada lugar) si la web las da. */
+  departs_at?: string | null
+  arrives_at?: string | null
 }
 
 export interface RunInfo {
@@ -159,6 +190,7 @@ export interface Alert {
   id: number
   watch_id: number
   watch_name: string
+  watch_kind: KindKey
   provider: string
   flight_date: string
   price: number
@@ -190,6 +222,7 @@ export interface Run {
   id: number
   watch_id: number
   watch_name: string
+  watch_kind: KindKey
   provider: string
   trigger: string
   started_at: string
@@ -276,6 +309,8 @@ export interface ProviderLast {
 /** Proveedor: un script de Python que cumple el contrato de app/providers/scripted.py. */
 export interface Provider {
   key: string
+  kind: KindKey
+  kind_label: string
   label: string
   color: string
   coverage: Coverage
@@ -315,6 +350,8 @@ export interface ProvidersData {
   sources: string[]
   /** Paquetes publicados con la aplicación. */
   catalogs: { label: string; url: string }[]
+  /** Tipos que puede tener un proveedor. */
+  kinds: KindMeta[]
 }
 
 export interface HealthResult {
@@ -333,6 +370,8 @@ export interface ScriptSample {
   origin: string
   destination: string
   stops: number | null
+  departs_at: string | null
+  arrives_at: string | null
 }
 
 export interface ScriptTestResult extends HealthResult {
@@ -356,6 +395,7 @@ export interface HealthRun {
 
 export interface ImportItem {
   key: string
+  kind: KindKey
   label: string
   color: string
   coverage: string
@@ -379,6 +419,7 @@ export interface ImportPreview {
 /** Tramo de un viaje: una vigilancia del usuario. */
 export interface TripLeg {
   id: number
+  kind: KindKey
   name: string
   origin: string
   destination: string

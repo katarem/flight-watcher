@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
-from .. import __version__, auth, avatars, checker, db, notify, places, scheduler
+from .. import __version__, auth, avatars, checker, db, kinds, notify, places, scheduler
 from ..providers import PROVIDERS
 from .deps import Invalid, current_user, public, start_session
 
@@ -51,11 +51,12 @@ def me(user: dict = Depends(current_user)):
 
 @router.get("/meta")
 def meta():
-    """Lo que el panel necesita conocer del servidor: versión, webs y tipos de canal."""
+    """Lo que el panel necesita conocer del servidor: versión, transportes, webs y tipos de canal."""
     return {
         "version": __version__,
+        "kinds": [kinds.view(k) for k in kinds.KINDS.values()],
         "providers": [{"key": p.key, "label": p.label, "color": p.color, "coverage": p.coverage,
-                       "max_routes": p.max_routes} for p in PROVIDERS.values()],
+                       "max_routes": p.max_routes, "kind": p.kind} for p in PROVIDERS.values()],
         "max_pairs": places.MAX_PAIRS,
         "channel_kinds": [
             {"key": key, "label": k["label"],
