@@ -370,7 +370,7 @@ test.describe('proveedores', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Importar proveedores' })).toBeVisible()
     await expectAccessible(page)
 
-    await page.getByRole('button', { name: 'Catálogo de Flight Watcher' }).click()
+    await page.getByRole('button', { name: 'Catálogo de Trip Watch' }).click()
     const found = page.getByRole('region', { name: /Qué trae/ })
     await expect(found.getByRole('checkbox', { name: /Wizz Air/ })).toBeVisible()
     // Del catálogo son nuevos Air Europa, Iberia Express y Binter (los demás ya están): vienen marcados y aquí no se quieren.

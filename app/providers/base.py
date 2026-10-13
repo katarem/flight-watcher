@@ -29,7 +29,7 @@ from .extract import JsonCollector, read_calendar_cells
 from .stealth import NETWORK_ERRORS, TIMEOUT_ERRORS
 
 #: User-Agent honesto para las APIs: no nos hacemos pasar por un navegador.
-USER_AGENT = f"flight-watcher/{__version__} (+alertas de precio personales)"
+USER_AGENT = f"trip-watch/{__version__} (+alertas de precio personales)"
 
 
 def add_months(day: date, months: int) -> date:

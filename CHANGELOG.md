@@ -2,7 +2,7 @@
 
 ## 1.9.0 — 2026-10-13
 
-Prepara el terreno para otros transportes y el alojamiento: lo que daba por hecho que todo eran vuelos ahora tiene tipo.
+Primera versión como **Trip Watch** (antes Flight Watcher). Prepara el terreno para otros transportes y el alojamiento: lo que daba por hecho que todo eran vuelos ahora tiene tipo.
 
 ### Añadido
 - **Avisos enriquecidos.** Cada aviso se arma como un mensaje estructurado (título, una sección por web, un elemento por fecha con su enlace, enlaces generales e imagen) y cada canal lo pinta a su manera:
@@ -17,6 +17,7 @@ Prepara el terreno para otros transportes y el alojamiento: lo que daba por hech
 - Migración `0008`: `watches.kind` y `provider_scripts.kind` (todo lo anterior queda como vuelos), `prices.departs_at`/`arrives_at`, y los códigos de lugar de precios, caché de rutas y ruta de prueba pasan de 3 a 10 caracteres.
 
 ### Cambiado
+- **El proyecto pasa a llamarse Trip Watch** (antes Flight Watcher), porque deja de ser solo de vuelos. La imagen es ahora `ghcr.io/katarem/trip-watch` y el servicio y el contenedor del `docker-compose.yml`, `trip-watch`: al actualizar, coge el compose nuevo (o cambia la imagen en el tuyo) y arranca con `docker compose pull && docker compose up -d --remove-orphans` (quita el contenedor `flight-watcher`, que si no ocuparía el puerto). Tus datos no cambian: la base de datos conserva su nombre (`flight_watcher`). Los enlaces del catálogo con el nombre anterior siguen funcionando y los `.fwp` mantienen su cabecera para que los entiendan los paneles anteriores.
 - Las vigilancias viven en `/flights/{id}`. Los enlaces antiguos (`/watches/{id}`, también los de los avisos ya enviados) llevan a su vigilancia en el apartado nuevo, y los avisos nuevos enlazan ya ahí.
 - La imagen Docker trae Pillow y las fuentes DejaVu (para el calendario de los avisos).
 

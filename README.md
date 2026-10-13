@@ -1,4 +1,6 @@
-# Flight Watcher
+# Trip Watch
+
+*Antes Flight Watcher: cambió de nombre en la 1.9, cuando dejó de ser solo de vuelos (ver «Si vienes de Flight Watcher»).*
 
 Panel web + bot que vigila los precios de vuelos en **Vueling** y **Ryanair** (y en las aerolíneas que añadas), guarda todo el histórico en SQLite (o PostgreSQL / MySQL / MariaDB), dibuja gráficas de evolución por web y te avisa por **Discord** y/o **Telegram** con avisos enriquecidos (un **enlace o botón directo a cada fecha** y un calendario con los precios).
 
@@ -50,7 +52,7 @@ El esquema se gestiona con **Alembic**: al arrancar, la app aplica sola las migr
 
 Después, en el panel:
 
-1. Entra con el administrador (`PANEL_USER` / `PANEL_PASSWORD`). Si no los definiste, se crea `admin` con una contraseña aleatoria que sale **una sola vez en el log** del contenedor (`docker compose logs flight-watcher`).
+1. Entra con el administrador (`PANEL_USER` / `PANEL_PASSWORD`). Si no los definiste, se crea `admin` con una contraseña aleatoria que sale **una sola vez en el log** del contenedor (`docker compose logs trip-watch`).
 2. **Perfil → Canales de aviso:** añade tus canales (Discord con webhook, Telegram con token de bot y chat ID) y pulsa *Probar*. Después marca, en cada vigilancia, a qué canales debe avisar.
 3. **Ajustes → Programación** (solo admin): elige a qué hora(s) se comprueba (p. ej. `8` o `8,20`) y la zona horaria.
 4. Pulsa **Comprobar todo** para traer los primeros precios.
@@ -69,9 +71,9 @@ Para añadir otro tipo de canal (Slack, correo…), añade una entrada a `KINDS`
 
 ## Versiones e imagen Docker
 
-La versión vive en `app/__init__.py` (`__version__`, hoy **1.3.0**; se ve en el pie del panel) y los cambios se anotan en [CHANGELOG.md](CHANGELOG.md).
+La versión vive en `app/__init__.py` (`__version__`, hoy **1.9.0**; se ve en el pie del panel) y los cambios se anotan en [CHANGELOG.md](CHANGELOG.md).
 
-El CI (`.github/workflows/docker.yml`) ejecuta el test de humo, comprueba que las migraciones están al día, pasa el lint, los tests y las pruebas en navegador del panel, y publica la imagen en **ghcr.io/katarem/flight-watcher** (`linux/amd64`):
+El CI (`.github/workflows/docker.yml`) ejecuta el test de humo, comprueba que las migraciones están al día, pasa el lint, los tests y las pruebas en navegador del panel, y publica la imagen en **ghcr.io/katarem/trip-watch** (`linux/amd64`):
 
 | Evento | Etiquetas publicadas |
 |---|---|
@@ -79,7 +81,19 @@ El CI (`.github/workflows/docker.yml`) ejecuta el test de humo, comprueba que la
 | Etiqueta `vX.Y.Z` | `X.Y.Z`, `X.Y` y `latest` |
 | Pull request | solo construye (no publica) |
 
-Para sacar una versión: sube `__version__`, actualiza el CHANGELOG, haz merge a `main` y crea la etiqueta (`git tag v1.1.0 && git push origin v1.1.0`); el CI falla si la etiqueta no coincide con `__version__`. En el servidor, fija `FW_VERSION=1.1.0` en `.env` (o deja `latest`) y ejecuta `docker compose pull && docker compose up -d`. Con el paquete **público** no hace falta `docker login` para descargarlo. La imagen lleva la etiqueta `org.opencontainers.image.source`, que la enlaza con el repositorio: si el repositorio es público, el paquete nace público; si no, ponlo público una vez en GitHub → Packages → *flight-watcher* → Package settings → Change visibility (y comprueba que ahí el repositorio aparece conectado). Si lo dejas privado, `docker login ghcr.io` con un token `read:packages`.
+Para sacar una versión: sube `__version__`, actualiza el CHANGELOG, haz merge a `main` y crea la etiqueta (`git tag v1.1.0 && git push origin v1.1.0`); el CI falla si la etiqueta no coincide con `__version__`. En el servidor, fija `FW_VERSION=1.1.0` en `.env` (o deja `latest`) y ejecuta `docker compose pull && docker compose up -d`. Con el paquete **público** no hace falta `docker login` para descargarlo. La imagen lleva la etiqueta `org.opencontainers.image.source`, que la enlaza con el repositorio: si el repositorio es público, el paquete nace público; si no, ponlo público una vez en GitHub → Packages → *trip-watch* → Package settings → Change visibility (y comprueba que ahí el repositorio aparece conectado). Si lo dejas privado, `docker login ghcr.io` con un token `read:packages`.
+
+### Si vienes de Flight Watcher
+
+El proyecto se llamaba **Flight Watcher** hasta la 1.9. Tus datos no cambian: la base de datos sigue siendo
+`flight_watcher.db` (o la de `DB_NAME`, que por defecto sigue siendo `flight_watcher`). Lo que cambia:
+
+1. La imagen es ahora **ghcr.io/katarem/trip-watch** (la antigua, `flight-watcher`, deja de actualizarse) y el servicio y el
+   contenedor del `docker-compose.yml` se llaman `trip-watch`. Coge el `docker-compose.yml` nuevo (o cambia en el tuyo la
+   imagen) y arranca con `docker compose pull && docker compose up -d --remove-orphans`: así se quita el contenedor
+   `flight-watcher`, que si no ocuparía el puerto.
+2. Los enlaces antiguos del catálogo (`…/katarem/flight-watcher/…`) siguen valiendo: el panel los cambia solo por los nuevos.
+3. Los paquetes `.fwp` siguen empezando por `#flight-watcher:proveedores` para que los paneles anteriores los entiendan.
 
 ## Aerolíneas y cómo se consultan
 
@@ -93,7 +107,7 @@ Cada proveedor declara cómo se sabe qué rutas cubre:
 
 La cobertura se guarda (`provider_routes`) y cada vigilancia sabe qué pares opera cada proveedor. **Cada lunes** se revalida: si una ruta de temporada se abre o se cierra, se avisa a los canales de la vigilancia, y mientras está cerrada ese proveedor no se consulta.
 
-Todos los proveedores son **scripts de Python** que se ven, se editan, se prueban, se exportan y se importan desde **Proveedores** (ver «Añadir otra aerolínea»). Todos los que tenemos están en un solo paquete, [`app/providers/catalog/providers.fwp`](https://raw.githubusercontent.com/katarem/flight-watcher/main/app/providers/catalog/providers.fwp), que se importa desde **Proveedores → Importar** (sale como «Catálogo de Flight Watcher»; eliges cuáles) o pegando ese enlace en cualquier panel. Vueling y Ryanair se crean solos en el primer arranque y puedes cambiarlos o borrarlos como cualquier otro.
+Todos los proveedores son **scripts de Python** que se ven, se editan, se prueban, se exportan y se importan desde **Proveedores** (ver «Añadir otra aerolínea»). Todos los que tenemos están en un solo paquete, [`app/providers/catalog/providers.fwp`](https://raw.githubusercontent.com/katarem/trip-watch/main/app/providers/catalog/providers.fwp), que se importa desde **Proveedores → Importar** (sale como «Catálogo de Flight Watcher»; eliges cuáles) o pegando ese enlace en cualquier panel. Vueling y Ryanair se crean solos en el primer arranque y puedes cambiarlos o borrarlos como cualquier otro.
 
 | Proveedor | Método | Estado |
 |---|---|---|
@@ -116,13 +130,13 @@ Rutas Sevilla ↔ Tenerife:
 
 Según Aena (2026-09-30), **no hay más aerolíneas directas**: SVQ ↔ TFN solo Vueling y Binter; SVQ ↔ TFS solo Ryanair.
 
-Si una web bloquea, la comprobación falla con un mensaje claro («rechaza la consulta (HTTP 403, límite o anti-bot)») y te avisa. Por defecto las peticiones dicen que son de `flight-watcher`. Para las webs que bloquean, cada proveedor elige sus **«Medidas anti-bot»** (ver abajo).
+Si una web bloquea, la comprobación falla con un mensaje claro («rechaza la consulta (HTTP 403, límite o anti-bot)») y te avisa. Por defecto las peticiones dicen que son de `trip-watch`. Para las webs que bloquean, cada proveedor elige sus **«Medidas anti-bot»** (ver abajo).
 
 ### Medidas anti-bot
 
 En el editor de cada proveedor, **Medidas anti-bot** tiene tres niveles:
 
-- **Ninguna**: peticiones normales que dicen ser de `flight-watcher`. Lo más rápido; para las webs que no bloquean (Vueling, Ryanair).
+- **Ninguna**: peticiones normales que dicen ser de `trip-watch`. Lo más rápido; para las webs que no bloquean (Vueling, Ryanair).
 - **Huella de Chrome y, si bloquean, Chrome**: lo que se describe a continuación.
 - **Siempre Chrome**: todas las peticiones salen de Chrome de verdad, sin probar antes la huella. Para webs cuyo anti-bot solo deja pasar a su propio JavaScript (Imperva en Air Europa, que añade un token a cada petición). Es lo más lento y lo que más memoria gasta.
 
@@ -259,7 +273,7 @@ def fetch_route(api, origin, destination, start, max_months):
 
 - **Exportar**: en **Proveedores** elige los que quieras (o todos) y descarga un archivo `.fwp`; también desde el editor de cada uno.
 - **Importar** (**Proveedores → Importar**): desde un **enlace** (por ejemplo, un `.fwp` en GitHub; un enlace `…/blob/…` se cambia solo por el del archivo en bruto) o desde un **archivo**. Antes de importar se ve qué trae cada proveedor (nuevo, igual que el guardado o qué cambia), su código y si algo no se podría importar. Uno con la misma clave que uno guardado lo sustituye (se conservan sus vigilancias e histórico). Se guarda de qué enlace vino, para volver a usarlo.
-- El formato `.fwp` es texto: una línea de cabecera y, por proveedor, una línea con sus datos en JSON seguida del script **tal cual**. Ocupa lo mismo que un JSON (lo grande es el código), pero el script se puede leer y comparar antes de importarlo. Todos los proveedores que tenemos están en [`app/providers/catalog/providers.fwp`](https://raw.githubusercontent.com/katarem/flight-watcher/main/app/providers/catalog/providers.fwp) (los antiguos `incluidos.fwp` y `sin-verificar.fwp` llevan ahora a ese archivo).
+- El formato `.fwp` es texto: una línea de cabecera y, por proveedor, una línea con sus datos en JSON seguida del script **tal cual**. Ocupa lo mismo que un JSON (lo grande es el código), pero el script se puede leer y comparar antes de importarlo. Todos los proveedores que tenemos están en [`app/providers/catalog/providers.fwp`](https://raw.githubusercontent.com/katarem/trip-watch/main/app/providers/catalog/providers.fwp) (los antiguos `incluidos.fwp` y `sin-verificar.fwp` llevan ahora a ese archivo).
 
 **Ojo:** el script se ejecuta dentro del servidor con todos sus permisos (puede leer la base de datos y los secretos de los canales). Por eso solo lo escriben o importan administradores, hay que confirmar la contraseña para probarlo, importarlo y para guardarlo si cambia el código o se activa, y se anota quién lo guardó. Con `PROVIDER_SCRIPTS=0` los proveedores que hay siguen funcionando, pero desde el panel no se puede crear, importar, cambiar el código ni probar ninguno.
 

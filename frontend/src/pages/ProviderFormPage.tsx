@@ -47,7 +47,7 @@ const fromProvider = (s: Provider): FormState => ({
 
 /** Niveles de «Medidas anti-bot» (app/providers/stealth.py) y qué hace cada uno. */
 const STEALTH: { value: StealthLevel; label: string; hint: string }[] = [
-  { value: 0, label: 'Ninguna', hint: 'Peticiones normales, identificándose como Flight Watcher. Lo más rápido; vale para las webs que no bloquean.' },
+  { value: 0, label: 'Ninguna', hint: 'Peticiones normales, identificándose como Trip Watch. Lo más rápido; vale para las webs que no bloquean.' },
   {
     value: 1, label: 'Huella de Chrome y, si bloquean, Chrome',
     hint: 'Sus peticiones se hacen pasar por las de una persona con Chrome: huella TLS y HTTP/2 de Chrome, sus cabeceras en español, cookies que se conservan, visita previa a la portada y pausas más variables. Si aun así la web bloquea, repite la petición desde Chrome de verdad (más lento).',
@@ -100,7 +100,7 @@ function Contract({ coverage, kind }: { coverage: Coverage; kind?: KindMeta }) {
         <p>
           Ya están importados <code>date</code>, <code>datetime</code>, <code>timedelta</code>, <code>re</code>, <code>json</code>,
           {' '}<code>math</code>, <code>DayPrice</code>, <code>ProviderError</code>, <code>ProviderBlocked</code> y <code>add_months</code>.
-          Las peticiones llevan un User-Agent que dice quiénes somos (<code>flight-watcher</code>), salvo con medidas anti-bot.
+          Las peticiones llevan un User-Agent que dice quiénes somos (<code>trip-watch</code>), salvo con medidas anti-bot.
         </p>
         <p>
           Opcional: <code className="text-fg">BROWSER_PAGE = &quot;https://…&quot;</code>, la página de la web que abre Chrome

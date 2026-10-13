@@ -43,7 +43,7 @@ from .fakes import ASKED, SENT, TARGETS, TODAY  # noqa: E402
 fakes.install()
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
-CSRF = {"X-Requested-With": "flight-watcher"}
+CSRF = {"X-Requested-With": "trip-watch"}
 
 
 def check(cond, msg):
@@ -1001,7 +1001,7 @@ def bundle_flow(admin: Api):
     """Proveedores incluidos (creados al arrancar), el catálogo y paquetes: exportar, vista previa e importar."""
     lst = admin.get("/providers").json()["providers"]
     check([p["key"] for p in lst] == ["ryanair", "vueling"] and all(p["loaded"] and p["enabled"] for p in lst)
-          and lst[0]["updated_by"] == "flight-watcher" and lst[0]["source"] == bundle.CATALOG_URL + "providers.fwp"
+          and lst[0]["updated_by"] == bundle.SEED_USER and lst[0]["source"] == bundle.CATALOG_URL + "providers.fwp"
           and "wizzair" not in PROVIDERS, "al arrancar se crean Vueling y Ryanair como scripts (y nada más)")
     with db.connect() as con:
         check(db.get_setting(con, bundle.SEED_FLAG) == "1" and bundle.seed() == [], "la siembra ocurre una sola vez")
@@ -1055,6 +1055,18 @@ def bundle_flow(admin: Api):
     check(bundle.raw_url("https://github.com/katarem/flight-watcher/blob/main/app/providers/catalog/sin-verificar.fwp")
           == bundle.raw_url(bundle.CATALOG_URL + "incluidos.fwp") == bundle.CATALOG_URL + "providers.fwp",
           "los enlaces de los paquetes antiguos del catálogo llevan a providers.fwp")
+    check(bundle.raw_url("https://raw.githubusercontent.com/katarem/flight-watcher/main/app/providers/catalog/providers.fwp")
+          == bundle.CATALOG_URL + "providers.fwp" and "katarem/trip-watch/" in bundle.CATALOG_URL,
+          "el enlace del catálogo con el nombre anterior del repositorio (flight-watcher) lleva al de Trip Watch")
+    with db.connect() as con:
+        db.save_provider_script(con, "vueling", {"source": bundle.OLD_CATALOG_URLS[0] + "providers.fwp"}, "admin")
+    bundle.seed()
+    with db.connect() as con:
+        check(db.get_provider_script(con, "vueling")["source"] == bundle.CATALOG_URL + "providers.fwp",
+              "al arrancar, el origen guardado con el nombre anterior del repositorio pasa al nuevo")
+    renamed = bundle.dumps([{"key": "x", "code": "def fetch_route(*a):\n    return {}\n"}])
+    check(renamed.startswith("#flight-watcher:proveedores v1") and bundle.loads(renamed.replace("#flight-watcher", "#trip-watch", 1))[0]["key"] == "x",
+          ".fwp: se sigue escribiendo la cabecera de siempre (paneles anteriores) y se acepta también #trip-watch")
 
     # --- vista previa desde un enlace (el de GitHub se cambia por el del archivo en bruto) y desde un archivo
     url = "https://github.com/katarem/flight-watcher/blob/main/app/providers/catalog/providers.fwp"

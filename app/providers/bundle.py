@@ -17,6 +17,10 @@ el separador y sus datos en JSON (una sola línea) y, debajo, el script **tal cu
 `kind` es el tipo de proveedor (`flight`, `train`…, ver `app/kinds.py`); los paquetes de antes de la 1.9 no lo
 llevan y se importan como vuelos.
 
+La cabecera sigue diciendo `flight-watcher` (el nombre de antes de Trip Watch) a propósito: es el identificador del
+formato y los paneles anteriores a la 1.9 importan el catálogo de `main`; con otra cabecera dejarían de entenderlo.
+También se acepta `#trip-watch:proveedores` por si algún día se cambia (cuando ya nadie use un panel anterior).
+
 ¿Por qué no JSON? Ocuparía casi lo mismo (lo grande es el código y en JSON solo se escapan saltos de línea y
 comillas), pero el script quedaría en una sola línea ilegible. Así se puede leer, revisar y comparar (diff) el
 código antes de importarlo, que es lo importante cuando ese código se va a ejecutar en el servidor. El separador
@@ -27,7 +31,8 @@ Catálogo
 Todos los proveedores que tenemos están en un solo paquete, `catalog/providers.fwp`, que el panel ofrece importar
 desde GitHub (`CATALOG_URL`; al importar se eligen cuáles). La primera vez que arranca la app (`seed()`) se crean
 los de `SEEDED` (Vueling y Ryanair, verificados) y, del resto, los que ya usara alguna vigilancia (Wizz Air de
-antes de la 1.7.0). Los paquetes antiguos del catálogo (`LEGACY`: incluidos.fwp,
+antes de la 1.7.0). Los enlaces del repositorio con su nombre anterior (`OLD_CATALOG_URLS`, flight-watcher) y los
+paquetes antiguos del catálogo (`LEGACY`: incluidos.fwp,
 sin-verificar.fwp, aireuropa.fwp) apuntan ahora a ese archivo, también los enlaces ya guardados.
 """
 from __future__ import annotations
@@ -45,9 +50,10 @@ from . import stealth
 
 log = logging.getLogger("providers")
 
+#: Cabecera que se escribe (ver la docstring: se queda con el nombre de antes para no romper paneles anteriores).
 MAGIC = "#flight-watcher:proveedores"
 VERSION = 1
-HEADER_RE = re.compile(r"^#flight-watcher:proveedores v(\d+) separador=(\S+)\s*$")
+HEADER_RE = re.compile(r"^#(?:flight-watcher|trip-watch):proveedores v(\d+) separador=(\S+)\s*$")
 DEFAULT_SEPARATOR = "%%fw%%"
 #: Lo que se exporta de cada proveedor además del código (la clave, la primera).
 FIELDS = ("key", "kind", "label", "color", "coverage", "max_routes", "health_origin", "health_destination",
@@ -59,16 +65,19 @@ CATALOG_DIR = Path(__file__).resolve().parent / "catalog"
 #: Todos los proveedores que tenemos, en un solo paquete.
 CATALOG = CATALOG_DIR / "providers.fwp"
 #: Paquetes del catálogo que el panel ofrece importar desde GitHub (archivo, nombre en el panel).
-CATALOGS = ((CATALOG.name, "Catálogo de Flight Watcher"),)
+CATALOGS = ((CATALOG.name, "Catálogo de Trip Watch"),)
 #: Se crean al arrancar la primera vez (los demás del catálogo, solo si alguna vigilancia ya los usaba).
 SEEDED = ("vueling", "ryanair")
 #: Paquetes del catálogo de antes de la 1.8.0: sus enlaces llevan ahora a `CATALOG`.
 LEGACY = ("incluidos.fwp", "sin-verificar.fwp", "aireuropa.fwp")
 #: Dónde están publicados los paquetes incluidos (para importarlos o actualizarlos desde el panel).
-CATALOG_URL = "https://raw.githubusercontent.com/katarem/flight-watcher/main/app/providers/catalog/"
+CATALOG_URL = "https://raw.githubusercontent.com/katarem/trip-watch/main/app/providers/catalog/"
+#: Dónde estaba el catálogo con el nombre anterior del repositorio: sus enlaces (también los guardados como origen de
+#: un proveedor) llevan ahora a `CATALOG_URL`.
+OLD_CATALOG_URLS = ("https://raw.githubusercontent.com/katarem/flight-watcher/main/app/providers/catalog/",)
 #: Ajuste que marca que ya se crearon los proveedores incluidos (así, si se borran, no vuelven solos).
 SEED_FLAG = "providers_seeded"
-SEED_USER = "flight-watcher"
+SEED_USER = "trip-watch"  # los sembrados antes de la 1.9 llevan «flight-watcher"
 
 
 class BundleError(ValueError):
@@ -84,7 +93,7 @@ def dumps(rows: list[dict]) -> str:
         sep = f"%%fw{n}%%"
     out = [f"{MAGIC} v{VERSION} separador={sep}",
            f"# {len(rows)} proveedor{'es' if len(rows) != 1 else ''} exportado{'s' if len(rows) != 1 else ''} el "
-           f"{date.today().isoformat()} desde flight-watcher {__version__}.",
+           f"{date.today().isoformat()} desde Trip Watch {__version__}.",
            "# Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual."]
     for row, code in zip(rows, codes):
         meta = {k: row.get(k) for k in FIELDS} | {"stealth": stealth.level(row.get("stealth")) or stealth.OFF,
@@ -106,7 +115,7 @@ def loads(text: str) -> list[dict]:
                               "enlace lleva al archivo en bruto (en GitHub, el botón «Raw»).")
         raise BundleError(f"No es un paquete de proveedores: la primera línea debe empezar por «{MAGIC} v1».")
     if int(m[1]) != VERSION:
-        raise BundleError(f"El paquete es de una versión del formato que no conozco (v{m[1]}). Actualiza flight-watcher.")
+        raise BundleError(f"El paquete es de una versión del formato que no conozco (v{m[1]}). Actualiza Trip Watch.")
     sep = m[2]
     out: list[dict] = []
     current: dict | None = None
@@ -143,12 +152,20 @@ def loads(text: str) -> list[dict]:
     return out
 
 
+def _legacy_urls() -> dict[str, str]:
+    """Enlaces antiguos del catálogo → el actual: los paquetes de antes de la 1.8.0 y el repositorio con su nombre
+    anterior (flight-watcher)."""
+    out = {base + name: CATALOG_URL + CATALOG.name for base in (CATALOG_URL, *OLD_CATALOG_URLS) for name in LEGACY}
+    out |= {base + CATALOG.name: CATALOG_URL + CATALOG.name for base in OLD_CATALOG_URLS}
+    return out
+
+
 def raw_url(url: str) -> str:
     """Un enlace a un archivo de GitHub (…/blob/…) se cambia por el del archivo en bruto, y el de un paquete antiguo
-    del catálogo, por el del catálogo."""
+    del catálogo (o del repositorio con su nombre anterior), por el del catálogo."""
     m = re.match(r"^https://github\.com/([^/]+)/([^/]+)/blob/(.+)$", url)
     url = f"https://raw.githubusercontent.com/{m[1]}/{m[2]}/{m[3]}" if m else url
-    return CATALOG_URL + CATALOG.name if url in {CATALOG_URL + name for name in LEGACY} else url
+    return _legacy_urls().get(url, url)
 
 
 def download(url: str) -> str:
@@ -193,13 +210,13 @@ def values(p: dict) -> dict:
 def seed() -> list[str]:
     """Primer arranque con los proveedores como scripts: crea los de `SEEDED` (y los del catálogo que ya use alguna
     vigilancia) y pasa a cada proveedor la plantilla de enlace que tuviera en Ajustes. Solo una vez: si después se
-    borra uno, no vuelve solo. En cada arranque, los enlaces guardados de los paquetes antiguos del catálogo pasan
-    al del catálogo. Devuelve las claves creadas."""
+    borra uno, no vuelve solo. En cada arranque, los enlaces guardados de los paquetes antiguos del catálogo (y los del
+    repositorio con su nombre anterior) pasan al del catálogo. Devuelve las claves creadas."""
     from .. import db
 
     with db.connect() as con:
-        for name in LEGACY:
-            db.replace_provider_source(con, CATALOG_URL + name, CATALOG_URL + CATALOG.name)
+        for old, new in _legacy_urls().items():
+            db.replace_provider_source(con, old, new)
         if db.get_setting(con, SEED_FLAG):
             return []
         used = db.providers_in_use(con)

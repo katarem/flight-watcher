@@ -1,4 +1,4 @@
-# Roadmap
+# Roadmap de Trip Watch
 
 Hacia dónde va el proyecto: de vigilar vuelos a encontrar **la forma más barata de llegar a un destino**, con cualquier transporte y con alojamiento incluido.
 
@@ -49,8 +49,8 @@ Es la versión que decide cuánto cuestan las siguientes: generaliza lo que hoy 
 - [x] Telegram: botones con enlace (inline keyboard) en lugar de enlaces en el texto
 - [x] Calendario resumen como imagen PNG generada en el servidor y adjunta en ambos canales
 
-### Por decidir
-- [ ] Nombre del proyecto (repo e imagen `ghcr.io/katarem/flight-watcher`) si deja de ser solo de vuelos
+### Nombre
+- [x] Nombre del proyecto: **Trip Watch** (repo e imagen `ghcr.io/katarem/trip-watch`; antes Flight Watcher)
 
 ---
 

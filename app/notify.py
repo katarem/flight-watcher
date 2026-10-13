@@ -67,7 +67,7 @@ class Message:
     sections: list[Section] = field(default_factory=list)
     links: list[tuple[str, str]] = field(default_factory=list)  # enlaces generales: (texto, url)
     image: bytes | None = None
-    footer: str = "Flight Watcher"
+    footer: str = "Trip Watch"
 
     def text(self) -> str:
         """Todo el mensaje en texto plano (para los registros y los tests)."""
@@ -443,7 +443,7 @@ def sample_message(panel_url: str = "") -> Message:
     today = date.today()
     days = {today + timedelta(days=d): 45 + (d * 37) % 60 for d in range(5, 60) if d % 3}
     cheap = sorted(days, key=days.get)[:3]
-    msg = Message("✅ Flight Watcher: las notificaciones funcionan", url=_panel(panel_url, "/"), color=DEAL,
+    msg = Message("✅ Trip Watch: las notificaciones funcionan", url=_panel(panel_url, "/"), color=DEAL,
                   summary="Así se verá un aviso (precios de ejemplo, no son reales).")
     sec = Section("Aerolínea de ejemplo", ACCENT, "habitual ≈ 75 €")
     for d in sorted(cheap):

@@ -1,4 +1,4 @@
-"""Servidor de Flight Watcher: API JSON (`/api/v1`) y el panel React ya compilado (`app/web`).
+"""Servidor de Trip Watch: API JSON (`/api/v1`) y el panel React ya compilado (`app/web`).
 
 Un único proceso con un único worker: el planificador de comprobaciones vive dentro.
 """
@@ -67,7 +67,7 @@ async def lifespan(_app: FastAPI):
 
 
 # La documentación de la API (/api/v1/docs) se registra más abajo, solo con sesión iniciada.
-app = FastAPI(title="Flight Watcher", version=__version__, lifespan=lifespan,
+app = FastAPI(title="Trip Watch", version=__version__, lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
 
 
@@ -124,7 +124,7 @@ def openapi_schema():
 
 @app.get(f"{API_PREFIX}/docs", dependencies=[Depends(require_login)], include_in_schema=False)
 def api_docs():
-    return get_swagger_ui_html(openapi_url=f"{API_PREFIX}/openapi.json", title="Flight Watcher · API")
+    return get_swagger_ui_html(openapi_url=f"{API_PREFIX}/openapi.json", title="Trip Watch · API")
 
 
 # ----------------------------------------------------------------------- avatares
@@ -152,7 +152,7 @@ class ImmutableFiles(StaticFiles):
 if (WEB_DIR / "assets").is_dir():
     app.mount("/assets", ImmutableFiles(directory=WEB_DIR / "assets"), name="assets")
 
-_MISSING_BUILD = """<!doctype html><html lang="es"><meta charset="utf-8"><title>Flight Watcher</title>
+_MISSING_BUILD = """<!doctype html><html lang="es"><meta charset="utf-8"><title>Trip Watch</title>
 <body style="font-family:system-ui;max-width:40rem;margin:4rem auto;padding:0 1rem">
 <h1>Falta compilar el panel</h1><p>La API funciona, pero no se encuentra el panel web en <code>app/web</code>.
 Compílalo con <code>cd frontend &amp;&amp; npm ci &amp;&amp; npm run build</code> o usa la imagen Docker.</p>"""

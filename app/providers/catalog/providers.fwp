@@ -1,5 +1,5 @@
 #flight-watcher:proveedores v1 separador=%%fw%%
-# 6 proveedores exportados el 2026-10-13 desde flight-watcher 1.9.0.
+# 6 proveedores exportados el 2026-10-13 desde Trip Watch 1.9.0.
 # Cada bloque: una línea con el separador y los datos en JSON, y debajo el script de Python tal cual.
 %%fw%% {"key": "vueling", "kind": "flight", "label": "Vueling", "color": "#e8a800", "coverage": "probe", "max_routes": null, "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://tickets.vueling.com/booking?o={origin}&d={destination}&dd={date}&adt=1&chd=0&inf=0&c=es-ES&cur=EUR", "notes": "Calendario de ~1 año en una petición. Verificado contra la web real el 2026-09-30. Bloquea las IP de centros de datos: ejecutar desde una IP residencial. Residentes en islas/Ceuta: añade &dt=1 a la plantilla de enlace.", "min_interval": 1.5, "stealth": 0}
 """Vueling.
@@ -467,7 +467,7 @@ Consultas usadas:
     booking_calendar MONTHLY  -> precio más barato de cada día de un mes
 
 El GraphQL es lento (de 2 a 15 s por consulta, a veces más de 30): cada
-petición espera hasta TIMEOUT segundos y, si no responde, Flight Watcher la
+petición espera hasta TIMEOUT segundos y, si no responde, Trip Watch la
 repite una vez antes de darla por perdida.
 """
 
@@ -630,7 +630,7 @@ def _has_direct(api, origin, destination):
 
 
 def _timed_out(exc):
-    """La consulta no respondió ni al repetirla (ProviderTimeout de Flight Watcher)."""
+    """La consulta no respondió ni al repetirla (ProviderTimeout de Trip Watch)."""
     return "tiempo agotado" in str(exc)
 
 

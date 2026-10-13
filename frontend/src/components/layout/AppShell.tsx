@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Dialog } from 'radix-ui'
 import {
-  Activity, Bug, History, LayoutDashboard, LogOut, Luggage, Menu as MenuIcon, Monitor, Moon, Play, Plane, Settings, Sun, User as UserIcon,
+  Activity, Bug, History, LayoutDashboard, LogOut, Luggage, Menu as MenuIcon, Monitor, Moon, Play, Route, Settings, Sun, User as UserIcon,
   Users, X,
 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
@@ -230,9 +230,9 @@ export function AppShell() {
           <MobileNav />
           <Link to="/" className="flex items-center gap-2 font-semibold tracking-tight">
             <span className="grid size-8 place-items-center rounded-xl bg-accent text-accent-fg shadow-sm">
-              <Plane className="size-4 -rotate-45" aria-hidden="true" />
+              <Route className="size-4" aria-hidden="true" />
             </span>
-            <span className="hidden whitespace-nowrap sm:inline">Flight Watcher</span>
+            <span className="hidden whitespace-nowrap sm:inline">Trip Watch</span>
           </Link>
           <DesktopNav />
           <div className="ml-auto flex items-center gap-2">
@@ -261,7 +261,7 @@ export function AppShell() {
       </main>
 
       <footer className="mx-auto w-full max-w-6xl px-4 py-6 text-xs text-muted">
-        Próxima comprobación automática: {fmtDateTime(status?.next_run)} · Flight Watcher {meta ? `v${meta.version}` : ''}
+        Próxima comprobación automática: {fmtDateTime(status?.next_run)} · Trip Watch {meta ? `v${meta.version}` : ''}
       </footer>
       <Toaster
         theme={theme}

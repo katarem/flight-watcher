@@ -254,7 +254,7 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
         if trigger == "cron":
             for uid, items in problems.items():
                 if items and users[uid]["notify_errors"]:
-                    notify.send_text(user_channels[uid], "⚠️ Flight Watcher: hubo problemas",
+                    notify.send_text(user_channels[uid], "⚠️ Trip Watch: hubo problemas",
                                      [f"• {p}" for p in items], color=notify.WARN)
 
         with db.connect() as con:
