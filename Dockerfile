@@ -11,9 +11,9 @@ RUN npm run build
 FROM python:3.12-slim
 
 ARG VERSION=dev
-LABEL org.opencontainers.image.title="Flight Watcher" \
-      org.opencontainers.image.description="Panel y bot que vigila precios de vuelos y avisa por Discord y Telegram" \
-      org.opencontainers.image.source="https://github.com/katarem/flight-watcher" \
+LABEL org.opencontainers.image.title="Trip Watch" \
+      org.opencontainers.image.description="Panel y bot que vigila precios de viajes (hoy, vuelos) y avisa por Discord y Telegram" \
+      org.opencontainers.image.source="https://github.com/katarem/trip-watch" \
       org.opencontainers.image.version="${VERSION}"
 
 ENV PYTHONUNBUFFERED=1 \
@@ -25,10 +25,11 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /srv
 COPY requirements.txt .
 # patchright (Playwright parcheado) con Google Chrome, y Xvfb: una pantalla virtual para abrir Chrome «con ventana»
-# sin monitor (lo usan las medidas anti-bot de los proveedores; ver app/providers/browser.py).
+# sin monitor (lo usan las medidas anti-bot de los proveedores; ver app/providers/browser.py). Las fuentes DejaVu son
+# las del calendario en PNG de los avisos (app/images.py).
 RUN pip install -r requirements.txt \
     && patchright install --with-deps chrome \
-    && apt-get update && apt-get install -y --no-install-recommends xvfb \
+    && apt-get update && apt-get install -y --no-install-recommends xvfb fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 COPY app ./app

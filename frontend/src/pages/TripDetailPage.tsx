@@ -24,8 +24,8 @@ function CombosTable({ combos, label, showOut = true }: { combos: TripCombo[]; l
             {showOut && <th scope="col">Ida</th>}
             <th scope="col">Vuelta</th>
             <th scope="col" className="text-right!">Noches</th>
-            <th scope="col">Vuelo de ida</th>
-            <th scope="col">Vuelo de vuelta</th>
+            <th scope="col">Tramo de ida</th>
+            <th scope="col">Tramo de vuelta</th>
             <th scope="col" className="text-right!">Total</th>
           </tr>
         </thead>

@@ -25,7 +25,7 @@ export async function api<T>(path: string, init: { method?: string; body?: Body 
   const method = init.method ?? 'GET'
   const headers: Record<string, string> = { Accept: 'application/json' }
   let body: BodyInit | undefined
-  if (method !== 'GET') headers['X-Requested-With'] = 'flight-watcher'
+  if (method !== 'GET') headers['X-Requested-With'] = 'trip-watch'
   if (init.body instanceof FormData) body = init.body
   else if (init.body !== undefined) {
     headers['Content-Type'] = 'application/json'
@@ -57,7 +57,7 @@ export async function stream<T>(path: string, body: object, onEvent: (event: T) 
   try {
     res = await fetch(API + path, {
       method: 'POST',
-      headers: { Accept: 'application/x-ndjson', 'Content-Type': 'application/json', 'X-Requested-With': 'flight-watcher' },
+      headers: { Accept: 'application/x-ndjson', 'Content-Type': 'application/json', 'X-Requested-With': 'trip-watch' },
       body: JSON.stringify(body),
       credentials: 'same-origin',
     })

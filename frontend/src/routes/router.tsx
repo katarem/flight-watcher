@@ -1,4 +1,4 @@
-import { createBrowserRouter, Navigate } from 'react-router'
+import { createBrowserRouter } from 'react-router'
 import { AppShell } from '@/components/layout/AppShell'
 import { ChannelFormPage } from '@/pages/ChannelFormPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -8,7 +8,9 @@ import { ProfilePage } from '@/pages/ProfilePage'
 import { TripFormPage } from '@/pages/TripFormPage'
 import { TripsPage } from '@/pages/TripsPage'
 import { WatchFormPage } from '@/pages/WatchFormPage'
+import { WatchesPage } from '@/pages/WatchesPage'
 import { RequireAdmin, RequireAuth } from './guards'
+import { LegacyWatch } from './legacy'
 
 /** Páginas que se cargan al visitarlas (las gráficas y la administración no hacen falta al entrar). */
 const page = (load: () => Promise<Record<string, React.ComponentType>>, name: string, adminOnly = false) => ({
@@ -20,7 +22,8 @@ const page = (load: () => Promise<Record<string, React.ComponentType>>, name: st
 
 const admin = (el: React.ReactNode) => <RequireAdmin>{el}</RequireAdmin>
 
-// Mismas URL que el panel anterior: los enlaces de los avisos (/watches/{id}) siguen funcionando.
+// Cada transporte tiene su apartado (/flights para los vuelos). Las URL de antes de la 1.9 (/watches/{id}, que sale en
+// los avisos ya enviados) llevan al apartado de la vigilancia.
 export const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
   {
@@ -34,10 +37,14 @@ export const router = createBrowserRouter([
     hydrateFallbackElement: <div className="min-h-dvh" />,
     children: [
       { index: true, element: <DashboardPage /> },
-      { path: 'watches', element: <Navigate to="/" replace /> },
-      { path: 'watches/new', element: <WatchFormPage /> },
-      { path: 'watches/:id', ...page(() => import('@/pages/WatchDetailPage'), 'WatchDetailPage') },
-      { path: 'watches/:id/edit', element: <WatchFormPage /> },
+      { path: 'flights', element: <WatchesPage kind="flight" /> },
+      { path: 'flights/new', element: <WatchFormPage kind="flight" /> },
+      { path: 'flights/:id', ...page(() => import('@/pages/WatchDetailPage'), 'WatchDetailPage') },
+      { path: 'flights/:id/edit', element: <WatchFormPage kind="flight" /> },
+      { path: 'watches', element: <LegacyWatch /> },
+      { path: 'watches/new', element: <LegacyWatch /> },
+      { path: 'watches/:id', element: <LegacyWatch /> },
+      { path: 'watches/:id/edit', element: <LegacyWatch /> },
       { path: 'trips', element: <TripsPage /> },
       { path: 'trips/new', element: <TripFormPage /> },
       { path: 'trips/:id', ...page(() => import('@/pages/TripDetailPage'), 'TripDetailPage') },

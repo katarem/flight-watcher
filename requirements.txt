@@ -11,3 +11,4 @@ psycopg[binary]>=3.1
 pymysql>=1.1
 alembic>=1.13
 itsdangerous>=2.1
+pillow>=10.1

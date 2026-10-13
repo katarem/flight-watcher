@@ -11,8 +11,10 @@ import { Button, buttonClass } from '@/components/ui/button'
 import { Badge, Card, CardHeader, PageHeader } from '@/components/ui/card'
 import { ErrorBox, LoadError, PageLoading } from '@/components/ui/feedback'
 import { Checkbox, Field, Input } from '@/components/ui/form'
+import { cn } from '@/lib/cn'
 import { fmtAgo } from '@/lib/format'
 import { useTitle } from '@/lib/hooks'
+import { KIND_ICONS } from '@/lib/kinds'
 
 function ProviderCard({ p, onTest, testing, disabled, selected, onSelect }: {
   p: Provider
@@ -32,7 +34,7 @@ function ProviderCard({ p, onTest, testing, disabled, selected, onSelect }: {
           </Checkbox>
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 id={`prov-${p.key}`} className="text-base font-semibold tracking-tight">{p.label}</h2>
+              <h3 id={`prov-${p.key}`} className="text-base font-semibold tracking-tight">{p.label}</h3>
               <span className="font-mono text-xs text-muted">{p.key}</span>
               {p.error ? <Badge tone="danger">No carga</Badge> : !p.enabled ? <Badge>Desactivado</Badge> : null}
               {p.stealth > 0 && (
@@ -84,6 +86,7 @@ export function ProvidersPage() {
   const [testing, setTesting] = useState<string | null>(null)
   const [lastRun, setLastRun] = useState<HealthRun | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [kindFilter, setKindFilter] = useState('')
 
   const run = useMutation({
     mutationFn: (key: string | null) => post<HealthRun>('/providers/health', {
@@ -113,7 +116,11 @@ export function ProvidersPage() {
   if (data.isPending) return <PageLoading />
   if (data.isError) return <LoadError error={data.error} />
 
-  const { providers, editable } = data.data
+  const { providers, editable, kinds } = data.data
+  // Agrupados por tipo (vuelos, trenes…), en el orden de los tipos; con el filtro, solo uno.
+  const present = kinds.filter((k) => providers.some((p) => p.kind === k.key))
+  const groups = present.filter((k) => !kindFilter || k.key === kindFilter)
+    .map((k) => ({ kind: k, items: providers.filter((p) => p.kind === k.key) }))
   const chosen = providers.filter((p) => selected.has(p.key))
   const toggle = (key: string, on: boolean) => setSelected((s) => {
     const next = new Set(s)
@@ -125,7 +132,7 @@ export function ProvidersPage() {
     e.preventDefault()
     run.mutate(null)
   }
-  const iata = (v: string) => v.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3)
+  const iata = (v: string) => v.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10)
   const exportUrl = (keys: string[]) => `${API}/providers/export${keys.length ? `?keys=${encodeURIComponent(keys.join(','))}` : ''}`
 
   return (
@@ -157,7 +164,7 @@ export function ProvidersPage() {
 
       <Card aria-labelledby="probar-todos" className="mb-4">
         <CardHeader id="probar-todos" title="Probar el acceso"
-          description="Comprueba desde la IP de este servidor si cada web nos deja consultar sus rutas y precios, como un healthcheck. Sin ruta, cada proveedor usa la suya; con ruta (aeropuertos IATA), se prueba esa en todos." />
+          description="Comprueba desde la IP de este servidor si cada web nos deja consultar sus rutas y precios, como un healthcheck. Sin ruta, cada proveedor usa la suya; con ruta (aeropuertos IATA, o lugares de su transporte), se prueba esa en todos." />
         <form onSubmit={submit} className="space-y-4" noValidate>
           <ErrorBox errors={errors} />
           <div className="grid gap-4 sm:grid-cols-2">
@@ -204,11 +211,39 @@ export function ProvidersPage() {
           {editable && <Link to="/admin/providers/import" className={buttonClass('primary')}><Upload /> Importar proveedores</Link>}
         </Card>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
-          {providers.map((p) => (
-            <ProviderCard key={p.key} p={p} testing={testing === p.key} disabled={testing != null}
-              onTest={() => run.mutate(p.key)} selected={selected.has(p.key)} onSelect={(on) => toggle(p.key, on)} />
-          ))}
+        <div className="space-y-6">
+          {present.length > 1 && (
+            <div role="group" aria-label="Filtrar por tipo" className="flex w-fit flex-wrap gap-1 rounded-xl bg-surface-2 p-1">
+              {[{ key: '', label: 'Todos', n: providers.length },
+                ...present.map((k) => ({ key: k.key, label: k.label, n: providers.filter((p) => p.kind === k.key).length }))].map((k) => (
+                <button key={k.key} type="button" aria-pressed={kindFilter === k.key} onClick={() => setKindFilter(k.key)}
+                  className={cn('rounded-lg px-3 py-1 text-sm font-medium transition',
+                    kindFilter === k.key ? 'bg-surface text-fg shadow-sm' : 'text-muted hover:text-fg')}>
+                  {k.label} ({k.n})
+                </button>
+              ))}
+            </div>
+          )}
+          {groups.map(({ kind, items }) => {
+            const Icon = KIND_ICONS[kind.key]
+            return (
+              <section key={kind.key} aria-labelledby={`tipo-${kind.key}`} className="space-y-3">
+                <h2 id={`tipo-${kind.key}`} className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+                  <Icon className="size-4.5 text-muted" aria-hidden="true" /> {kind.label}
+                  <span className="text-sm font-normal text-muted">
+                    {items.length} {items.length === 1 ? 'proveedor' : 'proveedores'}
+                    {!kind.available && ` · vigilancias de ${kind.plural} en la ${kind.since}`}
+                  </span>
+                </h2>
+                <div className="grid gap-4 lg:grid-cols-2">
+                  {items.map((p) => (
+                    <ProviderCard key={p.key} p={p} testing={testing === p.key} disabled={testing != null}
+                      onTest={() => run.mutate(p.key)} selected={selected.has(p.key)} onSelect={(on) => toggle(p.key, on)} />
+                  ))}
+                </div>
+              </section>
+            )
+          })}
         </div>
       )}
 

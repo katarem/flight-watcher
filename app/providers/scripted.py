@@ -5,17 +5,21 @@ vez (`bundle.seed()`) y se pueden editar, exportar o borrar desde el panel.
 
 Contrato
 --------
-El script es un módulo de Python que define:
+Cada proveedor es de un tipo (`kind`, ver `app/kinds.py`): hoy vuelos (`flight`); barcos, trenes y buses comparten
+este mismo contrato (el alojamiento tendrá el suyo). El script es un módulo de Python que define:
 
     def fetch_route(api, origin, destination, start, max_months):
-        # Precios de origin→destination (aeropuertos IATA) desde `start` (date) durante `max_months` meses.
+        # Precios de origin→destination (aeropuertos IATA en los vuelos; estaciones, puertos o paradas en los demás)
+        # desde `start` (date) durante `max_months` meses.
         # Devuelve {date: precio en euros}, {date: DayPrice} o una lista de DayPrice; {} si no opera la ruta.
+        # DayPrice admite la hora de salida y de llegada si la web las da:
+        #     DayPrice(day, 39.99, departure="06:35", arrival="08:10")   # o datetime/time
         # Si además acepta `max_stops` (fetch_route(…, max_months, max_stops=None)), recibe el máximo de escalas
         # de la vigilancia (0 = solo directos, None = sin límite) y filtra él mismo.
 
 y, según la cobertura elegida en el formulario:
 
-    network    def network(api, origin) -> códigos IATA con vuelo directo desde `origin`
+    network    def network(api, origin) -> códigos (IATA en los vuelos) con trayecto directo desde `origin`
     probe      def probe(api, origin, destination) -> True/False (¿opera la ruta?)
     universal  nada más (cubre cualquier ruta)
 
@@ -56,6 +60,7 @@ import traceback
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
+from .. import kinds, places
 from . import stealth
 from .base import ApiProvider, DayPrice, ProviderBlocked, ProviderError, ProviderTimeout, add_months
 
@@ -136,8 +141,9 @@ def script_frames(exc: BaseException, key: str) -> list[str]:
             for f in traceback.extract_tb(exc.__traceback__) if f.filename == filename(key)]
 
 
-def load(key: str, code: str, coverage: str, printer: Callable[..., None] | None = None) -> dict:
-    """Compila y ejecuta el script en un espacio de nombres propio y comprueba el contrato."""
+def load(key: str, code: str, coverage: str, printer: Callable[..., None] | None = None,
+         kind: str = kinds.DEFAULT) -> dict:
+    """Compila y ejecuta el script en un espacio de nombres propio y comprueba el contrato de su tipo."""
     try:
         compiled = compile(code, filename(key), "exec")
     except SyntaxError as exc:
@@ -154,7 +160,7 @@ def load(key: str, code: str, coverage: str, printer: Callable[..., None] | None
     page = ns.get("BROWSER_PAGE")
     if page is not None and not (isinstance(page, str) and re.fullmatch(r"https?://[^\s/]+(/\S*)?", page)):
         raise ScriptError("`BROWSER_PAGE` debe ser la URL de una página de la web (https://…).")
-    missing = [f for f in ("fetch_route", COVERAGE_FUNCS.get(coverage)) if f and not callable(ns.get(f))]
+    missing = [f for f in (kinds.get(kind).contract, COVERAGE_FUNCS.get(coverage)) if f and not callable(ns.get(f))]
     if missing:
         raise ScriptError("Falta definir " + " y ".join(f"`{f}`" for f in missing)
                           + (f" (cobertura «{coverage}»)" if COVERAGE_FUNCS.get(coverage) in missing else "") + ".")
@@ -306,6 +312,7 @@ def normalize(result, label: str) -> dict[date, DayPrice | float]:
                 value.day, value.currency = day, (value.currency or "EUR").upper()
                 if _price(value.price) is None:
                     continue
+                value.clock()
                 price = value.price
             else:
                 price = value = _price(value)
@@ -313,7 +320,7 @@ def normalize(result, label: str) -> dict[date, DayPrice | float]:
                     continue
         except (TypeError, ValueError) as exc:
             raise ProviderError(f"{label}: `fetch_route` devolvió un elemento no válido ({raw_day!r}: {value!r}); "
-                                "se espera {fecha: precio} o DayPrice") from exc
+                                "se espera {fecha: precio} o DayPrice (con horas como «06:35» o datetime)") from exc
         old = out.get(day)
         if old is None or price < (old.price if isinstance(old, DayPrice) else old):
             out[day] = value
@@ -329,6 +336,7 @@ class ScriptedProvider(ApiProvider):
 
     def __init__(self, row: dict, console: Console | None = None):
         self.key, self.label, self.color = row["key"], row["label"], row["color"]
+        self.kind = row.get("kind") or kinds.DEFAULT
         self.coverage = row["coverage"]
         self.max_routes = row.get("max_routes") if self.coverage == "universal" else None
         self.health_route = (row["health_origin"], row["health_destination"])
@@ -347,7 +355,7 @@ class ScriptedProvider(ApiProvider):
         self.console = console
         #: True cuando se corta la prueba del editor: el script que sigue en segundo plano ya no hace peticiones.
         self.stopped = False
-        self.ns = load(self.key, row["code"], self.coverage, printer=self.say)
+        self.ns = load(self.key, row["code"], self.coverage, printer=self.say, kind=self.kind)
         #: Página que abre Chrome (`BROWSER_PAGE` del script); None = la portada de la web de cada URL.
         self.browser_page: str | None = self.ns.get("BROWSER_PAGE")
         try:
@@ -400,12 +408,13 @@ class ScriptedProvider(ApiProvider):
 
     def network(self, session, origin):
         found = self._call("network", ScriptApi(self, session, None, ""), origin) or []
+        what = "IATA" if self.kind == "flight" else f"de {kinds.get(self.kind).node_label} (4 a 10 letras o cifras)"
         if isinstance(found, (str, bytes)) or not hasattr(found, "__iter__"):
-            raise ProviderError(f"{self.label}: `network` debe devolver una lista de códigos IATA")
+            raise ProviderError(f"{self.label}: `network` debe devolver una lista de códigos {what}")
         codes = {str(c).strip().upper() for c in found if c}
-        bad = sorted(c for c in codes if not re.fullmatch(r"[A-Z]{3}", c))
+        bad = sorted(c for c in codes if not places.node_code_ok(c, self.kind))
         if bad:
-            raise ProviderError(f"{self.label}: `network` devolvió códigos que no son IATA: {', '.join(bad[:5])}")
+            raise ProviderError(f"{self.label}: `network` devolvió códigos que no son {what}: {', '.join(bad[:5])}")
         return codes
 
     def probe(self, session, origin, destination):

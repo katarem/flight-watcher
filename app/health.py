@@ -263,7 +263,8 @@ def check_draft(build, origin: str, destination: str, say=None, idle_timeout: fl
         "key": key, "status": worst(result), "route": route, "steps": [{**s, "route": route} for s in result],
         "latency_ms": int((time.monotonic() - started) * 1000), "checked_at": _now(),
         "sample": [{"day": p.day.isoformat(), "price": p.price, "currency": p.currency, "origin": p.origin,
-                    "destination": p.destination, "stops": p.stops} for p in sorted(found, key=lambda p: p.day)[:62]],
+                    "destination": p.destination, "stops": p.stops, "departs_at": db.minutes(p.departure),
+                    "arrives_at": db.minutes(p.arrival)} for p in sorted(found, key=lambda p: p.day)[:62]],
         "n_prices": len(found),
     }
 

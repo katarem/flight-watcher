@@ -1,8 +1,8 @@
-# Roadmap
+# Roadmap de Trip Watch
 
 Hacia dónde va el proyecto: de vigilar vuelos a encontrar **la forma más barata de llegar a un destino**, con cualquier transporte y con alojamiento incluido.
 
-**Versión actual:** 1.8.1 · El detalle de lo publicado está en [CHANGELOG.md](CHANGELOG.md).
+**Versión actual:** 1.9.0 · El detalle de lo publicado está en [CHANGELOG.md](CHANGELOG.md).
 
 Marca cada punto con `[x]` cuando esté publicado en una versión.
 
@@ -19,38 +19,38 @@ Marca cada punto con `[x]` cuando esté publicado en una versión.
 
 ---
 
-## 1.9 — Preparar el terreno
+## 1.9 — Preparar el terreno (publicada en la 1.9.0)
 
 Es la versión que decide cuánto cuestan las siguientes: generaliza lo que hoy depende de que todo sean vuelos.
 
 ### Proveedores por tipo
-- [ ] Columna `kind` en `provider_scripts` (migración nueva); los actuales pasan a `FLIGHT`
-- [ ] Contrato por tipo: los de transporte comparten `fetch_route`; `HOTEL` tendrá el suyo
-- [ ] El formato `.fwp` guarda el tipo (los paquetes antiguos se importan como `FLIGHT`)
-- [ ] La zona «Proveedores» filtra y agrupa por tipo
+- [x] Columna `kind` en `provider_scripts` (migración `0008`); los actuales pasan a `flight` (también `watches.kind`)
+- [x] Contrato por tipo (`app/kinds.py`): los de transporte comparten `fetch_route`; `hotel` tendrá el suyo (`fetch_stay`, 2.0)
+- [x] El formato `.fwp` guarda el tipo (los paquetes antiguos se importan como `flight`)
+- [x] La zona «Proveedores» filtra y agrupa por tipo
 
 ### Lugares genéricos
-- [ ] Modelo de lugar con tipo: aeropuerto, estación, puerto, parada de bus
-- [ ] La **ciudad** como nodo común que agrupa sus aeropuertos, estaciones, puertos y paradas
-- [ ] El autocompletado de lugares filtra por el tipo de transporte de la vigilancia
+- [x] Modelo de lugar con tipo: aeropuerto, estación, puerto, parada de bus (sus datos, `stations.csv`, `ports.csv` y `stops.csv`, llegan con cada transporte en la 3.x)
+- [x] La **ciudad** como nodo común que agrupa sus aeropuertos, estaciones, puertos y paradas
+- [x] El autocompletado de lugares filtra por el tipo de transporte de la vigilancia
 
 ### Horas en los precios
-- [ ] `DayPrice` admite hora de salida y de llegada (opcionales)
-- [ ] Los scripts actuales devuelven las horas cuando la web las da
-- [ ] Se guardan en `prices` (necesario para encadenar transportes en la 4.0)
+- [x] `DayPrice` admite hora de salida y de llegada (opcionales)
+- [x] Los scripts actuales devuelven las horas cuando la web las da (Ryanair, salida y llegada; Wizz Air, la salida si hay un solo vuelo ese día; los demás calendarios no las dan)
+- [x] Se guardan en `prices` (necesario para encadenar transportes en la 4.0)
 
 ### Apartado de vuelos en el panel
-- [ ] Todo lo de vuelos pasa a su propio apartado; el resto del panel deja de asumir que todo son vuelos
-- [ ] Redirecciones desde `/watches/{id}` (sale en avisos ya enviados)
+- [x] Todo lo de vuelos pasa a su propio apartado (`/flights`); el Panel es un resumen de todos los apartados
+- [x] Redirecciones desde `/watches/{id}` (sale en avisos ya enviados)
 
 ### Avisos enriquecidos
-- [ ] Los avisos generan un mensaje estructurado (título, campos, enlaces, imagen) y cada tipo de canal lo pinta a su manera
-- [ ] Discord: `embeds` con color por proveedor, un campo por fecha y enlace directo
-- [ ] Telegram: botones con enlace (inline keyboard) en lugar de enlaces en el texto
-- [ ] Calendario resumen como imagen PNG generada en el servidor y adjunta en ambos canales
+- [x] Los avisos generan un mensaje estructurado (título, campos, enlaces, imagen) y cada tipo de canal lo pinta a su manera
+- [x] Discord: `embeds` con color por proveedor, un campo por fecha y enlace directo
+- [x] Telegram: botones con enlace (inline keyboard) en lugar de enlaces en el texto
+- [x] Calendario resumen como imagen PNG generada en el servidor y adjunta en ambos canales
 
-### Por decidir
-- [ ] Nombre del proyecto (repo e imagen `ghcr.io/katarem/flight-watcher`) si deja de ser solo de vuelos
+### Nombre
+- [x] Nombre del proyecto: **Trip Watch** (repo e imagen `ghcr.io/katarem/trip-watch`; antes Flight Watcher)
 
 ---
 

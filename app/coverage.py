@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from . import db, notify, places
+from . import db, kinds, notify, places
 from .providers import PROVIDERS, ProviderBlocked, ProviderError, ordered
 
 log = logging.getLogger("coverage")
@@ -97,12 +97,13 @@ def check(key: str, pairs: list[tuple[str, str]], max_age_days: float | None = C
 
 def _check(prov, pairs, max_age_days) -> Result:
     if not pairs:
-        return Result(prov.key, "none", reason="Origen y destino son el mismo aeropuerto.")
+        return Result(prov.key, "none", reason="Origen y destino son el mismo lugar.")
     limit = prov.max_routes or places.MAX_PAIRS
     if prov.coverage == "universal":
         if len(pairs) > limit:
-            return Result(prov.key, "too_many", reason=f"{prov.label} admite como mucho {limit} pares de "
-                          f"aeropuertos por vigilancia y esta ruta tiene {len(pairs)}: acota el origen o el destino.")
+            return Result(prov.key, "too_many", reason=f"{prov.label} admite como mucho {limit} combinaciones de "
+                          f"origen y destino por vigilancia y esta ruta tiene {len(pairs)}: acota el origen o el "
+                          "destino.")
         return Result(prov.key, "ok", list(pairs), f"Busca en cualquier ruta: {_routes_text(pairs)}.")
 
     known: dict[tuple[str, str], bool] = {}
@@ -149,7 +150,9 @@ def _check(prov, pairs, max_age_days) -> Result:
         detail = errors[0] if errors else "sin respuesta"
         return Result(prov.key, "error", [], f"No se ha podido comprobar: {detail}")
     if prov.coverage == "network":
-        return Result(prov.key, "none", [], f"{prov.label} no tiene vuelos directos en esta ruta según su red de rutas.")
+        plural = kinds.get(prov.kind).plural
+        return Result(prov.key, "none", [],
+                      f"{prov.label} no tiene {plural} directos en esta ruta según su red de rutas.")
     return Result(prov.key, "none", [], f"{prov.label} no opera esta ruta.")
 
 
@@ -181,7 +184,7 @@ def check_many(keys, pairs, timeout: float | None = CHECK_TIMEOUT,
 
 
 def coverage_for(keys, origin: str, destination: str, current: dict | None = None,
-                 timeout: float | None = CHECK_TIMEOUT) -> tuple[dict[str, dict], list[str]]:
+                 timeout: float | None = CHECK_TIMEOUT, mode: str = "flight") -> tuple[dict[str, dict], list[str]]:
     """Cobertura para guardar una vigilancia y errores de validación.
 
     Un proveedor que seguro no opera la ruta es un error, salvo que la vigilancia ya lo tuviera (ruta
@@ -189,7 +192,7 @@ def coverage_for(keys, origin: str, destination: str, current: dict | None = Non
     sin comprobar (la revalidación semanal lo pondrá al día).
     """
     current = current or {}
-    pairs = places.routes(origin, destination)
+    pairs = places.routes(origin, destination, mode)
     coverage, errors = {}, []
     now = _now()
     for res in check_many(keys, pairs, timeout):
@@ -217,15 +220,15 @@ def revalidate(trigger: str = "cron") -> dict:
             users = {u["id"]: u for u in db.list_users(con)}
             watches = [w for w in db.list_watches(con)
                        if w["enabled"] and users.get(w["user_id"], {}).get("enabled")]
-        pairs_cache: dict[tuple[str, str, str], Result] = {}
+        pairs_cache: dict[tuple[str, str, str, str], Result] = {}
         changes = 0
         for w in watches:
-            pairs = places.routes(w["origin"], w["destination"])
+            pairs = places.routes(w["origin"], w["destination"], w["kind"])
             lines = []
             for key, cov in w["coverage"].items():
                 if key not in PROVIDERS:
                     continue
-                cache_key = (key, w["origin"], w["destination"])
+                cache_key = (key, w["origin"], w["destination"], w["kind"])
                 if cache_key not in pairs_cache:  # la ida y la vuelta de otro usuario no se repiten
                     pairs_cache[cache_key] = check(key, pairs, max_age_days=None if trigger == "cron" else 0.5)
                 res = pairs_cache[cache_key]
@@ -247,7 +250,9 @@ def revalidate(trigger: str = "cron") -> dict:
                     chans = [c for c in db.list_channels(con, w["user_id"], only_enabled=True)
                              if c["id"] in w["channel_ids"]]
                 if chans:
-                    notify.send_text(chans, f"🗓️ Flight Watcher · {w['name']}: cambios en las rutas\n" + "\n".join(lines))
+                    panel = (db.get_settings().get("panel_url") or "").rstrip("/")
+                    notify.send_text(chans, f"🗓️ {w['name']}: cambios en las rutas", lines,
+                                     url=f"{panel}{notify.watch_path(w)}" if panel else "")
         return {"status": "done", "watches": len(watches), "changed": changes}
     finally:
         _revalidate_lock.release()

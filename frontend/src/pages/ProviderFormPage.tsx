@@ -5,7 +5,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import { API, ApiError, del, errorList, post, put, stream } from '@/api/client'
 import { keys, useProvider, useProvidersAdmin } from '@/api/queries'
-import type { ConsoleEvent, Coverage, Provider, ScriptTestResult, StealthLevel } from '@/api/types'
+import type { ConsoleEvent, Coverage, KindKey, KindMeta, Provider, ScriptTestResult, StealthLevel } from '@/api/types'
 import { ScriptConsole } from '@/components/provider/console'
 import { StatusBadge } from '@/components/provider/health'
 import { Button, buttonClass } from '@/components/ui/button'
@@ -13,7 +13,7 @@ import { PageHeader } from '@/components/ui/card'
 import { ConfirmDialog } from '@/components/ui/dialog'
 import { ErrorBox, LoadError, PageLoading } from '@/components/ui/feedback'
 import { Field, FormSection, Input, Select, Switch, Textarea } from '@/components/ui/form'
-import { fmtAgo, fmtDay, fmtMoney, fmtStops } from '@/lib/format'
+import { fmtAgo, fmtClock, fmtDay, fmtMoney, fmtStops } from '@/lib/format'
 import { useTitle } from '@/lib/hooks'
 
 const COVERAGES: { value: Coverage; label: string; fn: string }[] = [
@@ -24,6 +24,7 @@ const COVERAGES: { value: Coverage; label: string; fn: string }[] = [
 
 interface FormState {
   key: string
+  kind: KindKey
   label: string
   color: string
   coverage: Coverage
@@ -39,14 +40,14 @@ interface FormState {
 }
 
 const fromProvider = (s: Provider): FormState => ({
-  key: s.key, label: s.label, color: s.color, coverage: s.coverage, max_routes: s.max_routes != null ? String(s.max_routes) : '',
+  key: s.key, kind: s.kind, label: s.label, color: s.color, coverage: s.coverage, max_routes: s.max_routes != null ? String(s.max_routes) : '',
   health_origin: s.health_origin, health_destination: s.health_destination, link_template: s.link_template, notes: s.notes,
   min_interval: String(s.min_interval), code: s.code ?? '', enabled: s.enabled, stealth: s.stealth,
 })
 
 /** Niveles de «Medidas anti-bot» (app/providers/stealth.py) y qué hace cada uno. */
 const STEALTH: { value: StealthLevel; label: string; hint: string }[] = [
-  { value: 0, label: 'Ninguna', hint: 'Peticiones normales, identificándose como Flight Watcher. Lo más rápido; vale para las webs que no bloquean.' },
+  { value: 0, label: 'Ninguna', hint: 'Peticiones normales, identificándose como Trip Watch. Lo más rápido; vale para las webs que no bloquean.' },
   {
     value: 1, label: 'Huella de Chrome y, si bloquean, Chrome',
     hint: 'Sus peticiones se hacen pasar por las de una persona con Chrome: huella TLS y HTTP/2 de Chrome, sus cabeceras en español, cookies que se conservan, visita previa a la portada y pausas más variables. Si aun así la web bloquea, repite la petición desde Chrome de verdad (más lento).',
@@ -57,27 +58,33 @@ const STEALTH: { value: StealthLevel; label: string; hint: string }[] = [
   },
 ]
 
-const iata = (v: string) => v.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3)
+/** Código de un lugar de la ruta de prueba: IATA (3 letras) en los vuelos; de 4 a 10 letras o cifras en el resto. */
+const placeCode = (kind: KindKey) => (v: string) =>
+  kind === 'flight' ? v.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3) : v.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10)
 
 /** Qué tiene que definir el script (el contrato), según la cobertura elegida. */
-function Contract({ coverage }: { coverage: Coverage }) {
+function Contract({ coverage, kind }: { coverage: Coverage; kind?: KindMeta }) {
   const fn = COVERAGES.find((c) => c.value === coverage)?.fn
+  const flight = !kind || kind.key === 'flight'
+  const places = flight ? 'aeropuertos IATA' : `códigos de ${kind.node_label}`
   return (
     <details className="rounded-xl border border-line bg-surface-2/50 p-3 text-sm">
       <summary className="cursor-pointer font-medium">El contrato: qué tiene que definir el script</summary>
       <div className="mt-3 space-y-2 text-muted">
         <p>
           <code className="text-fg">fetch_route(api, origin, destination, start, max_months)</code>: precios de
-          {' '}<code>origin</code>→<code>destination</code> (aeropuertos IATA) desde <code>start</code> (fecha) durante
+          {' '}<code>origin</code>→<code>destination</code> ({places}) desde <code>start</code> (fecha) durante
           {' '}<code>max_months</code> meses. Devuelve <code>{'{fecha: precio en euros}'}</code>, <code>{'{fecha: DayPrice}'}</code> o
           una lista de <code>DayPrice</code>; <code>{'{}'}</code> si no opera la ruta. Con otra moneda o con escalas:
-          {' '}<code>DayPrice(día, precio, currency=&quot;GBP&quot;, stops=1)</code>. Si además acepta
+          {' '}<code>DayPrice(día, precio, currency=&quot;GBP&quot;, stops=1)</code>; con la hora de salida y de llegada, si la web
+          las da: <code>DayPrice(día, precio, departure=&quot;06:35&quot;, arrival=&quot;08:10&quot;)</code> (también
+          {' '}<code>datetime</code>; una llegada anterior a la salida es del día siguiente). Si además acepta
           {' '}<code>max_stops=None</code>, recibe el máximo de escalas de la vigilancia y filtra él mismo.
         </p>
         {fn ? (
           <p>
             <code className="text-fg">{fn}</code>: {coverage === 'network'
-              ? 'códigos IATA con vuelo directo desde origin.'
+              ? `${flight ? 'códigos IATA' : places} con trayecto directo desde origin.`
               : 'True si opera la ruta, False si no.'}
           </p>
         ) : (
@@ -93,7 +100,7 @@ function Contract({ coverage }: { coverage: Coverage }) {
         <p>
           Ya están importados <code>date</code>, <code>datetime</code>, <code>timedelta</code>, <code>re</code>, <code>json</code>,
           {' '}<code>math</code>, <code>DayPrice</code>, <code>ProviderError</code>, <code>ProviderBlocked</code> y <code>add_months</code>.
-          Las peticiones llevan un User-Agent que dice quiénes somos (<code>flight-watcher</code>), salvo con medidas anti-bot.
+          Las peticiones llevan un User-Agent que dice quiénes somos (<code>trip-watch</code>), salvo con medidas anti-bot.
         </p>
         <p>
           Opcional: <code className="text-fg">BROWSER_PAGE = &quot;https://…&quot;</code>, la página de la web que abre Chrome
@@ -122,6 +129,7 @@ function TestResult({ res }: { res: ScriptTestResult }) {
                 <th scope="col" className="px-3 py-2 font-medium">Precio</th>
                 <th scope="col" className="px-3 py-2 font-medium">Ruta</th>
                 <th scope="col" className="px-3 py-2 font-medium">Escalas</th>
+                <th scope="col" className="px-3 py-2 font-medium">Horas</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -131,6 +139,7 @@ function TestResult({ res }: { res: ScriptTestResult }) {
                   <td className="px-3 py-1.5 tabular-nums">{fmtMoney(p.price, p.currency)}</td>
                   <td className="px-3 py-1.5 font-mono text-xs">{p.origin}→{p.destination}</td>
                   <td className="px-3 py-1.5">{p.stops == null ? '—' : fmtStops(p.stops)}</td>
+                  <td className="px-3 py-1.5 whitespace-nowrap tabular-nums">{fmtClock(p.departs_at, p.arrives_at) || '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -143,7 +152,12 @@ function TestResult({ res }: { res: ScriptTestResult }) {
 
 type TestEvent = ConsoleEvent | { result: ScriptTestResult }
 
-function ProviderForm({ initial, existing, editable }: { initial: FormState; existing?: Provider; editable: boolean }) {
+function ProviderForm({ initial, existing, editable, kinds }: {
+  initial: FormState
+  existing?: Provider
+  editable: boolean
+  kinds: KindMeta[]
+}) {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const isNew = !existing
@@ -157,6 +171,9 @@ function ProviderForm({ initial, existing, editable }: { initial: FormState; exi
   const [consoleOpen, setConsoleOpen] = useState(false)
   const received = useRef(0)
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((s) => ({ ...s, [k]: v }))
+  const kind = kinds.find((k) => k.key === f.kind)
+  const code = placeCode(f.kind)
+  const nodeHint = f.kind === 'flight' ? 'aeropuertos IATA' : `código de ${kind?.node_label ?? 'lugar'}`
   const refresh = () => {
     qc.invalidateQueries({ queryKey: keys.providers })
     qc.invalidateQueries({ queryKey: keys.meta })
@@ -253,6 +270,19 @@ function ProviderForm({ initial, existing, editable }: { initial: FormState; exi
             {(id) => <Input id={id} value={f.label} onChange={(e) => set('label', e.target.value)} required maxLength={100}
               placeholder="Volotea" />}
           </Field>
+          <Field label="Tipo"
+            hint={existing?.n_watches
+              ? 'No se puede cambiar mientras lo use alguna vigilancia.'
+              : kind && !kind.available
+                ? `Aún no hay vigilancias de ${kind.plural} (llegan en la ${kind.since}), pero ya se puede escribir y probar.`
+                : 'Qué transporte vende: solo sale en las vigilancias de ese transporte.'}>
+            {(id, hint) => (
+              <Select id={id} aria-describedby={hint} value={f.kind} disabled={!!existing?.n_watches}
+                onChange={(e) => set('kind', e.target.value as KindKey)}>
+                {kinds.map((k) => <option key={k.key} value={k.key}>{k.label}{k.available ? '' : ` (vigilancias en la ${k.since})`}</option>)}
+              </Select>
+            )}
+          </Field>
           <Field label="Color" hint="El de su marca, en gráficas y tarjetas.">
             {(id, hint) => (
               <div className="flex gap-2">
@@ -271,7 +301,7 @@ function ProviderForm({ initial, existing, editable }: { initial: FormState; exi
             )}
           </Field>
           {f.coverage === 'universal' && (
-            <Field label="Máximo de pares de aeropuertos (opcional)" hint="Por vigilancia. Vacío = el límite general.">
+            <Field label="Máximo de combinaciones de origen y destino (opcional)" hint="Por vigilancia. Vacío = el límite general.">
               {(id, hint) => <Input id={id} aria-describedby={hint} inputMode="numeric" value={f.max_routes}
                 onChange={(e) => set('max_routes', e.target.value.replace(/\D/g, ''))} />}
             </Field>
@@ -280,14 +310,14 @@ function ProviderForm({ initial, existing, editable }: { initial: FormState; exi
             {(id, hint) => <Input id={id} aria-describedby={hint} inputMode="decimal" value={f.min_interval}
               onChange={(e) => set('min_interval', e.target.value)} />}
           </Field>
-          <Field label="Ruta de prueba: origen" hint="Una ruta que opere de verdad (aeropuertos IATA).">
+          <Field label="Ruta de prueba: origen" hint={`Una ruta que opere de verdad (${nodeHint}).`}>
             {(id, hint) => <Input id={id} aria-describedby={hint} value={f.health_origin} placeholder="SVQ" required
               className="font-mono uppercase" autoComplete="off" spellCheck={false}
-              onChange={(e) => set('health_origin', iata(e.target.value))} />}
+              onChange={(e) => set('health_origin', code(e.target.value))} />}
           </Field>
           <Field label="Ruta de prueba: destino">
             {(id) => <Input id={id} value={f.health_destination} placeholder="BCN" required className="font-mono uppercase"
-              autoComplete="off" spellCheck={false} onChange={(e) => set('health_destination', iata(e.target.value))} />}
+              autoComplete="off" spellCheck={false} onChange={(e) => set('health_destination', code(e.target.value))} />}
           </Field>
         </div>
         <Field label="Plantilla de enlace (opcional)"
@@ -327,7 +357,7 @@ function ProviderForm({ initial, existing, editable }: { initial: FormState; exi
       </section>
 
       <FormSection title="Script" description="Código de Python que cumple el contrato de proveedor.">
-        <Contract coverage={f.coverage} />
+        <Contract coverage={f.coverage} kind={kind} />
         {!editable && (
           <p className="rounded-xl border border-warn/30 bg-warn/10 p-3 text-sm text-warn">
             En este servidor no se puede cambiar ni probar el código desde el panel (<code>PROVIDER_SCRIPTS=0</code>).
@@ -347,12 +377,12 @@ function ProviderForm({ initial, existing, editable }: { initial: FormState; exi
             <Field label="Origen (opcional)" className="w-36">
               {(id) => <Input id={id} value={route.origin} placeholder={f.health_origin || 'SVQ'}
                 className="font-mono uppercase" autoComplete="off" spellCheck={false}
-                onChange={(e) => setRoute((r) => ({ ...r, origin: iata(e.target.value) }))} />}
+                onChange={(e) => setRoute((r) => ({ ...r, origin: code(e.target.value) }))} />}
             </Field>
             <Field label="Destino (opcional)" className="w-36">
               {(id) => <Input id={id} value={route.destination} placeholder={f.health_destination || 'BCN'}
                 className="font-mono uppercase" autoComplete="off" spellCheck={false}
-                onChange={(e) => setRoute((r) => ({ ...r, destination: iata(e.target.value) }))} />}
+                onChange={(e) => setRoute((r) => ({ ...r, destination: code(e.target.value) }))} />}
             </Field>
             <Button type="button" variant="secondary" onClick={() => test.mutate()} loading={test.isPending} disabled={!editable}>
               {!test.isPending && <FlaskConical />} Probar el script
@@ -408,7 +438,7 @@ export function ProviderFormPage() {
   if (key != null && existing.isError) return <LoadError error={existing.error} />
 
   const initial: FormState = existing.data ? fromProvider(existing.data) : {
-    key: '', label: '', color: '#64748b', coverage: 'network', max_routes: '', health_origin: '', health_destination: '',
+    key: '', kind: 'flight', label: '', color: '#64748b', coverage: 'network', max_routes: '', health_origin: '', health_destination: '',
     link_template: '', notes: '', min_interval: '1.5', code: list.data.template, enabled: true, stealth: 0,
   }
 
@@ -426,7 +456,8 @@ export function ProviderFormPage() {
           En este servidor no se pueden crear proveedores desde el panel (<code>PROVIDER_SCRIPTS=0</code>).
         </p>
       ) : (
-        <ProviderForm key={key ?? 'new'} initial={initial} existing={existing.data} editable={list.data.editable} />
+        <ProviderForm key={key ?? 'new'} initial={initial} existing={existing.data} editable={list.data.editable}
+          kinds={list.data.kinds} />
       )}
     </div>
   )

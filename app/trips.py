@@ -126,7 +126,8 @@ def evaluate(trip: dict, settings: dict, now: datetime, channels: list[dict]) ->
     if not chans:  # sin marcar como avisados: se reenviarán cuando asigne algún canal
         log.info("Hay chollos en el viaje «%s» pero no tiene canales de aviso activos", trip["name"])
         return []
-    sent, errors = notify.send_trip_deals(chans, trip, out_w, ret_w, new, base, settings.get("panel_url", ""))
+    totals = {date.fromisoformat(q["out_date"]): q["total"] for q in best}
+    sent, errors = notify.send_trip_deals(chans, trip, out_w, ret_w, new, base, settings.get("panel_url", ""), totals)
     if sent:
         with db.connect() as con:
             db.add_trip_alerts(con, trip["id"], new, stamp)

@@ -30,7 +30,7 @@ os.environ["WEB_DIR"] = str(WEB)
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
-from app import checker, config, coverage, db, fx, health, places, trips  # noqa: E402
+from app import checker, config, coverage, db, fx, health, images, notify, places, trips  # noqa: E402
 from app.main import app  # noqa: E402
 from app.providers import PROVIDERS, DayPrice, link_for  # noqa: E402
 from app.providers.base import Provider  # noqa: E402
@@ -43,7 +43,7 @@ from .fakes import ASKED, SENT, TARGETS, TODAY  # noqa: E402
 fakes.install()
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
-CSRF = {"X-Requested-With": "flight-watcher"}
+CSRF = {"X-Requested-With": "trip-watch"}
 
 
 def check(cond, msg):
@@ -334,11 +334,16 @@ def trips_flow(admin: Api, admin_chan: int):
     SENT.clear()
     checker.run_checks(trip_id=tid, trigger="manual")
     msgs = ["\n".join(m[0]) for m in SENT if "🧳" in m[0][0]]
-    check(len(msgs) == 1 and "**85 €**" in msgs[0] and "1 noche" in msgs[0] and "ida [Vueling 55 € (SVQ→TFN)]" in msgs[0]
-          and "vuelta [Vueling 30 € (TFN→SVQ)]" in msgs[0] and "100 €" not in msgs[0],
+    check(len(msgs) == 1 and "**85 €**" in msgs[0] and "1 noche" in msgs[0] and "[Ida: Vueling 55 € (SVQ→TFN)](https://" in msgs[0]
+          and "[Vuelta: Vueling 30 € (TFN→SVQ)](https://" in msgs[0] and "100 €" not in msgs[0],
           "aviso del viaje con el total y un enlace por tramo (solo lo que cumple la regla)")
-    html_msg = "\n".join(next(m[1] for m in SENT if "🧳" in m[0][0]))
-    check('ida <a href="' in html_msg and "&amp;" in html_msg, "aviso del viaje en HTML para Telegram")
+    tg = next(m[1] for m in SENT if "🧳" in m[0][0])
+    keyboard = json.loads(tg[-1])
+    check("<a href" not in "\n".join(tg[:-1]) and "<b>85 €</b>" in "\n".join(tg[:-1])
+          and [b["text"].split(" ")[0] for b in keyboard[0]] == ["Ida", "Vuelta"] and keyboard[0][0]["url"].startswith("https://"),
+          "aviso del viaje para Telegram: el total en el texto y un botón por tramo")
+    trip_msg = next(m[2] for m in SENT if "🧳" in m[0][0])
+    check(trip_msg.image and trip_msg.image.startswith(b"\x89PNG"), "el aviso del viaje lleva el calendario en PNG")
     with db.connect() as con:
         n_quotes = con.execute(text("SELECT count(*) FROM trip_quotes WHERE trip_id = :t"), {"t": tid}).scalar()
     check(n_quotes == 2, "se guarda la combinación más barata de cada fecha de ida")
@@ -617,7 +622,8 @@ def fetch_route(api, origin, destination, start, max_months):
     if data is None:
         return {}
     api.log("días recibidos:", len(data["dias"]))
-    return [DayPrice(date.fromisoformat(d["fecha"]), d["precio"], currency=d.get("moneda", "EUR"))
+    return [DayPrice(date.fromisoformat(d["fecha"]), d["precio"], currency=d.get("moneda", "EUR"),
+                     departure=d.get("sale"), arrival=d.get("llega"))
             for d in data["dias"]]
 """
 
@@ -790,7 +796,8 @@ def scripts_flow(admin: Api, admin_chan: int):
     HTTP.update({
         "https://api.prueba.test/rutas/SVQ": (200, {"destinos": ["TFN", "BCN"]}),
         "https://api.prueba.test/precios/SVQ/TFN": (200, {"dias": [
-            {"fecha": days[0], "precio": 20}, {"fecha": days[1], "precio": 15, "moneda": "GBP"},
+            {"fecha": days[0], "precio": 20},
+            {"fecha": days[1], "precio": 15, "moneda": "GBP", "sale": "22:40", "llega": "00:15"},
             {"fecha": days[2], "precio": 0}]}),
     })
     r = admin.get("/providers").json()
@@ -824,8 +831,11 @@ def scripts_flow(admin: Api, admin_chan: int):
           and res["status"] == "ok" and res["route"] == "SVQ→TFN"
           and [st["name"] for st in res["steps"]] == ["Carga del script", "Cobertura", "Precios (1 mes)"]
           and "2 destinos directos desde SVQ (incluye TFN)" in res["steps"][1]["detail"], "prueba del borrador: carga y cobertura")
+    next_day = (date.fromisoformat(days[1]) + timedelta(days=1)).isoformat()
     check(res["n_prices"] == 2 and res["sample"][1] == {"day": days[1], "price": 15, "currency": "GBP", "origin": "SVQ",
-                                                        "destination": "TFN", "stops": 0}, "prueba del borrador: precios (sin los días a 0)")
+                                                        "destination": "TFN", "stops": 0, "departs_at": f"{days[1]}T22:40",
+                                                        "arrives_at": f"{next_day}T00:15"}
+          and res["sample"][0]["departs_at"] is None, "prueba del borrador: precios con sus horas (sin los días a 0)")
     con_text = console_text(events)
     check("http: GET https://api.prueba.test/rutas/SVQ" in con_text and "ok:   ← 200 en" in con_text
           and "JSON: objeto con 1 clave: destinos" in con_text and "info: Llamo a network(api, 'SVQ')" in con_text
@@ -912,9 +922,13 @@ def scripts_flow(admin: Api, admin_chan: int):
         snap = db.latest_snapshot(con, w["id"], "miaero")
     check(len(snap) == 2 and snap[0]["currency"] == "GBP" and snap[0]["orig_price"] == 15 and round(snap[0]["price"], 2) == 17.65,
           "la ronda guarda sus precios (en euros y en la moneda original)")
+    check(snap[0]["departs_at"] == f"{days[1]}T22:40" and snap[0]["arrives_at"] == f"{next_day}T00:15"
+          and snap[1]["departs_at"] is None, "la ronda guarda la salida y la llegada (la del día siguiente)")
+    detail = admin.get(f"/watches/{w['id']}").json()
+    check(detail["prices"][0]["departs_at"] == f"{days[1]}T22:40", "el detalle devuelve las horas")
     msg = "\n".join(SENT[0][0]) if SENT else ""
-    check("**Mi Aerolínea**" in msg and f"https://www.miaero.test/vuelos?o=SVQ&d=TFN&f={days[1]}" in msg,
-          "el aviso lleva su nombre y su plantilla de enlace")
+    check('"title": "Mi Aerolínea"' in msg and f"https://www.miaero.test/vuelos?o=SVQ&d=TFN&f={days[1]}" in msg
+          and "22:40–00:15 (+1)" in msg, "el aviso lleva su nombre, su plantilla de enlace y las horas")
     check({p["key"]: p for p in admin.get("/providers").json()["providers"]}["miaero"]["n_watches"] == 1, "cuántas vigilancias lo usan")
 
     # --- cambios: la contraseña solo se pide si se va a ejecutar código nuevo
@@ -987,7 +1001,7 @@ def bundle_flow(admin: Api):
     """Proveedores incluidos (creados al arrancar), el catálogo y paquetes: exportar, vista previa e importar."""
     lst = admin.get("/providers").json()["providers"]
     check([p["key"] for p in lst] == ["ryanair", "vueling"] and all(p["loaded"] and p["enabled"] for p in lst)
-          and lst[0]["updated_by"] == "flight-watcher" and lst[0]["source"] == bundle.CATALOG_URL + "providers.fwp"
+          and lst[0]["updated_by"] == bundle.SEED_USER and lst[0]["source"] == bundle.CATALOG_URL + "providers.fwp"
           and "wizzair" not in PROVIDERS, "al arrancar se crean Vueling y Ryanair como scripts (y nada más)")
     with db.connect() as con:
         check(db.get_setting(con, bundle.SEED_FLAG) == "1" and bundle.seed() == [], "la siembra ocurre una sola vez")
@@ -1041,6 +1055,18 @@ def bundle_flow(admin: Api):
     check(bundle.raw_url("https://github.com/katarem/flight-watcher/blob/main/app/providers/catalog/sin-verificar.fwp")
           == bundle.raw_url(bundle.CATALOG_URL + "incluidos.fwp") == bundle.CATALOG_URL + "providers.fwp",
           "los enlaces de los paquetes antiguos del catálogo llevan a providers.fwp")
+    check(bundle.raw_url("https://raw.githubusercontent.com/katarem/flight-watcher/main/app/providers/catalog/providers.fwp")
+          == bundle.CATALOG_URL + "providers.fwp" and "katarem/trip-watch/" in bundle.CATALOG_URL,
+          "el enlace del catálogo con el nombre anterior del repositorio (flight-watcher) lleva al de Trip Watch")
+    with db.connect() as con:
+        db.save_provider_script(con, "vueling", {"source": bundle.OLD_CATALOG_URLS[0] + "providers.fwp"}, "admin")
+    bundle.seed()
+    with db.connect() as con:
+        check(db.get_provider_script(con, "vueling")["source"] == bundle.CATALOG_URL + "providers.fwp",
+              "al arrancar, el origen guardado con el nombre anterior del repositorio pasa al nuevo")
+    renamed = bundle.dumps([{"key": "x", "code": "def fetch_route(*a):\n    return {}\n"}])
+    check(renamed.startswith("#flight-watcher:proveedores v1") and bundle.loads(renamed.replace("#flight-watcher", "#trip-watch", 1))[0]["key"] == "x",
+          ".fwp: se sigue escribiendo la cabecera de siempre (paneles anteriores) y se acepta también #trip-watch")
 
     # --- vista previa desde un enlace (el de GitHub se cambia por el del archivo en bruto) y desde un archivo
     url = "https://github.com/katarem/flight-watcher/blob/main/app/providers/catalog/providers.fwp"
@@ -1090,6 +1116,145 @@ def bundle_flow(admin: Api):
     check(PROVIDERS["ryanair"].label == "Ryanair", "volver a importar el original (con el enlace antiguo del catálogo)")
 
 
+def kinds_flow(admin: Api):
+    """Tipos de transporte y de proveedor (1.9) y lugares genéricos (estaciones, puertos y la ciudad que los agrupa)."""
+    meta = admin.get("/meta").json()
+    by_kind = {k["key"]: k for k in meta["kinds"]}
+    check(by_kind["flight"]["available"] and by_kind["flight"]["section"] == "/flights" and not by_kind["train"]["available"]
+          and by_kind["train"]["since"] == "3.1" and {p["kind"] for p in meta["providers"]} == {"flight"},
+          "/meta: transportes (solo vuelos disponibles) y el tipo de cada proveedor")
+    bad = admin.post("/watches", {"kind": "train", "origin": "SVQ", "destination": "MAD", "providers": ["vueling"]})
+    check(bad.status_code == 422 and "llegan en la 3.1" in errors(bad), "aún no hay vigilancias de trenes")
+    check("Tipo de transporte desconocido" in errors(admin.post("/watches", {"kind": "cohete"})), "transporte desconocido")
+    check(admin.get("/watches", params={"kind": "flight"}).json()["watches"]
+          and admin.get("/watches", params={"kind": "train"}).json()["watches"] == [], "filtrar vigilancias por transporte")
+    check(all(w["kind"] == "flight" for w in admin.get("/watches").json()["watches"]), "las vigilancias son de vuelos")
+
+    # --- lugares de otros transportes: un puerto en Tenerife y una estación en Sevilla (datos de prueba)
+    data = Path(tempfile.mkdtemp(prefix="fw-places-"))
+    for name in ("airports.csv", "countries.csv"):
+        (data / name).write_text((places.DATA_DIR / name).read_text("utf-8"), "utf-8")
+    (data / "ports.csv").write_text("code,name,city,city_code,country,keywords\n"
+                                    "ESSCT,Puerto de Santa Cruz,Santa Cruz de Tenerife,TCI,ES,muelle\n", "utf-8")
+    (data / "stations.csv").write_text("code,name,city,city_code,country,keywords\n"
+                                       "SVQSJ,Sevilla-Santa Justa,Sevilla,,ES,tren\nbad,Mal código,,,ES,\n", "utf-8")
+    real_dir = places.DATA_DIR
+    places.DATA_DIR = data
+    places.catalog.cache_clear()
+    try:
+        tci = places.get("TCI")
+        check(tci.nodes_for("flight") == ("TFN", "TFS") and tci.nodes_for("ship") == ("ESSCT",)
+              and "Puertos: ESSCT" in tci.detail and set(tci.modes) == {"flight", "ship"},
+              "la ciudad agrupa sus aeropuertos y su puerto")
+        check(places.routes("TCI", "SVQ") == [("TFN", "SVQ"), ("TFS", "SVQ")] and places.nodes("TCI", "ship") == ("ESSCT",)
+              and places.routes("TCI", "SVQSJ", "ship") == [] and places.routes("TCI", "SVQSJ", "train") == []
+              and places.get("svqsj").kind == "station" and places.get("BAD") is None,
+              "las rutas de una vigilancia solo usan lugares de su transporte")
+        flights = [p["code"] for p in places.search("tenerife", 10, "flight")]
+        ships = [p["code"] for p in places.search("tenerife", 10, "ship")]
+        check("ESSCT" not in flights and "TFN" in flights and "TCI" in flights and ships[:2] == ["TCI", "ESSCT"]
+              and "TFN" not in ships, "el autocompletado filtra por el transporte")
+        r = admin.get("/places", params={"q": "santa justa", "kind": "flight"}).json()["places"]
+        check(r == [] and admin.get("/places", params={"q": "santa justa"}).json()["places"][0]["kind_label"] == "Estación",
+              "API de lugares con el transporte")
+        check("Estaciones: SVQSJ" in places.get("ES").detail, "el país incluye sus lugares de cada transporte")
+        bad = admin.post("/route-check", {"origin": "SVQSJ", "destination": "TCI"})
+        check(bad.status_code == 422 and "no tiene ningún aeropuerto" in errors(bad), "una estación no vale en una vigilancia de vuelos")
+
+        # --- proveedores por tipo: uno de trenes no sale en las vigilancias de vuelos
+        body = {"key": "renfe_prueba", "kind": "train", "label": "Tren de prueba", "color": "#7c3aed", "coverage": "universal",
+                "health_origin": "SVQSJ", "health_destination": "M0001", "min_interval": "0", "password": "clave-de-prueba-1",
+                "code": "def fetch_route(api, origin, destination, start, max_months):\n    return {}\n"}
+        r = admin.post("/providers", body)
+        check(r.status_code == 201 and r.json()["provider"]["kind"] == "train" and r.json()["provider"]["kind_label"] == "Trenes"
+              and PROVIDERS["renfe_prueba"].kind == "train", "crear un proveedor de trenes")
+        check("Tren de prueba" not in {p["label"] for p in admin.post("/route-check", {"origin": "SVQ", "destination": "TCI"}).json()["providers"]},
+              "la comprobación de rutas de vuelos no lo consulta")
+        bad = admin.post("/watches", {"origin": "SVQ", "destination": "TCI", "providers": ["renfe_prueba"]})
+        check(bad.status_code == 422 and "Solo se pueden elegir webs de vuelos" in errors(bad), "una vigilancia de vuelos no usa uno de trenes")
+        bad = admin.post("/providers", {**body, "key": "otro", "health_origin": "TFN"})
+        check(bad.status_code == 422 and "tipo estación" in errors(bad), "la ruta de prueba es de lugares de su transporte")
+        check("llegan en la 2.0" in errors(admin.post("/providers", {**body, "key": "hotel_x", "kind": "hotel"})),
+              "aún no hay proveedores de alojamiento")
+        text_fwp = admin.get("/providers/export", params={"keys": "renfe_prueba"}).text
+        check('"kind": "train"' in text_fwp and bundle.loads(text_fwp)[0]["kind"] == "train", "el .fwp guarda el tipo")
+        old = bundle.loads(text_fwp.replace('"kind": "train", ', ""))
+        check("kind" not in old[0] and bundle.values(old[0])["kind"] == "flight", "un .fwp antiguo (sin tipo) es de vuelos")
+        check(admin.delete("/providers/renfe_prueba").status_code == 204, "borrar el de trenes")
+        vueling = admin.get("/providers/vueling").json()["provider"]
+        bad = admin.put("/providers/vueling", {**vueling, "kind": "ship"})
+        check(bad.status_code == 422 and "No se puede cambiar el tipo" in errors(bad), "no se cambia el tipo de un proveedor en uso")
+    finally:
+        places.DATA_DIR = real_dir
+        places.catalog.cache_clear()
+
+
+def notify_flow():
+    """Cómo se pinta un aviso en cada canal: límites de Discord, botones de Telegram (y su plan B) e imagen."""
+    big = notify.Message("✈️ Muchas fechas", url="https://panel.example.com/flights/1", summary="SVQ→TCI",
+                         image=b"\x89PNG...")
+    for n in range(3):
+        sec = notify.Section(f"Web {n}", "#e8a800", "habitual ≈ 50 €")
+        sec.items = [notify.Item(f"lun {i:02d}/11/2026", f"{30 + i} €", "directo · 06:35–08:10",
+                                 [("fecha", f"https://web{n}.example.com/{i}")], [f"{i:02d}/11 · {30 + i} €"]) for i in range(30)]
+        big.sections.append(sec)
+    payloads = notify.discord_payloads(big)
+    embeds = [e for p in payloads for e in p["embeds"]]
+    check(len(payloads) >= 1 and all(len(p["embeds"]) <= 10 and sum(notify._embed_size(e) for e in p["embeds"]) <= 6000 for p in payloads)
+          and all(len(e.get("fields", [])) <= 25 for e in embeds) and sum(len(e.get("fields", [])) for e in embeds) == 90
+          and embeds[0]["image"]["url"] == "attachment://calendario.png" and embeds[1]["color"] == 0xE8A800,
+          "Discord: embeds y campos dentro de los límites, con la imagen y el color de cada web")
+    texts, keyboard = notify.telegram_parts(big)
+    check(all(len(t) <= 4096 for t in texts) and sum(len(r) for r in keyboard) <= 100
+          and keyboard[-1] == [{"text": "📊 Abrir en el panel", "url": "https://panel.example.com/flights/1"}],
+          "Telegram: textos y botones dentro de los límites, con el del panel al final")
+    check(notify._valid_button_url("https://vuelos.example.com/x") and not notify._valid_button_url("http://localhost:8000/x")
+          and not notify._valid_button_url("http://nas.local/x"), "Telegram: solo botones con URL que admite")
+
+    calls = []
+
+    class Resp:
+        def __init__(self, status, body=""):
+            self.status_code, self.text = status, body
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(str(self.status_code))
+
+    def fake_tg(config, method, data, files=None):
+        calls.append((method, data, files))
+        if "reply_markup" in data:
+            return Resp(400, '{"ok":false,"description":"Bad Request: BUTTON_URL_INVALID"}')
+        return Resp(200)
+
+    real_tg, notify._tg = notify._tg, fake_tg
+    try:
+        small = notify.Message("✈️ Vigilancia", url="http://192.168.1.10:8000/flights/1", image=b"\x89PNG",
+                               sections=[notify.Section("Vueling", "#e8a800", items=[
+                                   notify.Item("lun 03/11/2026", "30 €", "", [("lun 03/11/2026", "https://v.example.com/a?b=1&c=2")],
+                                               ["03/11 · 30 €"])])])
+        notify.KINDS["telegram"]["send"]({"token": "1:x", "chat_id": "42"}, small)
+        check([c[0] for c in calls] == ["sendPhoto", "sendPhoto"] and "reply_markup" not in calls[1][1]
+              and '<a href="https://v.example.com/a?b=1&amp;c=2">' in calls[1][1]["caption"],
+              "Telegram: si rechaza un botón, repite con los enlaces en el texto (la foto, con el texto de pie)")
+    finally:
+        notify._tg = real_tg
+
+    posted = []
+    real_post = notify.requests.post
+    notify.requests.post = lambda url, **kw: posted.append((url, kw)) or Resp(204)
+    try:
+        notify.KINDS["discord"]["send"]({"webhook": "https://discord.com/api/webhooks/1/x"}, small)
+    finally:
+        notify.requests.post = real_post
+    check(len(posted) == 1 and "files[0]" in posted[0][1]["files"] and json.loads(posted[0][1]["data"]["payload_json"])["embeds"],
+          "Discord: la imagen va adjunta en el mismo mensaje que los embeds")
+    sample = notify.sample_message("https://panel.example.com")
+    check(sample.image.startswith(b"\x89PNG") and sample.sections[0].items, "aviso de ejemplo para probar un canal")
+    check(images.calendar_png({}, set(), "x") is None and images.levels({date(2026, 1, d): float(d) for d in range(1, 9)})[date(2026, 1, 1)] == 1,
+          "calendario: sin precios no hay imagen; niveles por cuartil")
+
+
 def main():
     with TestClient(app) as raw:
         client = Api(raw)
@@ -1097,7 +1262,8 @@ def main():
         # --- el panel compilado se sirve desde WEB_DIR y el enrutado lo resuelve el navegador
         r = raw.get("/")
         check(r.status_code == 200 and 'id="root"' in r.text and r.headers["cache-control"] == "no-cache", "GET / entrega el panel")
-        check('id="root"' in raw.get("/watches/12").text and 'id="root"' in raw.get("/admin/users").text,
+        check('id="root"' in raw.get("/watches/12").text and 'id="root"' in raw.get("/admin/users").text
+              and 'id="root"' in raw.get("/flights/12").text,
               "cualquier ruta del panel entrega index.html (enrutado del lado cliente)")
         r = raw.get("/assets/app-1234.js")
         check(r.status_code == 200 and "immutable" in r.headers["cache-control"], "estáticos con huella y caché larga")
@@ -1153,7 +1319,14 @@ def main():
         telegram = "\n".join(SENT[0][1])
         target_day = (TODAY + timedelta(days=11)).isoformat()
         check(f"dd={target_day}" in discord and "o=SVQ&d=TFN" in discord, "enlace Vueling con la fecha elegida")
-        check("<a href=" in telegram and "&amp;dd=" in telegram, "enlace en HTML escapado para Telegram")
+        buttons = [b for row in json.loads(SENT[0][1][-1]) for b in row]
+        check("<a href=" not in telegram and any(f"dd={target_day}" in b["url"] and "·" in b["text"] for b in buttons),
+              "Telegram: botón con enlace por fecha (no enlaces en el texto)")
+        embeds = json.loads(SENT[0][0][-1])[0]["embeds"]
+        vueling = next(e for e in embeds if e["title"].startswith("Vueling"))
+        check(embeds[0]["image"]["url"] == "attachment://calendario.png" and vueling["color"] == int("e8a800", 16)
+              and any(f"dd={target_day}" in f["value"] for f in vueling["fields"]) and SENT[0][2].image.startswith(b"\x89PNG"),
+              "Discord: embed por proveedor con su color, un campo por fecha con su enlace y el calendario adjunto")
         check("30 €" in discord, "precio bajo incluido en el aviso")
         check("Ryanair" not in discord, "Ryanair (45 €) no supera el precio máximo de 40 €")
         with db.connect() as con:
@@ -1246,6 +1419,8 @@ def main():
         check(st["running"] is False and st["current"] == "" and st["next_run"], "estado de ejecución y próxima ronda")
         check(sum(1 for r in client.get("/runs").json()["runs"] if r["ok"]) >= 2, "historial de ejecuciones")
 
+        kinds_flow(client)
+        notify_flow()
         tid = trips_flow(client, admin_chan)
         providers_flow(client, admin_id, admin_chan)
         scripts_flow(client, admin_chan)

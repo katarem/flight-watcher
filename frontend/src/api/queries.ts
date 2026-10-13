@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 import { ApiError, get } from './client'
 import type {
-  AdminUser, Alert, Channel, ChannelDetail, Charts, DebugFile, Me, Meta, Place, Provider, ProvidersData, Run, Series,
+  AdminUser, Alert, Channel, ChannelDetail, Charts, DebugFile, KindKey, Me, Meta, Place, Provider, ProvidersData, Run, Series,
   SettingsData, Status, TripCard, TripCombo, TripDetail, User, WatchCard, WatchDetail,
 } from './types'
 
@@ -27,7 +27,7 @@ export const keys = {
   user: (id: number) => ['users', id] as const,
   settings: ['settings'] as const,
   debug: ['debug'] as const,
-  places: (q: string) => ['places', q] as const,
+  places: (q: string, kind: string) => ['places', kind, q] as const,
   providers: ['providers'] as const,
   provider: (key: string) => ['providers', key] as const,
 }
@@ -55,7 +55,8 @@ export const useMeta = () =>
 export function useProviders() {
   const meta = useMeta().data
   const map = new Map((meta?.providers ?? []).map((p) => [p.key, p]))
-  return (key: string) => map.get(key) ?? { key, label: key, color: '#8892a6', coverage: 'probe' as const, max_routes: null }
+  return (key: string) => map.get(key)
+    ?? { key, kind: 'flight' as const, label: key, color: '#8892a6', coverage: 'probe' as const, max_routes: null }
 }
 
 /** Estado de la ronda: se consulta a menudo mientras corre y, al terminar, se refresca todo lo demás. */
@@ -81,8 +82,12 @@ export function useStatus() {
   return query
 }
 
-export const useWatches = () =>
-  useQuery({ queryKey: keys.watches, queryFn: async () => (await get<{ watches: WatchCard[] }>('/watches')).watches })
+/** Vigilancias del usuario (de un transporte, o todas). */
+export const useWatches = (kind?: KindKey) =>
+  useQuery({
+    queryKey: [...keys.watches, 'list', kind ?? ''],
+    queryFn: async () => (await get<{ watches: WatchCard[] }>(`/watches${kind ? `?kind=${kind}` : ''}`)).watches,
+  })
 
 export const useWatch = (id: number) =>
   useQuery({ queryKey: keys.watch(id), queryFn: () => get<WatchDetail>(`/watches/${id}`), enabled: id > 0 })
@@ -145,11 +150,11 @@ export const useSettings = () => useQuery({ queryKey: keys.settings, queryFn: ()
 export const useDebugFiles = () =>
   useQuery({ queryKey: keys.debug, queryFn: async () => (await get<{ files: DebugFile[] }>('/debug/files')).files })
 
-/** Autocompletado de lugares (aeropuertos, ciudades, países y grupos). */
-export const usePlaces = (q: string) =>
+/** Autocompletado de lugares (aeropuertos, ciudades, países y grupos) que tienen alguno del transporte `kind`. */
+export const usePlaces = (q: string, kind: KindKey = 'flight') =>
   useQuery({
-    queryKey: keys.places(q),
-    queryFn: async () => (await get<{ places: Place[] }>(`/places?q=${encodeURIComponent(q)}&limit=8`)).places,
+    queryKey: keys.places(q, kind),
+    queryFn: async () => (await get<{ places: Place[] }>(`/places?q=${encodeURIComponent(q)}&limit=8&kind=${kind}`)).places,
     enabled: q.trim().length > 0,
     staleTime: Infinity,
     placeholderData: keepPreviousData,

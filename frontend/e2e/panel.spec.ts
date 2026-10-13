@@ -12,7 +12,8 @@ test.describe('sesión', () => {
     await expect(page.getByRole('alert')).toContainText('Usuario o contraseña incorrectos')
     await page.getByLabel('Contraseña').fill('clave-de-prueba-1')
     await page.getByRole('button', { name: 'Entrar' }).click()
-    await expect(page).toHaveURL(/\/watches\/1$/)
+    // La URL de antes de la 1.9 (la de los avisos ya enviados) lleva al apartado de vuelos.
+    await expect(page).toHaveURL(/\/flights\/1$/)
     await expect(page.getByRole('heading', { level: 1 })).toContainText('Sevilla → Tenerife')
   })
 
@@ -29,7 +30,21 @@ test.describe('sesión', () => {
 test.describe('panel', () => {
   test.beforeEach(async ({ page }) => login(page))
 
+  test('el panel resume cada apartado y los chollos de ahora', async ({ page }) => {
+    const flights = page.getByRole('region', { name: 'Vuelos' })
+    await expect(flights.getByText(/2 vigilancias/)).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Viajes' }).getByText(/1 viaje de ida y vuelta/)).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Chollos ahora' }).getByRole('link', { name: 'Sevilla → Tenerife' }).first())
+      .toHaveAttribute('href', '/flights/1')
+    await expect(page.getByText('Próximamente:')).toBeVisible()
+    await expectAccessible(page)
+    await flights.getByRole('link', { name: 'Ver vuelos' }).click()
+    await expect(page).toHaveURL(/\/flights$/)
+    await expect(page.getByRole('heading', { level: 1, name: 'Vuelos' })).toBeVisible()
+  })
+
   test('vigilancias con el mejor precio por web y accesible en claro y oscuro', async ({ page }) => {
+    await page.getByRole('navigation', { name: 'Principal' }).getByRole('link', { name: 'Vuelos' }).click()
     const card = page.getByRole('region', { name: 'Sevilla → Tenerife' })
     await expect(card.getByText('Vueling', { exact: true })).toBeVisible()
     await expect(card.getByText('Ryanair', { exact: true })).toBeVisible()
@@ -47,8 +62,10 @@ test.describe('panel', () => {
   })
 
   test('detalle: calendario, filtro por web, historial de un día y gráficas', async ({ page }) => {
+    await page.goto('/flights')
     await page.getByRole('link', { name: 'Sevilla → Tenerife' }).first().click()
-    await expect(page).toHaveURL(/\/watches\/1$/)
+    await expect(page).toHaveURL(/\/flights\/1$/)
+    await expect(page.getByRole('link', { name: 'Vuelos' }).first()).toBeVisible()
     const calendar = page.getByRole('region', { name: 'Precios por fecha de vuelo' })
     await expect(calendar.locator('table').first()).toBeVisible()
     const priceLinks = calendar.getByRole('link', { name: /Ryanair:/ })
@@ -68,7 +85,9 @@ test.describe('panel', () => {
   })
 
   test('crear, validar, editar y eliminar una vigilancia', async ({ page }) => {
+    await page.goto('/flights')
     await page.getByRole('link', { name: 'Nueva vigilancia' }).click()
+    await expect(page).toHaveURL(/\/flights\/new$/)
     await expect(page.getByRole('heading', { level: 1, name: 'Nueva vigilancia' })).toBeVisible()
     await expectAccessible(page)
 
@@ -112,7 +131,7 @@ test.describe('panel', () => {
     await page.getByRole('button', { name: 'Eliminar' }).click()
     await expect(page.getByRole('alertdialog')).toBeVisible()
     await page.getByRole('alertdialog').getByRole('button', { name: 'Eliminar' }).click()
-    await expect(page.getByRole('heading', { level: 1, name: 'Panel' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: 'Vuelos' })).toBeVisible()
     await expect(page.getByRole('link', { name: 'Málaga → Barcelona' })).toHaveCount(0)
   })
 
@@ -127,7 +146,7 @@ test.describe('viajes', () => {
   test.beforeEach(async ({ page }) => login(page))
 
   test('lista y detalle de un viaje: el total más barato con un enlace por tramo', async ({ page }) => {
-    await page.getByRole('link', { name: 'Viajes' }).click()
+    await page.getByRole('navigation', { name: 'Principal' }).getByRole('link', { name: 'Viajes' }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Viajes' })).toBeVisible()
     const card = page.getByRole('region', { name: 'Tenerife ida y vuelta' })
     await expect(card.getByText('Viaje más barato ahora')).toBeVisible()
@@ -178,7 +197,8 @@ test.describe('viajes', () => {
 
   test('sin vigilancia de vuelta se ofrece crearla y se vuelve al viaje con los dos tramos', async ({ page }) => {
     const suffix = Date.now() % 100000
-    await page.goto('/watches/new')
+    await page.goto('/watches/new') // la URL de antes lleva al formulario del apartado de vuelos
+    await expect(page).toHaveURL(/\/flights\/new$/)
     await page.getByLabel('Nombre (opcional)').fill(`Ida a Budapest ${suffix}`)
     await page.getByRole('combobox', { name: 'Origen' }).fill('BCN')
     await page.getByRole('option', { name: /Barcelona \(BCN\)/ }).click()
@@ -192,6 +212,7 @@ test.describe('viajes', () => {
     await page.goto('/trips/new')
     await page.getByLabel('Vigilancia de ida').selectOption({ label: `Ida a Budapest ${suffix} (BCN → BUD)` })
     await page.getByRole('link', { name: 'Crear la vigilancia de vuelta' }).click()
+    await expect(page).toHaveURL(/\/flights\/new\?origin=BUD&destination=BCN&for_trip=\d+$/)
     await expect(page.getByRole('combobox', { name: 'Origen' })).toHaveValue('Budapest (BUD)')
     await expect(page.getByRole('combobox', { name: 'Destino' })).toHaveValue('Barcelona (BCN)')
     await expect(page.getByRole('group', { name: 'Webs a vigilar' }).getByRole('checkbox', { name: 'Wizz Air' })).toBeChecked()
@@ -205,10 +226,11 @@ test.describe('viajes', () => {
 
     // Borrar la ida avisa de que se lleva el viaje.
     await page.goto(`/watches/${outId}/edit`)
+    await expect(page).toHaveURL(new RegExp(`/flights/${outId}/edit$`))
     await page.getByRole('button', { name: 'Eliminar' }).click()
     await expect(page.getByRole('alertdialog')).toContainText('y el viaje que la usa: «BCN ⇄ BUD»')
     await page.getByRole('alertdialog').getByRole('button', { name: 'Eliminar' }).click()
-    await expect(page.getByRole('heading', { level: 1, name: 'Panel' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: 'Vuelos' })).toBeVisible()
   })
 })
 
@@ -348,7 +370,7 @@ test.describe('proveedores', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Importar proveedores' })).toBeVisible()
     await expectAccessible(page)
 
-    await page.getByRole('button', { name: 'Catálogo de Flight Watcher' }).click()
+    await page.getByRole('button', { name: 'Catálogo de Trip Watch' }).click()
     const found = page.getByRole('region', { name: /Qué trae/ })
     await expect(found.getByRole('checkbox', { name: /Wizz Air/ })).toBeVisible()
     // Del catálogo son nuevos Air Europa, Iberia Express y Binter (los demás ya están): vienen marcados y aquí no se quieren.
@@ -374,7 +396,7 @@ test.describe('proveedores', () => {
 test('en el móvil el menú lleva a todas las secciones y nada se sale de la pantalla @movil', async ({ page, isMobile }) => {
   test.skip(!isMobile, 'solo en móvil')
   await login(page)
-  for (const path of ['/', '/watches/1', '/watches/new', '/trips', '/trips/1', '/trips/new', '/profile', '/admin/users', '/admin/providers', '/admin/providers/new', '/admin/providers/import', '/settings', '/runs']) {
+  for (const path of ['/', '/flights', '/flights/1', '/flights/new', '/trips', '/trips/1', '/trips/new', '/profile', '/admin/users', '/admin/providers', '/admin/providers/new', '/admin/providers/import', '/settings', '/runs']) {
     await page.goto(path)
     await page.waitForLoadState('networkidle')
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)

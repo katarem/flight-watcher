@@ -4,7 +4,7 @@ import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { toast } from 'sonner'
 import { errorList, post } from '@/api/client'
-import { keys, useProvidersAdmin } from '@/api/queries'
+import { keys, useMeta, useProvidersAdmin } from '@/api/queries'
 import type { ImportItem, ImportPreview } from '@/api/types'
 import { Button, buttonClass } from '@/components/ui/button'
 import { Badge, Card, CardHeader, PageHeader } from '@/components/ui/card'
@@ -14,7 +14,7 @@ import { useTitle } from '@/lib/hooks'
 
 /** Nombre en castellano de cada dato de un proveedor (para decir qué cambia al importarlo). */
 const FIELD_LABELS: Record<string, string> = {
-  label: 'nombre', color: 'color', coverage: 'cobertura', max_routes: 'máximo de pares', health_origin: 'ruta de prueba',
+  kind: 'tipo', label: 'nombre', color: 'color', coverage: 'cobertura', max_routes: 'máximo de pares', health_origin: 'ruta de prueba',
   health_destination: 'ruta de prueba', link_template: 'plantilla de enlace', notes: 'notas', min_interval: 'pausa',
   stealth: 'medidas anti-bot', code: 'código',
 }
@@ -29,6 +29,7 @@ function StatusTag({ item }: { item: ImportItem }) {
 
 function PreviewItem({ item, checked, onChange }: { item: ImportItem; checked: boolean; onChange: (v: boolean) => void }) {
   const bad = item.errors.length > 0
+  const kind = useMeta().data?.kinds.find((k) => k.key === item.kind)
   return (
     <li className="space-y-2 py-3 first:pt-0 last:pb-0">
       <div className="flex flex-wrap items-center gap-2">
@@ -40,7 +41,7 @@ function PreviewItem({ item, checked, onChange }: { item: ImportItem; checked: b
         <StatusTag item={item} />
       </div>
       <p className="text-xs text-muted">
-        Cobertura: {item.coverage_label}
+        {kind?.label ?? item.kind} · Cobertura: {item.coverage_label}
         {item.status !== 'new' && ` · lo usan ${item.n_watches} ${item.n_watches === 1 ? 'vigilancia' : 'vigilancias'}`}
       </p>
       {item.notes && <p className="text-sm text-muted">{item.notes}</p>}

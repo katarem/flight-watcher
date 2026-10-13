@@ -4,6 +4,7 @@ import { useProviders } from '@/api/queries'
 import type { Alert, Run } from '@/api/types'
 import { Badge, TableWrap, tableClass } from '@/components/ui/card'
 import { fmtDateTime, fmtDay, fmtPrice } from '@/lib/format'
+import { watchPath } from '@/lib/kinds'
 
 export function RunStatus({ run }: { run: Run }) {
   if (run.finished_at == null)
@@ -22,7 +23,7 @@ export function AlertsTable({ alerts, showWatch = true }: { alerts: Alert[]; sho
             <th scope="col">Enviado</th>
             {showWatch && <th scope="col">Vigilancia</th>}
             <th scope="col">Web</th>
-            <th scope="col">Vuelo</th>
+            <th scope="col">Fecha</th>
             <th scope="col" className="text-right!">Precio</th>
           </tr>
         </thead>
@@ -31,7 +32,7 @@ export function AlertsTable({ alerts, showWatch = true }: { alerts: Alert[]; sho
             <tr key={a.id}>
               <td className="whitespace-nowrap text-muted">{fmtDateTime(a.sent_at)}</td>
               {showWatch && (
-                <td><Link to={`/watches/${a.watch_id}`} className="hover:underline">{a.watch_name}</Link></td>
+                <td><Link to={watchPath(a.watch_kind, a.watch_id)} className="hover:underline">{a.watch_name}</Link></td>
               )}
               <td>{provider(a.provider).label}</td>
               <td className="whitespace-nowrap">
@@ -71,7 +72,7 @@ export function RunsTable({ runs, full }: { runs: Run[]; full?: boolean }) {
           {runs.map((r) => (
             <tr key={r.id}>
               <td className="whitespace-nowrap text-muted">{fmtDateTime(r.started_at)}</td>
-              <td><Link to={`/watches/${r.watch_id}`} className="hover:underline">{r.watch_name}</Link></td>
+              <td><Link to={watchPath(r.watch_kind, r.watch_id)} className="hover:underline">{r.watch_name}</Link></td>
               <td>{provider(r.provider).label}</td>
               {full && <td className="text-muted">{r.trigger === 'cron' ? 'automática' : 'manual'}</td>}
               <td><RunStatus run={r} /></td>

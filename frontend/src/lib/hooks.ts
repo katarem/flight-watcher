@@ -8,7 +8,7 @@ import type { Status } from '@/api/types'
 /** Título de la pestaña del navegador. */
 export function useTitle(title: string | undefined) {
   useEffect(() => {
-    document.title = title ? `${title} · Flight Watcher` : 'Flight Watcher'
+    document.title = title ? `${title} · Trip Watch` : 'Trip Watch'
   }, [title])
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  fmtAgo, fmtDateTime, fmtDay, fmtMoney, fmtNights, fmtNightsRange, fmtPrice, fmtPriceShort, fmtShortDay, priceExtras, stopsRule,
+  fmtAgo, fmtClock, fmtDateTime, fmtDay, fmtMoney, fmtNights, fmtNightsRange, fmtPrice, fmtPriceShort, fmtShortDay, priceExtras, stopsRule,
 } from './format'
 
 describe('format', () => {
@@ -41,5 +41,14 @@ describe('format', () => {
     expect(stopsRule(0)).toBe('solo directos')
     expect(stopsRule(2)).toBe('hasta 2 escalas')
     expect(stopsRule(null)).toBe('con o sin escalas')
+  })
+
+  it('horas de salida y llegada como en los avisos', () => {
+    expect(fmtClock('2026-11-03T06:35', '2026-11-03T08:10')).toBe('06:35–08:10')
+    expect(fmtClock('2026-11-03T22:40', '2026-11-04T00:15')).toBe('22:40–00:15 (+1)')
+    expect(fmtClock('2026-11-03T06:35', null)).toBe('sale 06:35')
+    expect(fmtClock(null, null)).toBe('')
+    expect(priceExtras({ currency: 'EUR', orig_price: null, stops: 0, departs_at: '2026-11-03T06:35', arrives_at: '2026-11-03T08:10' }))
+      .toBe('06:35–08:10')
   })
 })

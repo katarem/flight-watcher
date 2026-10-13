@@ -1,5 +1,5 @@
 {
-  "name": "flight-watcher-panel",
+  "name": "trip-watch-panel",
   "private": true,
   "type": "module",
   "scripts": {

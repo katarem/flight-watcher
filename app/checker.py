@@ -170,12 +170,13 @@ def _check_one(browser, settings, tz, watch, prov, pairs, trigger) -> dict:
                         "provider": prov.key, "day": p.day, "price": p.price_eur, "reason": reason,
                         "origin": p.origin, "destination": p.destination, "stops": p.stops,
                         "currency": p.currency, "orig_price": p.price if p.currency != "EUR" else None,
+                        "departs_at": db.minutes(p.departure), "arrives_at": db.minutes(p.arrival),
                         "link": link_for(prov.key, p.origin or watch["origin"],
                                          p.destination or watch["destination"], p.day),
                     })
         db.finish_run(con, run_id, datetime.now(tz).replace(tzinfo=None).isoformat(timespec="seconds"),
                       error is None, len(prices), len(deals), error)
-    return {"deals": deals, "base": base, "error": error, "started": started}
+    return {"deals": deals, "base": base, "error": error, "started": started, "prices": prices}
 
 
 def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int | None = None,
@@ -216,16 +217,19 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
                 owner = users[w["user_id"]]
                 mine = problems.setdefault(owner["id"], [])
                 all_deals, baselines, last_started = [], {}, None
+                day_min: dict = {}  # precio más bajo de cada día entre todas las webs (calendario del aviso)
                 for key in ordered(w["providers"]):
                     prov, cov = PROVIDERS[key], w["coverage"][key]
                     if not cov["active"]:  # no opera la ruta ahora (p. ej. de temporada): ni se consulta
                         continue
-                    pairs = cov["routes"] or places.routes(w["origin"], w["destination"])
+                    pairs = cov["routes"] or places.routes(w["origin"], w["destination"], w["kind"])
                     STATE["current"] = f"{w['name']} · {prov.label}"
                     res = _check_one(browser, settings, tz, w, prov, pairs, trigger)
                     all_deals += res["deals"]
                     baselines[key] = res["base"]
                     last_started = res["started"]
+                    for p in res["prices"]:
+                        day_min[p.day] = min(p.price_eur, day_min.get(p.day, p.price_eur))
                     if res["error"]:
                         mine.append(f"{w['name']} · {prov.label}: {res['error']}")
 
@@ -235,7 +239,8 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
                     if not chans:  # sin marcar como avisados: se reenviarán cuando asigne algún canal
                         log.info("Hay chollos en «%s» pero no tiene canales de aviso activos", w["name"])
                         continue
-                    sent, errs = notify.send_deals(chans, w, all_deals, baselines, settings.get("panel_url", ""))
+                    sent, errs = notify.send_deals(chans, w, all_deals, baselines, settings.get("panel_url", ""),
+                                                   day_min)
                     mine += [f"{w['name']}: {e}" for e in errs]
                     if sent:  # solo se marcan como avisadas si llegaron a algún canal
                         with db.connect() as con:
@@ -249,8 +254,8 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
         if trigger == "cron":
             for uid, items in problems.items():
                 if items and users[uid]["notify_errors"]:
-                    notify.send_text(user_channels[uid],
-                                     "⚠️ Flight Watcher: hubo problemas\n" + "\n".join(f"• {p}" for p in items))
+                    notify.send_text(user_channels[uid], "⚠️ Trip Watch: hubo problemas",
+                                     [f"• {p}" for p in items], color=notify.WARN)
 
         with db.connect() as con:
             db.purge(con, int(settings["retention_days"]))

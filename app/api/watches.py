@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel
 
-from .. import checker, coverage, db, fmt, places, scheduler
+from .. import checker, coverage, db, fmt, kinds, places, scheduler
 from ..providers import PROVIDERS, link_for, ordered
 from .deps import Invalid, current_user, own_channel_ids, own_watch
 
@@ -40,6 +40,7 @@ def _link(pk, w, row) -> str:
 def watch_view(w: dict) -> dict:
     return {k: w[k] for k in ("id", "name", "origin", "destination", "max_price", "discount_pct", "date_from",
                               "date_to", "max_stops", "channel_ids", "created_at")} | {
+        "kind": w.get("kind") or kinds.DEFAULT,
         "enabled": bool(w["enabled"]), "providers": ordered(w["providers"]),
         "origin_place": places.view(w["origin"]), "destination_place": places.view(w["destination"]),
         "coverage": [{"key": k, "routes": [db.pair_key(p) for p in w["coverage"][k]["routes"]],
@@ -49,8 +50,9 @@ def watch_view(w: dict) -> dict:
 
 
 def _money(row) -> dict:
-    """Moneda original y escalas de un precio guardado."""
-    return {"currency": row.get("currency") or "EUR", "orig_price": row.get("orig_price"), "stops": row.get("stops")}
+    """Moneda original, escalas y horas de un precio guardado."""
+    return {"currency": row.get("currency") or "EUR", "orig_price": row.get("orig_price"), "stops": row.get("stops"),
+            "departs_at": row.get("departs_at"), "arrives_at": row.get("arrives_at")}
 
 
 def _run_view(run: dict | None) -> dict | None:
@@ -97,12 +99,13 @@ def _trend(con, wid: int, points: int = 30) -> list[dict]:
 
 # ------------------------------------------------------------------------- lista
 @router.get("/watches")
-def list_watches(user: dict = Depends(current_user)):
+def list_watches(kind: str | None = None, user: dict = Depends(current_user)):
+    """Vigilancias del usuario (de un transporte con `kind`, p. ej. las de vuelos)."""
     s = db.get_settings()
     out = []
     with db.connect() as con:
         names = {c["id"]: c["name"] for c in db.list_channels(con, user["id"], only_enabled=True)}
-        for w in db.list_watches(con, user["id"]):
+        for w in db.list_watches(con, user["id"], kind or None):
             stats, _ = _provider_stats(con, s, w)
             out.append({**watch_view(w), "stats": stats, "trend": _trend(con, w["id"]),
                         "channels": [names[i] for i in w["channel_ids"] if i in names]})
@@ -124,6 +127,8 @@ def list_runs(limit: int = 50, user: dict = Depends(current_user)):
 
 # ------------------------------------------------------------------------- CRUD
 class WatchIn(BaseModel):
+    #: Transporte de la vigilancia (app/kinds.py); vacío = vuelos.
+    kind: str = kinds.DEFAULT
     name: str = ""
     origin: str = ""
     destination: str = ""
@@ -137,21 +142,39 @@ class WatchIn(BaseModel):
     channel_ids: list[int] = []
 
 
-def parse_route(origin_raw: str, destination_raw: str, errors: list[str]) -> tuple[str, str]:
-    """Códigos de lugar válidos (aeropuerto, ciudad, país o grupo) o errores en `errors`."""
+def parse_kind(raw: str | None, errors: list[str]) -> str:
+    """Transporte de una vigilancia: uno de los disponibles (hoy, vuelos)."""
+    kind = (raw or kinds.DEFAULT).strip().lower()
+    if kind in kinds.KINDS and kinds.KINDS[kind].available and kinds.KINDS[kind].transport:
+        return kind
+    k = kinds.KINDS.get(kind)
+    errors.append(f"Las vigilancias de {k.label.lower()} llegan en la {k.since}." if k and k.since
+                  else "Tipo de transporte desconocido.")
+    return kinds.DEFAULT
+
+
+def parse_route(origin_raw: str, destination_raw: str, errors: list[str],
+                kind: str = kinds.DEFAULT) -> tuple[str, str]:
+    """Códigos de lugar válidos para el transporte `kind` o errores en `errors`."""
     origin, destination = places.clean_code(origin_raw), places.clean_code(destination_raw)
+    k = kinds.get(kind)
     ok = True
     for label, code in (("origen", origin), ("destino", destination)):
-        if not places.get(code):
+        place = places.get(code)
+        if not place:
             ok = False
-            errors.append(f"El {label} no es un aeropuerto, ciudad, país o grupo conocido: elígelo de la lista "
-                          "(o escribe su código IATA, p. ej. SVQ).")
+            errors.append(f"El {label} no es un {k.node_label}, ciudad, país o grupo conocido: elígelo de la lista"
+                          + (" (o escribe su código IATA, p. ej. SVQ)." if k.node == "airport" else "."))
+        elif not place.nodes_for(kind):
+            ok = False
+            errors.append(f"El {label} ({place.label}) no tiene ningún {k.node_label}: elige otro lugar.")
     if ok:
-        n = len(places.routes(origin, destination))
+        n = len(places.routes(origin, destination, kind))
+        what = f"{places.NODE_PLURALS.get(k.node, 'lugares')}"
         if origin == destination or n == 0:
             errors.append("Origen y destino no pueden ser iguales.")
         elif n > places.MAX_PAIRS:
-            errors.append(f"Esa ruta son {n} combinaciones de aeropuertos (máximo {places.MAX_PAIRS}): "
+            errors.append(f"Esa ruta son {n} combinaciones de {what} (máximo {places.MAX_PAIRS}): "
                           "acota el origen o el destino.")
     return origin, destination
 
@@ -192,9 +215,13 @@ def parse_dates(date_from, date_to, errors: list[str]) -> tuple[str | None, str 
 def parse_watch(body: WatchIn) -> dict:
     """Datos listos para guardar o `Invalid` con todos los errores encontrados."""
     errors = []
-    origin, destination = parse_route(body.origin, body.destination, errors)
-    providers = [p for p in dict.fromkeys(body.providers) if p in PROVIDERS]
-    if not providers:
+    kind = parse_kind(body.kind, errors)
+    origin, destination = parse_route(body.origin, body.destination, errors, kind)
+    chosen = [p for p in dict.fromkeys(body.providers) if p in PROVIDERS]
+    providers = [p for p in chosen if PROVIDERS[p].kind == kind]
+    if len(providers) < len(chosen):
+        errors.append(f"Solo se pueden elegir webs de {kinds.get(kind).label.lower()}.")
+    elif not providers:
         errors.append("Elige al menos un proveedor.")
     stops_text = str(body.max_stops if body.max_stops is not None else "").strip()
     max_stops = None
@@ -210,7 +237,7 @@ def parse_watch(body: WatchIn) -> dict:
     if errors:
         raise Invalid(errors)
     return {
-        "name": body.name.strip()[:200] or f"{origin} → {destination}",
+        "name": body.name.strip()[:200] or f"{origin} → {destination}", "kind": kind,
         "origin": origin, "destination": destination, "providers": providers,
         "max_price": max_p, "discount_pct": disc if disc is not None else 30.0,
         "date_from": d_from, "date_to": d_to, "max_stops": max_stops, "enabled": body.enabled,
@@ -219,9 +246,10 @@ def parse_watch(body: WatchIn) -> dict:
 
 def with_coverage(data: dict, current: dict | None = None) -> dict:
     """Comprueba qué pares opera cada proveedor elegido (desde la caché si se acaba de comprobar)."""
-    keep = current["coverage"] if current and (current["origin"], current["destination"]) == (
-        data["origin"], data["destination"]) else None
-    cov, errors = coverage.coverage_for(data["providers"], data["origin"], data["destination"], keep)
+    keep = current["coverage"] if current and (current["origin"], current["destination"], current["kind"]) == (
+        data["origin"], data["destination"], data["kind"]) else None
+    cov, errors = coverage.coverage_for(data["providers"], data["origin"], data["destination"], keep,
+                                        mode=data["kind"])
     if errors:
         raise Invalid(errors)
     if keep:
@@ -323,9 +351,10 @@ def date_history(wid: int, date: str, user: dict = Depends(current_user)):
 
 # ------------------------------------------------------- lugares y comprobación de rutas
 @router.get("/places")
-def search_places(q: str = "", limit: int = 10):
-    """Autocompletado de origen y destino: aeropuertos, ciudades, países y grupos."""
-    return {"places": places.search(q[:60], max(1, min(limit, 25)))}
+def search_places(q: str = "", limit: int = 10, kind: str | None = None):
+    """Autocompletado de origen y destino. Con `kind` (transporte de la vigilancia), solo los lugares que tienen
+    alguno de ese transporte: en una de vuelos, aeropuertos y ciudades, países o grupos con aeropuerto."""
+    return {"places": places.search(q[:60], max(1, min(limit, 25)), kind if kind in kinds.KINDS else None)}
 
 
 @router.get("/places/{code}")
@@ -337,6 +366,7 @@ def get_place(code: str):
 
 
 class RouteCheckIn(BaseModel):
+    kind: str = kinds.DEFAULT
     origin: str = ""
     destination: str = ""
     providers: list[str] | None = None
@@ -346,11 +376,12 @@ class RouteCheckIn(BaseModel):
 def route_check(body: RouteCheckIn):
     """Qué proveedores operan la ruta (en paralelo, con tiempo límite por proveedor) y por qué no los demás."""
     errors: list[str] = []
-    origin, destination = parse_route(body.origin, body.destination, errors)
+    kind = parse_kind(body.kind, errors)
+    origin, destination = parse_route(body.origin, body.destination, errors, kind)
     if errors:
         raise Invalid(errors)
-    pairs = places.routes(origin, destination)
-    keys = [k for k in (body.providers or PROVIDERS) if k in PROVIDERS]
+    pairs = places.routes(origin, destination, kind)
+    keys = [k for k in (body.providers or PROVIDERS) if k in PROVIDERS and PROVIDERS[k].kind == kind]
     results = coverage.check_many(keys, pairs)
     return {"origin": places.view(origin), "destination": places.view(destination),
             "pairs": [db.pair_key(p) for p in pairs], "providers": [r.view() for r in results]}

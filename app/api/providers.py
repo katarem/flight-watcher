@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ValidationError
 
-from .. import auth, checker, coverage, db, health, places, scheduler
+from .. import auth, checker, coverage, db, health, kinds, places, scheduler
 from ..providers import COVERAGE_LABELS, PROVIDERS, bundle, scripted, stealth
 from .deps import Invalid, require_admin
 
@@ -27,12 +27,15 @@ log = logging.getLogger("providers")
 router = APIRouter(prefix="/providers", dependencies=[Depends(require_admin)])
 throttle = auth.LoginThrottle()
 
-FIELDS = ("key", "label", "color", "coverage", "max_routes", "health_origin", "health_destination", "link_template",
-          "notes", "min_interval", "enabled", "created_at", "updated_at", "updated_by", "source", "stealth")
+FIELDS = ("key", "kind", "label", "color", "coverage", "max_routes", "health_origin", "health_destination",
+          "link_template", "notes", "min_interval", "enabled", "created_at", "updated_at", "updated_by", "source",
+          "stealth")
 
 
 class ProviderIn(BaseModel):
     key: str = ""
+    #: Tipo de proveedor (transporte): flight, train, ship, bus (app/kinds.py).
+    kind: str = kinds.DEFAULT
     label: str = ""
     color: str = "#64748b"
     coverage: str = "probe"
@@ -52,7 +55,7 @@ class ProviderIn(BaseModel):
 
 
 class TestIn(ProviderIn):
-    #: Ruta de la prueba (aeropuertos); vacía = la ruta de prueba del formulario.
+    #: Ruta de la prueba (aeropuertos o lugares de su transporte); vacía = la ruta de prueba del formulario.
     origin: str = ""
     destination: str = ""
 
@@ -61,7 +64,9 @@ class TestIn(ProviderIn):
 def _view(row: dict, usage: dict[str, int], last: dict | None = None, code: bool = False) -> dict:
     prov = PROVIDERS.get(row["key"])
     loaded = isinstance(prov, scripted.ScriptedProvider)
+    kind = kinds.KINDS.get(row.get("kind") or kinds.DEFAULT)
     return {k: row.get(k) for k in FIELDS} | {
+        "kind": row.get("kind") or kinds.DEFAULT, "kind_label": kind.label if kind else row.get("kind"),
         "enabled": bool(row["enabled"]), "stealth": stealth.level(row.get("stealth")) or stealth.OFF,
         "loaded": loaded, "error": scripted.ERRORS.get(row["key"]),
         "coverage_label": COVERAGE_LABELS.get(row["coverage"], row["coverage"]),
@@ -83,11 +88,25 @@ def _one_view(key: str) -> dict:
 
 
 # ------------------------------------------------------------------- validación
-def _airport(raw: str, label: str, errors: list[str]) -> str:
+def node_code(raw: str, kind: str = kinds.DEFAULT) -> str | None:
+    """Código de un lugar real del transporte `kind` (aeropuerto, estación…) o None si no lo es."""
     code = (raw or "").strip().upper()
+    node = kinds.get(kind).node if kind in kinds.KINDS else ""
     place = places.get(code) if code else None
-    if not place or place.kind != "airport":
-        errors.append(f"El {label} de la ruta de prueba debe ser un aeropuerto (código IATA de 3 letras).")
+    if place:
+        return code if place.kind == node else None
+    # Estaciones, puertos y paradas aún no tienen catálogo (llegan con sus transportes): basta con el formato.
+    return code if node and node != "airport" and places.node_code_ok(code, kind) else None
+
+
+def _airport(raw: str, label: str, errors: list[str], kind: str = kinds.DEFAULT,
+             what: str = "de la ruta de prueba") -> str:
+    code = (raw or "").strip().upper()
+    if node_code(code, kind) is None:
+        k = kinds.KINDS.get(kind) or kinds.get(kinds.DEFAULT)
+        errors.append(f"El {label} {what} debe ser un aeropuerto (código IATA de 3 letras)." if k.node == "airport"
+                      else f"El {label} {what} debe ser un lugar de tipo {k.node_label} "
+                      "(código de 4 a 10 letras o cifras).")
     return code
 
 
@@ -100,6 +119,14 @@ def _check_key(key: str, errors: list[str]):
 def _parse(body: ProviderIn, for_test: bool = False, errors: list[str] | None = None) -> dict:
     """Valores listos para guardar (sin la clave) o `Invalid` con todos los errores (más los de `errors`)."""
     errors = errors if errors is not None else []
+    kind = (body.kind or kinds.DEFAULT).strip().lower()
+    if kind not in kinds.provider_kinds():
+        if kind in kinds.KINDS:
+            k = kinds.KINDS[kind]
+            errors.append(f"Los proveedores de tipo «{k.label}» llegan en la {k.since}.")
+        else:
+            errors.append("Tipo de proveedor desconocido (" + ", ".join(kinds.provider_kinds()) + ").")
+        kind = kinds.DEFAULT
     label = body.label.strip()[:100]
     if not label and not for_test:
         errors.append("Ponle un nombre al proveedor.")
@@ -116,8 +143,8 @@ def _parse(body: ProviderIn, for_test: bool = False, errors: list[str] | None = 
                 raise ValueError
         except ValueError:
             errors.append(f"El máximo de pares debe ser un entero entre 1 y {places.MAX_PAIRS}.")
-    origin = _airport(body.health_origin, "origen", errors)
-    destination = _airport(body.health_destination, "destino", errors)
+    origin = _airport(body.health_origin, "origen", errors, kind)
+    destination = _airport(body.health_destination, "destino", errors, kind)
     if origin and origin == destination:
         errors.append("El origen y el destino de la ruta de prueba no pueden ser iguales.")
     link = body.link_template.strip()
@@ -140,7 +167,8 @@ def _parse(body: ProviderIn, for_test: bool = False, errors: list[str] | None = 
         errors.append(f"El script es demasiado largo (máximo {scripted.MAX_CODE // 1000} KB).")
     if errors:
         raise Invalid(errors)
-    return {"label": label or "Borrador", "color": color.lower(), "coverage": body.coverage, "max_routes": max_routes,
+    return {"kind": kind, "label": label or "Borrador", "color": color.lower(), "coverage": body.coverage,
+            "max_routes": max_routes,
             "health_origin": origin, "health_destination": destination, "link_template": link,
             "notes": body.notes.strip()[:1000], "min_interval": interval, "code": code,
             "enabled": int(body.enabled), "stealth": level}
@@ -180,7 +208,8 @@ def _load_error(key: str, values: dict) -> str | None:
 
 
 def _after_change(key: str, old: dict | None, values: dict):
-    if old is None or (values["code"], values["coverage"]) != (old["code"], old["coverage"]):
+    changed = (values["code"], values["coverage"], values["kind"]) != (old["code"], old["coverage"], old["kind"]) if old else True
+    if changed:
         coverage.forget(key)  # lo que dijo el script anterior ya no vale
 
 
@@ -196,6 +225,7 @@ def list_providers():
         "editable": scripted.EDITABLE, "template": scripted.TEMPLATE, "status_labels": health.STATUS_LABELS,
         "sources": sources,
         "catalogs": [{"label": label, "url": bundle.CATALOG_URL + name} for name, label in bundle.CATALOGS],
+        "kinds": [kinds.view(kinds.KINDS[k]) for k in kinds.provider_kinds()],
     }
 
 
@@ -248,6 +278,12 @@ def create_provider(body: ProviderIn, admin: dict = Depends(require_admin)):
 def update_provider(key: str, body: ProviderIn, admin: dict = Depends(require_admin)):
     with db.connect() as con:
         old = _get(con, key)
+    if (body.kind or kinds.DEFAULT).strip().lower() != old["kind"]:
+        with db.connect() as con:
+            used = db.provider_usage_counts(con).get(key, 0)
+        if used:
+            raise Invalid(f"No se puede cambiar el tipo de un proveedor que usan {used} vigilancia(s): sus rutas son "
+                          f"de {kinds.get(old['kind']).label.lower()}.")
     values = _parse(body)
     if values["code"] != old["code"]:
         _require_editable()
@@ -286,8 +322,10 @@ def test_provider(body: TestIn, admin: dict = Depends(require_admin)):
     _require_editable()
     values = _parse(body, for_test=True)
     errors: list[str] = []
-    origin = _airport(body.origin, "origen", errors) if body.origin.strip() else values["health_origin"]
-    destination = _airport(body.destination, "destino", errors) if body.destination.strip() else values["health_destination"]
+    origin = (_airport(body.origin, "origen", errors, values["kind"], "de la prueba") if body.origin.strip()
+              else values["health_origin"])
+    destination = (_airport(body.destination, "destino", errors, values["kind"], "de la prueba")
+                   if body.destination.strip() else values["health_destination"])
     if origin == destination:
         errors.append("Origen y destino no pueden ser iguales.")
     if errors:
@@ -373,8 +411,8 @@ def _read_bundle(body: ImportIn) -> tuple[str, str | None, list[dict]]:
 def _bundle_item(p: dict, enabled: bool = True) -> ProviderIn:
     """El proveedor de un paquete como si llegara del formulario (los tipos raros se quedan para `_parse`)."""
     data = {k: v for k, v in p.items() if v is not None}
-    for k in ("key", "label", "color", "coverage", "health_origin", "health_destination", "link_template", "notes",
-              "code"):
+    for k in ("key", "kind", "label", "color", "coverage", "health_origin", "health_destination", "link_template",
+              "notes", "code"):
         data[k] = str(data.get(k, ProviderIn.model_fields[k].default))
     for k in ("max_routes", "min_interval"):
         if not isinstance(data.get(k), (int, float, str, type(None))) or isinstance(data.get(k), bool):
@@ -403,11 +441,12 @@ def import_preview(body: ImportIn):
             values, errors = None, errors + [e for e in exc.errors if e not in errors]
         old = current.get(key)
         changes = [] if not (old and values) else [
-            f for f in ("label", "color", "coverage", "max_routes", "health_origin", "health_destination",
+            f for f in ("kind", "label", "color", "coverage", "max_routes", "health_origin", "health_destination",
                         "link_template", "notes", "min_interval", "stealth", "code") if values[f] != old[f]]
         out.append({
             "key": key, "label": (values or {}).get("label") or str(p.get("label") or key),
             "color": (values or {}).get("color") or "#64748b", "coverage": p.get("coverage"),
+            "kind": (values or {}).get("kind") or str(p.get("kind") or kinds.DEFAULT),
             "coverage_label": COVERAGE_LABELS.get(str(p.get("coverage")), str(p.get("coverage"))),
             "notes": str(p.get("notes") or ""), "code": str(p.get("code") or ""),
             "status": "new" if not old else ("changed" if changes else "same"), "changes": changes,
@@ -467,9 +506,9 @@ def _test_airport(raw: str, label: str, errors: list[str]) -> str | None:
     code = raw.strip().upper()
     if not code:
         return None
-    place = places.get(code)
-    if not place or place.kind != "airport":
-        errors.append(f"El {label} de la prueba debe ser un aeropuerto (código IATA de 3 letras).")
+    if not any(node_code(code, k) for k in kinds.provider_kinds()):
+        errors.append(f"El {label} de la prueba debe ser un aeropuerto (código IATA de 3 letras) o un lugar de "
+                      "otro transporte.")
     return code
 
 

@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { Plane } from 'lucide-react'
+import { Route } from 'lucide-react'
 import { motion } from 'motion/react'
 import { useState, type FormEvent } from 'react'
 import { Navigate, useNavigate, useSearchParams } from 'react-router'
@@ -61,11 +61,11 @@ export function LoginPage() {
             transition={{ type: 'spring', bounce: 0.35, duration: 0.8, delay: 0.1 }}
             className="grid size-14 place-items-center rounded-2xl bg-accent text-accent-fg shadow-lg shadow-accent/30"
           >
-            <Plane className="size-7" aria-hidden="true" />
+            <Route className="size-7" aria-hidden="true" />
           </motion.span>
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Flight Watcher</h1>
-            <p className="text-sm text-fg/80">Vigila precios de vuelos y te avisa de los chollos.</p>
+            <h1 className="text-2xl font-semibold tracking-tight">Trip Watch</h1>
+            <p className="text-sm text-fg/80">Vigila los precios de tus viajes y te avisa de los chollos.</p>
           </div>
         </div>
         <form onSubmit={submit} className="space-y-4 rounded-2xl border border-line bg-surface p-6 shadow-card" noValidate>

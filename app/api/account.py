@@ -170,7 +170,8 @@ def _channel_routes(prefix: str, owner_dep):
     def test_channel(cid: int, owner: dict = Depends(owner_dep)):
         with db.connect() as con:
             ch = own_channel(con, owner, cid)
-        _ok, errors = notify.send_text([ch], "✅ Flight Watcher: las notificaciones funcionan.")
+        # Un aviso de ejemplo con el mismo formato que los de verdad (secciones, enlaces e imagen).
+        _ok, errors = notify.send([ch], notify.sample_message(db.get_settings().get("panel_url", "")))
         if errors:
             raise Invalid("Fallo al enviar: " + ", ".join(errors), status=502)
         return {"ok": True}
