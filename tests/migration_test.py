@@ -86,10 +86,12 @@ def main():
           and settings[bundle.SEED_FLAG] == "1" and bundle.seed() == [],
           "al arrancar: Vueling, Ryanair y el Wizz Air que ya se usaba, con la plantilla de Ajustes (una sola vez)")
     with db.connect() as con:
-        tid = db.create_trip(con, 1, {"name": "Viaje", "outbound_id": 1, "return_id": 2, "min_nights": 2, "max_nights": 4,
-                                      "date_from": None, "date_to": None, "max_total": None, "discount_pct": 30,
-                                      "enabled": True})
-        check(db.get_trip(con, tid)["outbound_id"] == 1 and counts() == before, "0005: viajes sobre las vigilancias existentes")
+        wrapped = db.list_trips(con)
+        roles = [set(db.trip_legs(con, t["id"])) for t in wrapped]
+        w1 = db.get_watch(con, 1)
+        check(len(wrapped) == 2 and roles == [{"outbound"}, {"outbound"}] and w1["trip_id"] == wrapped[0]["id"]
+              and w1["role"] == "outbound" and wrapped[0]["max_total"] is None and counts() == before,
+              "0009: cada vigilancia huérfana queda envuelta en un viaje de solo ida (sin perder filas)")
         db.save_provider_script(con, "propio", {"label": "Propio", "color": "#000000", "coverage": "universal",
                                                 "max_routes": None, "health_origin": "SVQ", "health_destination": "TFN",
                                                 "link_template": "", "notes": "", "min_interval": 1.5,

@@ -91,14 +91,22 @@ channels = Table(
     **_TABLE_OPTS,
 )
 
+# Vigilancias = tramos internos de un viaje (ya no se gestionan sueltas desde el panel). Cada una pertenece a un
+# único viaje (`trip_id`) con un papel (`role`: ida, vuelta y, en la 2.0, estancia). El viaje es el dueño: borrarlo
+# borra sus tramos. Guardan la cobertura, el histórico de precios y la configuración de proveedores del tramo.
 watches = Table(
     "watches", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     # Nullable solo por las BD anteriores a los usuarios: bootstrap_admin() las asigna al administrador.
     Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE", name="fk_watches_user_id")),
+    # Viaje al que pertenece el tramo. Nullable solo durante la migración 0009; después, NOT NULL.
+    Column("trip_id", Integer, ForeignKey("trips.id", ondelete="CASCADE", name="fk_watches_trip_id"),
+           nullable=False),
+    Column("role", String(10), nullable=False, server_default="outbound"),  # outbound | return (| stay en la 2.0)
     Column("name", String(200), nullable=False),
     Column("origin", PLACE, nullable=False),
     Column("destination", PLACE, nullable=False),
+    # max_price/discount_pct/date_from/date_to se conservan por el tramo, pero la lógica de chollo vive en el viaje.
     Column("max_price", Double),
     Column("discount_pct", Double, nullable=False, server_default="30"),
     Column("date_from", String(10)),
@@ -108,6 +116,7 @@ watches = Table(
     Column("created_at", ISO, nullable=False),
     Column("kind", KIND, nullable=False, server_default=kinds.DEFAULT),  # transporte: flight (ver app/kinds.py)
     Index("idx_watches_user", "user_id"),
+    Index("idx_watches_trip", "trip_id"),
     **_TABLE_OPTS,
 )
 
@@ -213,15 +222,15 @@ alerts = Table(
     **_TABLE_OPTS,
 )
 
-# Viajes: ida y vuelta formados por dos vigilancias del mismo usuario (sus tramos). El precio de un viaje
-# es la suma del más barato de cada tramo para cada fecha de ida y cada número de noches permitido.
+# Viajes: la entidad principal. El usuario crea un viaje y este posee sus tramos (vigilancias internas, ver
+# `watches`): un tramo de ida obligatorio, uno de vuelta opcional (solo ida = sin tramo de vuelta) y, en la 2.0,
+# una estancia. El precio de un viaje es la suma del más barato de cada tramo para cada fecha de ida y cada
+# número de noches permitido. El transporte (kind) se deriva del tramo de ida.
 trips = Table(
     "trips", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
     Column("name", String(200), nullable=False),
-    Column("outbound_id", Integer, ForeignKey("watches.id", ondelete="CASCADE"), nullable=False),  # vigilancia de ida
-    Column("return_id", Integer, ForeignKey("watches.id", ondelete="CASCADE"), nullable=False),    # vigilancia de vuelta
     Column("min_nights", Integer, nullable=False),
     Column("max_nights", Integer, nullable=False),
     Column("date_from", String(10)),  # ventana de fechas de ida (NULL = sin límite)
@@ -242,16 +251,17 @@ trip_channels = Table(
 )
 
 # Histórico de un viaje: en cada comprobación, la combinación más barata de cada fecha de ida (en euros).
+# ret_date/ret_price son NULL en los viajes de solo ida (sin tramo de vuelta).
 trip_quotes = Table(
     "trip_quotes", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("trip_id", Integer, ForeignKey("trips.id", ondelete="CASCADE"), nullable=False),
     Column("checked_at", ISO, nullable=False),
     Column("out_date", String(10), nullable=False),
-    Column("ret_date", String(10), nullable=False),
+    Column("ret_date", String(10)),  # NULL = viaje de solo ida
     Column("total", Double, nullable=False),
     Column("out_price", Double, nullable=False),
-    Column("ret_price", Double, nullable=False),
+    Column("ret_price", Double),     # NULL = viaje de solo ida
     Index("idx_trip_quotes", "trip_id", "checked_at"),
     **_TABLE_OPTS,
 )
@@ -261,7 +271,7 @@ trip_alerts = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("trip_id", Integer, ForeignKey("trips.id", ondelete="CASCADE"), nullable=False),
     Column("out_date", String(10), nullable=False),
-    Column("ret_date", String(10), nullable=False),
+    Column("ret_date", String(10)),  # NULL = viaje de solo ida
     Column("total", Double, nullable=False),
     Column("sent_at", ISO, nullable=False),
     Index("idx_trip_alerts", "trip_id", "out_date"),
@@ -372,18 +382,23 @@ def init():
 
 
 def seed_defaults(user_id: int):
-    """Crea las dos vigilancias iniciales (del usuario dado) si la base de datos no tiene ninguna.
+    """Crea el viaje inicial (de ida y vuelta Sevilla ⇄ Tenerife, del usuario dado) si la BD no tiene ninguno.
 
     TCI es el código de ciudad de Tenerife: se consultan Tenerife Norte (Vueling) y Sur (Ryanair).
     """
-    with connect() as con:
-        if con.execute(select(func.count()).select_from(watches)).scalar():
-            return
-        for name, o, d in (("Sevilla → Tenerife", "SVQ", "TCI"), ("Tenerife → Sevilla", "TCI", "SVQ")):
-            create_watch(con, user_id, {
-                "name": name, "origin": o, "destination": d, "providers": ["vueling", "ryanair"], "max_price": 40,
+    def leg(name, o, d):
+        return {"name": name, "origin": o, "destination": d, "providers": ["vueling", "ryanair"], "max_price": None,
                 "discount_pct": 30, "date_from": None, "date_to": None, "max_stops": 0, "enabled": True,
-            })
+                "kind": kinds.DEFAULT}
+
+    with connect() as con:
+        if con.execute(select(func.count()).select_from(trips)).scalar():
+            return
+        create_trip(con, user_id, {
+            "name": "Sevilla ⇄ Tenerife", "min_nights": 5, "max_nights": 10, "date_from": None, "date_to": None,
+            "max_total": 80, "discount_pct": 30, "enabled": True,
+            "outbound": leg("Sevilla → Tenerife", "SVQ", "TCI"), "return": leg("Tenerife → Sevilla", "TCI", "SVQ"),
+        })
 
 
 # --------------------------------------------------------------------- usuarios
@@ -456,8 +471,8 @@ def bootstrap_admin(username: str, password_hash: str) -> tuple[int, bool]:
                     create_channel(con, admin["id"], "telegram", "Telegram",
                                    {"token": moved["telegram_token"], "chat_id": moved["telegram_chat_id"]})
                 ids = [c["id"] for c in list_channels(con, admin["id"])]
-                for w in list_watches(con, admin["id"]):
-                    set_watch_channels(con, w["id"], ids)
+                for t in list_trips(con, admin["id"]):
+                    set_trip_channels(con, t["id"], ids)
             if "notify_errors" in moved:
                 update_user(con, admin["id"], notify_errors=moved["notify_errors"] == "1")
             con.execute(delete(settings_t).where(settings_t.c.key.in_(list(moved))))
@@ -625,9 +640,11 @@ def _coverage_of(data: dict) -> dict[str, dict]:
                                                     data.get("kind") or kinds.DEFAULT)
 
 
-def create_watch(con, user_id: int, data: dict) -> int:
-    """`data["coverage"]` con la cobertura comprobada o, si falta, `data["providers"]` (sin comprobar)."""
-    values = {**_watch_values(data), "user_id": user_id, "created_at": datetime.now().isoformat(timespec="seconds")}
+def create_watch(con, user_id: int, data: dict, trip_id: int, role: str = "outbound") -> int:
+    """Crea un tramo de un viaje. `data["coverage"]` con la cobertura comprobada o, si falta, `data["providers"]`
+    (sin comprobar). Las vigilancias ya no se crean sueltas: siempre pertenecen a un viaje (`trip_id`)."""
+    values = {**_watch_values(data), "user_id": user_id, "trip_id": trip_id, "role": role,
+              "created_at": datetime.now().isoformat(timespec="seconds")}
     wid = con.execute(insert(watches).values(**values)).inserted_primary_key[0]
     set_watch_providers(con, wid, _coverage_of(data))
     return wid
@@ -740,8 +757,14 @@ def list_alerts(con, limit=10, watch_id=None, user_id=None):
 
 # ------------------------------------------------------------------------ viajes
 def _trip_values(data: dict) -> dict:
-    return {k: data[k] for k in ("name", "outbound_id", "return_id", "min_nights", "max_nights", "date_from",
-                                 "date_to", "max_total", "discount_pct")} | {"enabled": int(data["enabled"])}
+    return {k: data[k] for k in ("name", "min_nights", "max_nights", "date_from", "date_to", "max_total",
+                                 "discount_pct")} | {"enabled": int(data["enabled"])}
+
+
+def trip_legs(con, trip_id: int) -> dict[str, dict]:
+    """Tramos del viaje por su papel: {"outbound": vigilancia, "return": vigilancia?} (solo ida = sin "return")."""
+    ws = _with_extras(con, _all(con, select(watches).where(watches.c.trip_id == trip_id).order_by(watches.c.id)))
+    return {w["role"]: w for w in ws}
 
 
 def _with_trip_channels(con, ts: list[dict]) -> list[dict]:
@@ -756,13 +779,11 @@ def _with_trip_channels(con, ts: list[dict]) -> list[dict]:
     return ts
 
 
-def list_trips(con, user_id: int | None = None, watch_id: int | None = None) -> list[dict]:
-    """Viajes (de un usuario y/o que usan una vigilancia como tramo) con `channel_ids`."""
+def list_trips(con, user_id: int | None = None) -> list[dict]:
+    """Viajes (de un usuario) con `channel_ids`."""
     stmt = select(trips).order_by(trips.c.id)
     if user_id is not None:
         stmt = stmt.where(trips.c.user_id == user_id)
-    if watch_id is not None:
-        stmt = stmt.where((trips.c.outbound_id == watch_id) | (trips.c.return_id == watch_id))
     return _with_trip_channels(con, _all(con, stmt))
 
 
@@ -772,13 +793,31 @@ def get_trip(con, trip_id: int) -> dict | None:
 
 
 def create_trip(con, user_id: int, data: dict) -> int:
-    return con.execute(insert(trips).values(
+    """Crea el viaje y sus tramos: `data["outbound"]` (obligatorio) y `data["return"]` (opcional = solo ida).
+    Cada tramo es una vigilancia con los datos de `create_watch`."""
+    tid = con.execute(insert(trips).values(
         **_trip_values(data), user_id=user_id, created_at=datetime.now().isoformat(timespec="seconds"),
     )).inserted_primary_key[0]
+    create_watch(con, user_id, data["outbound"], tid, "outbound")
+    if data.get("return"):
+        create_watch(con, user_id, data["return"], tid, "return")
+    return tid
 
 
 def update_trip(con, trip_id: int, data: dict):
+    """Actualiza el viaje y reconcilia sus tramos: el de ida siempre se actualiza; el de vuelta se crea si se
+    añade, se actualiza si sigue y se borra (con su histórico) si el viaje pasa a solo ida."""
     con.execute(update(trips).where(trips.c.id == trip_id).values(**_trip_values(data)))
+    legs = trip_legs(con, trip_id)
+    user_id = legs["outbound"]["user_id"]
+    update_watch(con, legs["outbound"]["id"], data["outbound"])
+    if data.get("return"):
+        if "return" in legs:
+            update_watch(con, legs["return"]["id"], data["return"])
+        else:
+            create_watch(con, user_id, data["return"], trip_id, "return")
+    elif "return" in legs:
+        delete_watch(con, legs["return"]["id"])
 
 
 def delete_trip(con, trip_id: int):
@@ -786,7 +825,10 @@ def delete_trip(con, trip_id: int):
 
 
 def toggle_trip(con, trip_id: int):
+    """Pausa/reanuda el viaje y sus tramos a la vez (el cron comprueba los tramos por su `enabled`)."""
     con.execute(update(trips).where(trips.c.id == trip_id).values(enabled=1 - trips.c.enabled))
+    enabled = con.execute(select(trips.c.enabled).where(trips.c.id == trip_id)).scalar()
+    con.execute(update(watches).where(watches.c.trip_id == trip_id).values(enabled=enabled))
 
 
 def set_trip_channels(con, trip_id: int, channel_ids: list[int]):
@@ -800,7 +842,8 @@ def insert_trip_quotes(con, trip_id: int, checked_at: str, quotes: list[dict]):
     if quotes:
         con.execute(insert(trip_quotes), [
             {"trip_id": trip_id, "checked_at": checked_at, "out_date": q["out_date"], "ret_date": q["ret_date"],
-             "total": q["total"], "out_price": q["out"]["price"], "ret_price": q["ret"]["price"]}
+             "total": q["total"], "out_price": q["out"]["price"],
+             "ret_price": q["ret"]["price"] if q["ret"] else None}  # None en los viajes de solo ida
             for q in quotes
         ])
 

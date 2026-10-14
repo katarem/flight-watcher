@@ -81,6 +81,25 @@ def errors(r) -> str:
     return "\n".join(r.json().get("errors", []))
 
 
+def leg(origin, destination, providers, kind="flight", max_stops=0, name=""):
+    """Datos de un tramo para el cuerpo de `POST/PUT /trips`."""
+    return {"origin": origin, "destination": destination, "providers": providers, "kind": kind,
+            "max_stops": max_stops, "name": name}
+
+
+def oneway(api, providers, origin="MAD", destination="BCN", *, kind="flight", max_stops=0, name="",
+           max_total=None, channel_ids=None):
+    """Crea un viaje de solo ida (un único tramo) y devuelve la respuesta cruda de `POST /trips`.
+
+    Sustituye a las vigilancias sueltas: para probar algo a nivel de tramo (proveedor, cobertura, detalle), se
+    crea un viaje de solo ida y se usa su tramo de ida (`trip["outbound"]`)."""
+    body = {"name": name, "min_nights": 1, "max_nights": 1, "max_total": max_total,
+            "outbound": leg(origin, destination, providers, kind, max_stops)}
+    if channel_ids is not None:
+        body["channel_ids"] = channel_ids
+    return api.post("/trips", body)
+
+
 def users_flow(admin: Api, admin_id: int):
     # --- CRUD de usuarios (solo admin)
     r = admin.get("/users")
@@ -121,28 +140,28 @@ def users_flow(admin: Api, admin_id: int):
     check(ana_c.get("/providers/vueling").status_code == 403 and ana_c.post("/providers/test", {}).status_code == 403
           and ana_c.get("/providers/export").status_code == 403 and ana_c.post("/providers/import", {}).status_code == 403,
           "editar, probar, exportar e importar proveedores, solo admin")
-    watches = ana_c.get("/watches").json()["watches"]
-    check(not watches, "no ve vigilancias ajenas")
+    check(not ana_c.get("/trips").json()["trips"], "no ve viajes ajenos")
     me = ana_c.get("/me").json()["user"]
     check(me["display_name"] == "Ana García" and me["role"] == "user" and "password_hash" not in me, "/me con sus datos")
     for path in ("/watches/1", "/watches/1/charts", "/watches/1/date-history?date=2026-01-01"):
-        check(ana_c.get(path).status_code == 404, f"{path} de otro usuario → 404")
-    check(ana_c.put("/watches/1", {"origin": "MAD", "destination": "BCN", "providers": ["vueling"]}).status_code == 404,
-          "PUT de una vigilancia ajena → 404")
-    for method, path in (("DELETE", "/watches/1"), ("POST", "/watches/1/toggle"), ("POST", "/watches/1/run")):
-        check(ana_c.req(method, path).status_code == 404, f"{method} {path} de otro usuario → 404")
-    check(admin.get("/watches/1").status_code == 200, "el dueño sigue accediendo")
+        check(ana_c.get(path).status_code == 404, f"{path} (tramo de otro usuario) → 404")
+    seeded_trip = admin.get("/trips").json()["trips"][0]["id"]
+    for method, path in (("GET", f"/trips/{seeded_trip}"), ("PUT", f"/trips/{seeded_trip}"),
+                         ("DELETE", f"/trips/{seeded_trip}"), ("POST", f"/trips/{seeded_trip}/toggle"),
+                         ("POST", f"/trips/{seeded_trip}/run")):
+        check(ana_c.req(method, path, json={} if method == "PUT" else None).status_code == 404, f"{method} {path} ajeno → 404")
+    check(admin.get("/watches/1").status_code == 200, "el dueño sigue accediendo a su tramo")
     check(ana_c.get("/status").json()["current"] == "", "estado de ejecución sin nombres ajenos")
 
-    r = ana_c.post("/watches", {"name": "Vigilancia de Ana", "origin": "MAD", "destination": "BCN",
-                                "providers": ["mockweb"], "max_price": 100, "enabled": True})
-    check(r.status_code == 201, "Ana crea su vigilancia")
-    ana_watch = r.json()["watch"]
+    r = oneway(ana_c, ["mockweb"], max_total=100, name="Viaje de Ana")
+    check(r.status_code == 201, "Ana crea su viaje")
+    ana_trip = r.json()["trip"]
+    ana_watch = ana_trip["outbound"]
     with db.connect() as con:
-        check(db.get_watch(con, ana_watch["id"])["user_id"] == ana_id, "la vigilancia pertenece a Ana")
-    names = lambda c: [w["name"] for w in c.get("/watches").json()["watches"]]  # noqa: E731
-    check("Vigilancia de Ana" in names(ana_c) and "Vigilancia de Ana" not in names(admin), "cada uno ve solo las suyas")
-    check(admin.get(f"/watches/{ana_watch['id']}").status_code == 404, "ni el admin ve la de Ana")
+        check(db.get_watch(con, ana_watch["id"])["user_id"] == ana_id, "el tramo pertenece a Ana")
+    names = lambda c: [t["name"] for t in c.get("/trips").json()["trips"]]  # noqa: E731
+    check("Viaje de Ana" in names(ana_c) and "Viaje de Ana" not in names(admin), "cada uno ve solo los suyos")
+    check(admin.get(f"/trips/{ana_trip['id']}").status_code == 404, "ni el admin ve el de Ana")
 
     # --- canales de aviso: lista por usuario, varios tipos, validación y secretos
     kinds = {k["key"]: k for k in ana_c.get("/meta").json()["channel_kinds"]}
@@ -174,39 +193,39 @@ def users_flow(admin: Api, admin_id: int):
     check(ana_c.post(f"/channels/{chans['Mi Telegram']['id']}/test").status_code == 200 and "Mi Telegram" in TARGETS[-1],
           "mensaje de prueba a un canal")
 
-    # --- asignar canales a cada vigilancia
+    # --- asignar canales a cada viaje
     ids = {n: c["id"] for n, c in chans.items()}
     with db.connect() as con:
         admin_chan_id = db.list_channels(con, admin_id)[0]["id"]
-    form = {"name": "Vigilancia de Ana", "origin": "MAD", "destination": "BCN", "providers": ["mockweb"],
-            "max_price": "100", "enabled": True}
-    r = ana_c.put(f"/watches/{ana_watch['id']}", {**form, "channel_ids": [ids["Mi Discord"], admin_chan_id]})
-    check(r.status_code == 200 and r.json()["watch"]["channel_ids"] == [ids["Mi Discord"]], "un canal ajeno no se puede asignar")
+    form = {"name": "Viaje de Ana", "outbound": leg("MAD", "BCN", ["mockweb"]), "min_nights": 1, "max_nights": 1,
+            "max_total": "100"}
+    r = ana_c.put(f"/trips/{ana_trip['id']}", {**form, "channel_ids": [ids["Mi Discord"], admin_chan_id]})
+    check(r.status_code == 200 and r.json()["trip"]["channel_ids"] == [ids["Mi Discord"]], "un canal ajeno no se puede asignar")
     SENT.clear(); TARGETS.clear()
     checker.run_checks(user_id=ana_id, trigger="manual")
-    check(len(SENT) == 1 and TARGETS == [("Mi Discord",)] and "Vigilancia de Ana" in "\n".join(SENT[0][0]),
-          "el aviso va solo al canal asignado a la vigilancia")
+    check(len(SENT) == 1 and TARGETS == [("Mi Discord",)] and "Viaje de Ana" in "\n".join(SENT[0][0]),
+          "el aviso va solo al canal asignado al viaje")
     with db.connect() as con:  # varios canales a la vez; uno pausado no recibe
-        db.set_watch_channels(con, ana_watch["id"], [ids["Mi Discord"], ids["Mi Telegram"], ids["Discord del grupo"]])
-        con.execute(text("DELETE FROM alerts WHERE watch_id = :w"), {"w": ana_watch["id"]})
+        db.set_trip_channels(con, ana_trip["id"], [ids["Mi Discord"], ids["Mi Telegram"], ids["Discord del grupo"]])
+        con.execute(text("DELETE FROM trip_alerts WHERE trip_id = :t"), {"t": ana_trip["id"]})
     ana_c.put(f"/channels/{ids['Discord del grupo']}", {"name": "Discord del grupo", "enabled": False, "config": {"webhook": ""}})
     SENT.clear(); TARGETS.clear()
     checker.run_checks(user_id=ana_id, trigger="manual")
     check(TARGETS == [("Mi Discord", "Mi Telegram")], "avisa a todos los canales asignados y activos (el pausado, no)")
     with db.connect() as con:
-        con.execute(text("DELETE FROM alerts WHERE watch_id = :w"), {"w": ana_watch["id"]})
-        db.set_watch_channels(con, ana_watch["id"], [])
+        con.execute(text("DELETE FROM trip_alerts WHERE trip_id = :t"), {"t": ana_trip["id"]})
+        db.set_trip_channels(con, ana_trip["id"], [])
     SENT.clear(); TARGETS.clear()
     checker.run_checks(user_id=ana_id, trigger="manual")
     check(not SENT, "sin canales asignados no se avisa")
     SENT.clear(); TARGETS.clear()
     checker.run_checks(user_id=admin_id, trigger="manual")
-    check(all(t == ("Discord admin",) for t in TARGETS) and not any("Vigilancia de Ana" in "\n".join(m[0]) for m in SENT),
-          "las rondas por usuario no mezclan vigilancias ni canales")
-    admin_cards = admin.get("/watches").json()["watches"]
-    ana_cards = ana_c.get("/watches").json()["watches"]
-    check(admin_cards[0]["channels"] == ["Discord admin"] and ana_cards[0]["channels"] == [],
-          "el panel indica a qué canales avisa cada vigilancia")
+    check(all(t == ("Discord admin",) for t in TARGETS) and not any("Viaje de Ana" in "\n".join(m[0]) for m in SENT),
+          "las rondas por usuario no mezclan viajes ni canales")
+    admin_trip = admin.get("/trips").json()["trips"][0]
+    ana_trips = ana_c.get("/trips").json()["trips"]
+    check(admin_trip["channels"] == ["Discord admin"] and ana_trips[0]["channels"] == [],
+          "el panel indica a qué canales avisa cada viaje")
 
     # --- aislamiento de canales entre usuarios
     check(ana_c.get(f"/channels/{admin_chan_id}").status_code == 404, "no se puede abrir un canal ajeno")
@@ -235,10 +254,10 @@ def users_flow(admin: Api, admin_id: int):
         check(db.get_channel(con, made) is None, "…y desaparece")
     ana_c.delete(f"/channels/{ids['Mi Discord']}")
     with db.connect() as con:
-        db.set_watch_channels(con, ana_watch["id"], [ids["Mi Telegram"]])
+        db.set_trip_channels(con, ana_trip["id"], [ids["Mi Telegram"]])
     check(ana_c.delete(f"/channels/{ids['Mi Telegram']}").status_code == 204, "Ana borra un canal")
-    check(ana_c.get(f"/watches/{ana_watch['id']}").json()["watch"]["channel_ids"] == [],
-          "borrar un canal lo quita de las vigilancias que lo usaban")
+    check(ana_c.get(f"/trips/{ana_trip['id']}").json()["trip"]["channel_ids"] == [],
+          "borrar un canal lo quita de los viajes que lo usaban")
     r = ana_c.put("/profile", {"display_name": "Ana G.", "notify_errors": False})
     check(r.json()["user"]["display_name"] == "Ana G." and r.json()["user"]["notify_errors"] is False, "guardar el perfil")
     r = ana_c.post("/profile/avatar", files={"avatar": ("b.png", PNG, "image/png")})
@@ -278,18 +297,18 @@ def users_flow(admin: Api, admin_id: int):
               "nadie puede degradarse o desactivarse a sí mismo (queda siempre un admin)")
     ana_c.put(f"/users/{admin_id}", {"username": "admin", "role": "admin", "enabled": True})
 
-    # --- desactivar: pierde la sesión y sus vigilancias dejan de comprobarse
+    # --- desactivar: pierde la sesión y sus viajes dejan de comprobarse
     admin.put(f"/users/{ana_id}", {"username": "ana", "role": "user", "enabled": False})
     check(ana_c.get("/me").status_code == 401, "usuario desactivado: sesión cerrada")
     check(Api().login("ana", "nueva-clave-9").status_code == 401, "usuario desactivado: no puede entrar")
-    check(checker.run_checks(user_id=ana_id, trigger="manual") == "empty", "sus vigilancias no se comprueban")
+    check(checker.run_checks(user_id=ana_id, trigger="manual") == "empty", "sus viajes no se comprueban")
 
-    # --- eliminar usuario: se lleva sus vigilancias y su avatar
+    # --- eliminar usuario: se lleva sus viajes (y sus tramos) y su avatar
     avatar_path = config.AVATAR_DIR / ana["avatar"]
     check(avatar_path.exists(), "el archivo del avatar existe")
     check(admin.delete(f"/users/{ana_id}").status_code == 204, "eliminar usuario")
     with db.connect() as con:
-        check(db.get_user(con, ana_id) is None and db.get_watch(con, ana_watch["id"]) is None, "se borra el usuario y sus vigilancias")
+        check(db.get_user(con, ana_id) is None and db.get_watch(con, ana_watch["id"]) is None, "se borra el usuario y sus viajes")
         n = con.execute(text("SELECT count(*) FROM prices WHERE watch_id = :w"), {"w": ana_watch["id"]}).scalar()
     check(n == 0 and not avatar_path.exists(), "…con su histórico y su avatar")
     check(admin.delete("/session").status_code == 204 and admin.get("/me").status_code == 401, "cerrar sesión")
@@ -297,22 +316,29 @@ def users_flow(admin: Api, admin_id: int):
 
 
 def trips_flow(admin: Api, admin_chan: int):
-    # Vigilancias iniciales: 1 = SVQ→TCI, 2 = TCI→SVQ. Los dobles dan precio los días +10, +11 y +12; el más
-    # barato de cada día entre Vueling y Ryanair es 55, 30 y 70 € en los dos sentidos.
+    # Un viaje de ida y vuelta SVQ⇄TCI con tramos nuevos. Los dobles dan precio los días +10, +11 y +12; el más
+    # barato de cada día entre Vueling (TFN) y Ryanair (TFS) es 55, 30 y 70 € en los dos sentidos.
     d10, d11, d12 = ((TODAY + timedelta(days=n)).isoformat() for n in (10, 11, 12))
+    svq_tci = leg("SVQ", "TCI", ["vueling", "ryanair"])
+    tci_svq = leg("TCI", "SVQ", ["vueling", "ryanair"])
+
     bad = admin.post("/trips", {})
-    check(bad.status_code == 422 and "vigilancia de ida" in errors(bad) and "vigilancia de vuelta" in errors(bad),
-          "viaje: hay que elegir las dos vigilancias")
-    bad = admin.post("/trips", {"outbound_id": 1, "return_id": 1, "min_nights": "5", "max_nights": "2"})
-    check("distintas" in errors(bad) and "no pueden ser más" in errors(bad), "viaje: tramos distintos y noches coherentes")
-    bad = admin.post("/trips", {"outbound_id": 1, "return_id": 2, "min_nights": "0", "max_nights": "99"})
+    check(bad.status_code == 422 and "tramo de ida" in errors(bad), "un viaje necesita al menos el tramo de ida")
+    bad = admin.post("/trips", {"outbound": svq_tci, "return": tci_svq, "min_nights": "5", "max_nights": "2"})
+    check("no pueden ser más" in errors(bad), "noches coherentes")
+    bad = admin.post("/trips", {"outbound": svq_tci, "return": tci_svq, "min_nights": "0", "max_nights": "99"})
     check("entre 1 y 60" in errors(bad), "viaje: noches fuera de rango")
-    r = admin.post("/trips", {"outbound_id": 1, "return_id": "2", "min_nights": 1, "max_nights": 2, "max_total": "90",
-                              "channel_ids": [admin_chan]})
+    r = admin.post("/trips", {"outbound": svq_tci, "return": tci_svq, "min_nights": 1, "max_nights": 2,
+                              "max_total": "90", "channel_ids": [admin_chan]})
     trip = r.json()["trip"]
-    check(r.status_code == 201 and trip["name"] == "SVQ ⇄ TCI" and trip["warnings"] == []
-          and trip["outbound"]["origin"] == "SVQ" and trip["return"]["origin"] == "TCI", "crear un viaje con dos vigilancias")
+    check(r.status_code == 201 and trip["name"] == "SVQ ⇄ TCI" and trip["warnings"] == [] and trip["kind"] == "flight"
+          and trip["outbound"]["origin"] == "SVQ" and trip["return"]["origin"] == "TCI", "crear un viaje de ida y vuelta")
     tid = trip["id"]
+    ret_leg = trip["return"]["id"]
+
+    # --- primera ronda del viaje: puebla los precios de los tramos y evalúa el viaje
+    SENT.clear()
+    checker.run_checks(trip_id=tid, trigger="manual")
 
     # --- combinaciones con los precios actuales (sin consultar ninguna web)
     card = {t["id"]: t for t in admin.get("/trips").json()["trips"]}[tid]
@@ -327,12 +353,10 @@ def trips_flow(admin: Api, admin_chan: int):
     check([(o["nights"], o["total"]) for o in opts] == [(1, 85), (2, 125)], "todas las noches de una fecha de ida")
     with db.connect() as con:
         future = trips.local_now(db.get_settings()) + timedelta(days=trips.STALE_DAYS + 1)
-        check(trips.legs_by_day(con, db.get_settings(), db.get_watch(con, 2), future) == {},
+        check(trips.legs_by_day(con, db.get_settings(), db.get_watch(con, ret_leg), future) == {},
               "los precios viejos de un tramo no cuentan")
 
-    # --- aviso del viaje: total, fechas y un enlace por tramo; una sola vez
-    SENT.clear()
-    checker.run_checks(trip_id=tid, trigger="manual")
+    # --- aviso del viaje: total, fechas y un enlace por tramo
     msgs = ["\n".join(m[0]) for m in SENT if "🧳" in m[0][0]]
     check(len(msgs) == 1 and "**85 €**" in msgs[0] and "1 noche" in msgs[0] and "[Ida: Vueling 55 € (SVQ→TFN)](https://" in msgs[0]
           and "[Vuelta: Vueling 30 € (TFN→SVQ)](https://" in msgs[0] and "100 €" not in msgs[0],
@@ -356,8 +380,8 @@ def trips_flow(admin: Api, admin_chan: int):
         old = (datetime.now() - timedelta(days=3)).isoformat(timespec="seconds")
         db.insert_trip_quotes(con, tid, old, [{"out_date": d12, "ret_date": d12, "total": 300, "out": {"price": 150},
                                                 "ret": {"price": 150}}] * 40)
-    form = {"outbound_id": 1, "return_id": 2, "min_nights": 1, "max_nights": 2, "max_total": "", "discount_pct": "50",
-            "channel_ids": [admin_chan], "name": "Tenerife"}
+    form = {"outbound": svq_tci, "return": tci_svq, "min_nights": 1, "max_nights": 2, "max_total": "",
+            "discount_pct": "50", "channel_ids": [admin_chan], "name": "Tenerife"}
     check(admin.put(f"/trips/{tid}", form).json()["trip"]["max_total"] is None, "editar el viaje")
     SENT.clear()
     checker.run_checks(trip_id=tid, trigger="manual")
@@ -371,26 +395,38 @@ def trips_flow(admin: Api, admin_chan: int):
         with db.connect() as con:
             return con.execute(text("SELECT count(*) FROM trip_quotes WHERE trip_id = :t"), {"t": tid}).scalar()
     before = quotes()
-    checker.run_checks(watch_id=2, trigger="manual")
-    check(quotes() == before + 2, "comprobar un tramo recalcula el viaje")
+    checker.run_checks(watch_id=ret_leg, trigger="manual")
+    check(quotes() == before + 2, "comprobar un tramo recalcula su viaje")
     check(admin.post(f"/trips/{tid}/toggle").json()["trip"]["enabled"] is False, "pausar un viaje")
     before = quotes()
     checker.run_checks(trigger="manual")
-    check(quotes() == before, "un viaje en pausa no se recalcula en las rondas")
+    check(quotes() == before, "un viaje en pausa (y sus tramos) no se recalcula en las rondas")
     admin.post(f"/trips/{tid}/toggle")
     detail = admin.get(f"/trips/{tid}").json()
     check(detail["trend"] and detail["alerts"][0]["total"] == 100, "evolución del total y avisos enviados")
 
-    # --- tramos que no encajan, en pausa o borrados
-    a = admin.post("/watches", {"origin": "MAD", "destination": "BCN", "providers": ["mockweb"]}).json()["watch"]
-    other = admin.post("/trips", {"outbound_id": 1, "return_id": a["id"], "min_nights": 3, "max_nights": 3}).json()["trip"]
-    check(len(other["warnings"]) == 2 and "La vuelta sale de MAD" in other["warnings"][0], "aviso si los tramos no encajan")
-    admin.post(f"/watches/{a['id']}/toggle")
-    check(any("en pausa" in w for w in admin.get(f"/trips/{other['id']}").json()["trip"]["warnings"]), "aviso si un tramo está en pausa")
-    check(admin.get(f"/watches/{a['id']}").json()["trips"] == [{"id": other["id"], "name": "SVQ ⇄ TCI"}],
-          "el detalle de una vigilancia dice de qué viajes es tramo")
-    admin.delete(f"/watches/{a['id']}")
-    check(admin.get(f"/trips/{other['id']}").status_code == 404, "borrar una vigilancia borra los viajes que la usan")
+    # --- viaje de solo ida: una combinación por fecha, sin vuelta
+    SENT.clear()
+    ow = admin.post("/trips", {"outbound": svq_tci, "max_total": "40", "channel_ids": [admin_chan]}).json()["trip"]
+    check(ow["return"] is None and ow["warnings"] == [] and ow["name"] == "SVQ → TCI", "crear un viaje de solo ida")
+    checker.run_checks(trip_id=ow["id"], trigger="manual")
+    q = {x["out_date"]: (x["total"], x["ret"], x["nights"]) for x in admin.get(f"/trips/{ow['id']}").json()["quotes"]}
+    check(q == {d10: (55, None, None), d11: (30, None, None), d12: (70, None, None)},
+          "solo ida: una combinación por fecha con el precio de la ida, sin vuelta")
+    msgs = ["\n".join(m[0]) for m in SENT if "🧳" in m[0][0]]
+    check(len(msgs) == 1 and "**30 €**" in msgs[0] and "Vuelta" not in msgs[0] and "Ida:" not in msgs[0]
+          and "55 €" not in msgs[0], "aviso de solo ida: un único tramo y solo lo que baja de 40 €")
+
+    # --- tramos que no encajan y borrado en cascada (el viaje posee sus tramos)
+    other = admin.post("/trips", {"outbound": svq_tci, "return": leg("MAD", "BCN", ["mockweb"]),
+                                  "min_nights": 3, "max_nights": 3}).json()["trip"]
+    check(len(other["warnings"]) >= 1 and any("La vuelta sale de MAD" in w for w in other["warnings"]),
+          "aviso si los tramos no encajan")
+    out_id, oret_id = other["outbound"]["id"], other["return"]["id"]
+    admin.delete(f"/trips/{other['id']}")
+    with db.connect() as con:
+        check(db.get_watch(con, out_id) is None and db.get_watch(con, oret_id) is None,
+              "borrar un viaje borra sus tramos (y su histórico)")
 
     # --- solo para su dueño
     admin.post("/users", {"username": "berta", "password": "clave-de-berta-1", "role": "user"})
@@ -400,8 +436,7 @@ def trips_flow(admin: Api, admin_chan: int):
     for method, path in (("GET", f"/trips/{tid}"), ("GET", f"/trips/{tid}/options?date={d10}"), ("PUT", f"/trips/{tid}"),
                          ("DELETE", f"/trips/{tid}"), ("POST", f"/trips/{tid}/toggle"), ("POST", f"/trips/{tid}/run")):
         check(berta.req(method, path, json=form if method == "PUT" else None).status_code == 404, f"{method} {path} ajeno → 404")
-    bad = berta.post("/trips", {"outbound_id": 1, "return_id": 2})
-    check(bad.status_code == 422 and "entre las tuyas" in errors(bad), "no se pueden usar vigilancias ajenas")
+    check(berta.get(f"/watches/{ret_leg}").status_code == 404, "ni el tramo de un viaje ajeno")
     with db.connect() as con:
         db.delete_user(con, db.get_user_by_username(con, "berta")["id"])
     return tid
@@ -451,51 +486,56 @@ def providers_flow(admin: Api, admin_id: int, admin_chan: int):
           "tiempo límite por proveedor (el lento no retrasa a los demás)")
     type(PROVIDERS["vueling"]).probe = old_probe
 
-    # --- vigilancias con cobertura, escalas y monedas
-    bad = admin.post("/watches", {"origin": "SVQ", "destination": "TCI", "providers": ["vueling", "wizzair"]})
+    # --- tramos con cobertura, escalas y monedas (vía viajes de solo ida)
+    bad = oneway(admin, ["vueling", "wizzair"], origin="SVQ", destination="TCI")
     check(bad.status_code == 422 and "Wizz Air no opera esta ruta" in errors(bad), "no se guarda un proveedor que no opera la ruta")
-    r = admin.post("/watches", {"name": "Barcelona → Budapest", "origin": "BCN", "destination": "BUD", "providers": ["wizzair"],
-                                "max_price": "35", "max_stops": "0", "channel_ids": [admin_chan]})
-    w = r.json()["watch"]
-    check(r.status_code == 201 and w["coverage"][0]["routes"] == ["BCN-BUD"] and w["coverage"][0]["checked_at"]
-          and w["origin_place"]["label"] == "Barcelona (BCN)" and w["max_stops"] == 0, "vigilancia con su cobertura comprobada")
+    w = oneway(admin, ["wizzair"], origin="BCN", destination="BUD", max_stops=0, max_total="35",
+               name="Barcelona → Budapest", channel_ids=[admin_chan]).json()["trip"]
+    leg0 = w["outbound"]
+    check(leg0["coverage"][0]["routes"] == ["BCN-BUD"] and leg0["coverage"][0]["checked_at"]
+          and leg0["origin_place"]["label"] == "Barcelona (BCN)" and leg0["max_stops"] == 0, "tramo con su cobertura comprobada")
     SENT.clear()
-    checker.run_checks(watch_id=w["id"], trigger="manual")
+    checker.run_checks(trip_id=w["id"], trigger="manual")
     with db.connect() as con:
-        snap = db.latest_snapshot(con, w["id"], "wizzair")
+        snap = db.latest_snapshot(con, leg0["id"], "wizzair")
     check(snap[0]["price"] == 30 and snap[0]["orig_price"] == 12000 and snap[0]["currency"] == "HUF",
           "precio en moneda original y su equivalente en euros (cambio del BCE)")
-    check(SENT and "12.000 HUF" in "\n".join(SENT[0][0]) and "30 €" in "\n".join(SENT[0][0]), "el aviso muestra euros y la moneda original")
-    detail = admin.get(f"/watches/{w['id']}").json()
+    check(any("🧳" in m[0][0] and "**30 €**" in "\n".join(m[0]) for m in SENT),
+          "el viaje avisa del total en euros (12.000 HUF → 30 €)")
+    detail = admin.get(f"/watches/{leg0['id']}").json()
     check(detail["prices"][0]["currency"] == "HUF" and detail["stats"][0]["best"]["orig_price"] == 12000, "el panel recibe la moneda original")
-    bad = admin.post("/watches", {"origin": "MAD", "destination": "BCN", "providers": ["buscador"], "max_stops": "7"})
+    bad = oneway(admin, ["buscador"], origin="MAD", destination="BCN", max_stops="7")
     check("máximo de escalas" in errors(bad), "validación del máximo de escalas")
 
-    g = admin.post("/watches", {"origin": "MAD", "destination": "BCN", "providers": ["buscador"], "max_stops": "0"}).json()["watch"]
-    checker.run_checks(watch_id=g["id"], trigger="manual")
+    g = oneway(admin, ["buscador"], origin="MAD", destination="BCN", max_stops="0").json()["trip"]
+    gleg = g["outbound"]["id"]
+    checker.run_checks(trip_id=g["id"], trigger="manual")
     with db.connect() as con:
-        days = {r["flight_date"]: r for r in db.latest_snapshot(con, g["id"], "buscador")}
+        days = {r["flight_date"]: r for r in db.latest_snapshot(con, gleg, "buscador")}
     check((TODAY + timedelta(days=11)).isoformat() not in days and len(days) == 2, "solo directos: el día con escala no cuenta")
-    admin.put(f"/watches/{g['id']}", {"origin": "MAD", "destination": "BCN", "providers": ["buscador"], "max_stops": ""})
-    checker.run_checks(watch_id=g["id"], trigger="manual")
+    admin.put(f"/trips/{g['id']}", {"outbound": leg("MAD", "BCN", ["buscador"], max_stops=""), "min_nights": 1, "max_nights": 1})
+    checker.run_checks(trip_id=g["id"], trigger="manual")
     with db.connect() as con:
-        snap = db.latest_snapshot(con, g["id"], "buscador")
+        snap = db.latest_snapshot(con, gleg, "buscador")
     check(snap[0]["price"] == 70 and snap[0]["stops"] == 1, "sin límite de escalas: entra y se guarda cuántas tiene")
-    admin.delete(f"/watches/{g['id']}")
+    admin.delete(f"/trips/{g['id']}")
 
-    # --- un proveedor inactivo (ruta cerrada) no se consulta
+    # --- un proveedor inactivo (ruta cerrada) no se consulta (watch 1 = tramo de ida del viaje sembrado)
     with db.connect() as con:
         db.update_watch_provider(con, 1, "ryanair", [], False, "2026-01-01T00:00:00")
         before = con.execute(text("SELECT count(*) FROM runs WHERE watch_id = 1 AND provider = 'ryanair'")).scalar()
     checker.run_checks(watch_id=1, trigger="manual")
     with db.connect() as con:
         after = con.execute(text("SELECT count(*) FROM runs WHERE watch_id = 1 AND provider = 'ryanair'")).scalar()
-    card = {c["id"]: c for c in admin.get("/watches").json()["watches"]}[1]
+    card = admin.get("/watches/1").json()
     check(after == before and not {s["key"]: s for s in card["stats"]}["ryanair"]["active"],
           "un proveedor inactivo no se consulta y el panel lo marca")
 
     # --- revalidación semanal: la primera vez sin avisos; después avisa si una ruta se abre o se cierra
+    # (watch 1 = tramo de ida del viaje sembrado; los avisos van a los canales de su viaje)
     with db.connect() as con:
+        seeded = db.get_watch(con, 1)["trip_id"]
+        db.set_trip_channels(con, seeded, [admin_chan])
         db.set_watch_providers(con, 1, db.default_coverage("SVQ", "TCI", ["vueling", "ryanair"]))
     SENT.clear()
     coverage.revalidate()
@@ -509,11 +549,13 @@ def providers_flow(admin: Api, admin_id: int, admin_chan: int):
         cov = db.get_watch(con, 1)["coverage"]
     msg = "\n".join(m for s in SENT for m in s[0])
     check(not cov["ryanair"]["active"] and "Ryanair: deja de operar SVQ→TFS" in msg and TARGETS[-1] == ("Discord admin",),
-          "aviso al cerrarse una ruta de temporada (a los canales de la vigilancia)")
-    r = admin.put("/watches/1", {"name": "Sevilla → Tenerife", "origin": "SVQ", "destination": "TCI",
-                                 "providers": ["vueling", "ryanair"], "max_price": 40, "max_stops": 0, "channel_ids": [admin_chan]})
-    check(r.status_code == 200 and {c["key"]: c for c in r.json()["watch"]["coverage"]}["ryanair"]["active"] is False,
-          "al editar se conserva el proveedor de temporada (inactivo)")
+          "aviso al cerrarse una ruta de temporada (a los canales del viaje)")
+    r = admin.put(f"/trips/{seeded}", {"outbound": leg("SVQ", "TCI", ["vueling", "ryanair"]),
+                                       "return": leg("TCI", "SVQ", ["vueling", "ryanair"]),
+                                       "min_nights": 1, "max_nights": 7, "channel_ids": [admin_chan]})
+    cov_out = {c["key"]: c for c in r.json()["trip"]["outbound"]["coverage"]}
+    check(r.status_code == 200 and cov_out["ryanair"]["active"] is False,
+          "al editar el viaje se conserva el proveedor de temporada (inactivo)")
     fakes.OPERATES["ryanair"] = {"TFS"}
     SENT.clear()
     coverage.revalidate()
@@ -912,12 +954,12 @@ def scripts_flow(admin: Api, admin_chan: int):
     check("miaero" in {p["key"] for p in admin.get("/meta").json()["providers"]}
           and "miaero" in {p["key"] for p in admin.get("/providers").json()["providers"]},
           "aparece en el panel y en la zona Proveedores")
-    r = admin.post("/watches", {"name": "Script", "origin": "SVQ", "destination": "TFN", "providers": ["miaero"],
-                                "max_price": "30", "channel_ids": [admin_chan]})
-    w = r.json()["watch"]
-    check(r.status_code == 201 and w["coverage"][0]["routes"] == ["SVQ-TFN"], "vigilancia con el proveedor (cobertura del script)")
+    t = oneway(admin, ["miaero"], origin="SVQ", destination="TFN", max_total="30", name="Script",
+               channel_ids=[admin_chan]).json()["trip"]
+    w = t["outbound"]
+    check(w["coverage"][0]["routes"] == ["SVQ-TFN"], "tramo con el proveedor (cobertura del script)")
     SENT.clear()
-    checker.run_checks(watch_id=w["id"], trigger="manual")
+    checker.run_checks(trip_id=t["id"], trigger="manual")
     with db.connect() as con:
         snap = db.latest_snapshot(con, w["id"], "miaero")
     check(len(snap) == 2 and snap[0]["currency"] == "GBP" and snap[0]["orig_price"] == 15 and round(snap[0]["price"], 2) == 17.65,
@@ -927,8 +969,8 @@ def scripts_flow(admin: Api, admin_chan: int):
     detail = admin.get(f"/watches/{w['id']}").json()
     check(detail["prices"][0]["departs_at"] == f"{days[1]}T22:40", "el detalle devuelve las horas")
     msg = "\n".join(SENT[0][0]) if SENT else ""
-    check('"title": "Mi Aerolínea"' in msg and f"https://www.miaero.test/vuelos?o=SVQ&d=TFN&f={days[1]}" in msg
-          and "22:40–00:15 (+1)" in msg, "el aviso lleva su nombre, su plantilla de enlace y las horas")
+    check(f"https://www.miaero.test/vuelos?o=SVQ&d=TFN&f={days[1]}" in msg and "22:40–00:15 (+1)" in msg,
+          "el aviso del viaje lleva la plantilla de enlace del tramo y las horas")
     check({p["key"]: p for p in admin.get("/providers").json()["providers"]}["miaero"]["n_watches"] == 1, "cuántas vigilancias lo usan")
 
     # --- cambios: la contraseña solo se pide si se va a ejecutar código nuevo
@@ -945,13 +987,12 @@ def scripts_flow(admin: Api, admin_chan: int):
     r = admin.put("/providers/miaero", {**base, "enabled": False})
     check(r.status_code == 200 and "miaero" not in PROVIDERS and not r.json()["provider"]["loaded"],
           "desactivarlo lo saca del registro sin pedir contraseña")
-    check(admin.get(f"/watches/{w['id']}").status_code == 200, "la vigilancia sigue funcionando sin él")
-    r = admin.put(f"/watches/{w['id']}", {"name": "Script", "origin": "SVQ", "destination": "TFN", "providers": ["buscador"],
-                                          "max_price": "30", "channel_ids": [admin_chan]})
+    check(admin.get(f"/watches/{w['id']}").status_code == 200, "el tramo sigue funcionando sin él")
+    r = admin.put(f"/trips/{t['id']}", {"outbound": leg("SVQ", "TFN", ["buscador"]), "min_nights": 1, "max_nights": 1})
     with db.connect() as con:
         kept = db.get_watch(con, w["id"])["coverage"]
     check(r.status_code == 200 and set(kept) == {"buscador", "miaero"} and kept["miaero"]["routes"] == [("SVQ", "TFN")],
-          "editar la vigilancia mientras está desactivado no se lo quita")
+          "editar el viaje mientras el proveedor está desactivado no lo quita del tramo")
     check(admin.put("/providers/miaero", base).status_code == 403, "reactivarlo pide la contraseña")
     r = admin.put("/providers/miaero", {**base, "password": "clave-de-prueba-1"})
     check(r.status_code == 200 and "miaero" in PROVIDERS, "reactivado")
@@ -1123,12 +1164,11 @@ def kinds_flow(admin: Api):
     check(by_kind["flight"]["available"] and by_kind["flight"]["section"] == "/flights" and not by_kind["train"]["available"]
           and by_kind["train"]["since"] == "3.1" and {p["kind"] for p in meta["providers"]} == {"flight"},
           "/meta: transportes (solo vuelos disponibles) y el tipo de cada proveedor")
-    bad = admin.post("/watches", {"kind": "train", "origin": "SVQ", "destination": "MAD", "providers": ["vueling"]})
-    check(bad.status_code == 422 and "llegan en la 3.1" in errors(bad), "aún no hay vigilancias de trenes")
-    check("Tipo de transporte desconocido" in errors(admin.post("/watches", {"kind": "cohete"})), "transporte desconocido")
-    check(admin.get("/watches", params={"kind": "flight"}).json()["watches"]
-          and admin.get("/watches", params={"kind": "train"}).json()["watches"] == [], "filtrar vigilancias por transporte")
-    check(all(w["kind"] == "flight" for w in admin.get("/watches").json()["watches"]), "las vigilancias son de vuelos")
+    bad = oneway(admin, ["vueling"], origin="SVQ", destination="MAD", kind="train")
+    check(bad.status_code == 422 and "llegan en la 3.1" in errors(bad), "aún no hay viajes de trenes")
+    check("Tipo de transporte desconocido" in errors(admin.post("/trips", {"outbound": {"kind": "cohete"}})), "transporte desconocido")
+    check(all(t["kind"] == "flight" for t in admin.get("/trips").json()["trips"]),
+          "los viajes son de vuelos (el transporte se deriva del tramo de ida)")
 
     # --- lugares de otros transportes: un puerto en Tenerife y una estación en Sevilla (datos de prueba)
     data = Path(tempfile.mkdtemp(prefix="fw-places-"))
@@ -1170,8 +1210,8 @@ def kinds_flow(admin: Api):
               and PROVIDERS["renfe_prueba"].kind == "train", "crear un proveedor de trenes")
         check("Tren de prueba" not in {p["label"] for p in admin.post("/route-check", {"origin": "SVQ", "destination": "TCI"}).json()["providers"]},
               "la comprobación de rutas de vuelos no lo consulta")
-        bad = admin.post("/watches", {"origin": "SVQ", "destination": "TCI", "providers": ["renfe_prueba"]})
-        check(bad.status_code == 422 and "Solo se pueden elegir webs de vuelos" in errors(bad), "una vigilancia de vuelos no usa uno de trenes")
+        bad = oneway(admin, ["renfe_prueba"], origin="SVQ", destination="TCI")
+        check(bad.status_code == 422 and "Solo se pueden elegir webs de vuelos" in errors(bad), "un viaje de vuelos no usa un proveedor de trenes")
         bad = admin.post("/providers", {**body, "key": "otro", "health_origin": "TFN"})
         check(bad.status_code == 422 and "tipo estación" in errors(bad), "la ruta de prueba es de lugares de su transporte")
         check("llegan en la 2.0" in errors(admin.post("/providers", {**body, "key": "hotel_x", "kind": "hotel"})),
@@ -1275,7 +1315,7 @@ def main():
         check(r.status_code == 404 and r.headers["content-type"].startswith("application/json"), "una ruta de API desconocida es 404 JSON")
 
         # --- sesión: sin login no hay acceso
-        check(client.get("/me").status_code == 401 and client.get("/watches").status_code == 401, "la API responde 401 sin sesión")
+        check(client.get("/me").status_code == 401 and client.get("/trips").status_code == 401, "la API responde 401 sin sesión")
         check(client.get("/openapi.json").status_code == 401 and client.get("/docs").status_code == 401, "la documentación de la API exige sesión")
         check(raw.post("/api/v1/session", json={"username": "admin", "password": "clave-de-prueba-1"}).status_code == 403,
               "sin la cabecera anti-CSRF no se acepta ningún cambio")
@@ -1292,7 +1332,7 @@ def main():
             admin_id = db.get_user_by_username(con, "admin")["id"]
             admin_row = db.get_user(con, admin_id)
         check(admin_row["password_hash"].startswith("scrypt$"), "administrador inicial con hash scrypt")
-        check(client.get("/docs").status_code == 200 and "/api/v1/watches" in client.get("/openapi.json").json()["paths"],
+        check(client.get("/docs").status_code == 200 and "/api/v1/trips" in client.get("/openapi.json").json()["paths"],
               "documentación de la API con sesión")
         check(raw.get("/index.html").headers["cache-control"] == "no-cache", "index.html nunca se queda en caché")
         meta = client.get("/meta").json()
@@ -1300,35 +1340,20 @@ def main():
         bundle_flow(client)
 
         # --- lecturas base
-        for path in ("/watches", "/alerts", "/runs", "/settings", "/debug/files", "/users", "/channels", "/status"):
+        for path in ("/trips", "/alerts", "/runs", "/settings", "/debug/files", "/users", "/channels", "/status"):
             check(client.get(path).status_code == 200, f"GET {path}")
-        cards = client.get("/watches").json()["watches"]
-        check([(w["name"], w["origin"], w["destination"]) for w in cards]
-              == [("Sevilla → Tenerife", "SVQ", "TCI"), ("Tenerife → Sevilla", "TCI", "SVQ")],
-              "vigilancias iniciales sembradas (SVQ ↔ TCI)")
+        cards = client.get("/trips").json()["trips"]
+        check(len(cards) == 1 and cards[0]["name"] == "Sevilla ⇄ Tenerife"
+              and (cards[0]["outbound"]["origin"], cards[0]["outbound"]["destination"]) == ("SVQ", "TCI")
+              and (cards[0]["return"]["origin"], cards[0]["return"]["destination"]) == ("TCI", "SVQ"),
+              "viaje inicial sembrado (SVQ ⇄ TCI con sus dos tramos)")
+        out_leg, ret_leg = cards[0]["outbound"]["id"], cards[0]["return"]["id"]
 
-        # --- ronda 1 (sin histórico): solo aplica el precio máximo
+        # --- ronda: se consultan y guardan los precios de los tramos; los chollos se evalúan por viaje
+        #     (el formato del aviso lo cubre trips_flow). Aquí: expansión de TCI y aeropuerto real.
         with db.connect() as con:
             admin_chan = db.create_channel(con, admin_id, "discord", "Discord admin", {"webhook": "https://discord.com/api/webhooks/1/admin"})
-            for w in db.list_watches(con, admin_id):
-                db.set_watch_channels(con, w["id"], [admin_chan])
         check(checker.run_checks(trigger="manual") == "done", "run_checks termina")
-        check(len(SENT) == 2 and set(TARGETS) == {("Discord admin",)},
-              f"un aviso por vigilancia, a sus canales asignados ({len(SENT)})")
-        discord = "\n".join(SENT[0][0])
-        telegram = "\n".join(SENT[0][1])
-        target_day = (TODAY + timedelta(days=11)).isoformat()
-        check(f"dd={target_day}" in discord and "o=SVQ&d=TFN" in discord, "enlace Vueling con la fecha elegida")
-        buttons = [b for row in json.loads(SENT[0][1][-1]) for b in row]
-        check("<a href=" not in telegram and any(f"dd={target_day}" in b["url"] and "·" in b["text"] for b in buttons),
-              "Telegram: botón con enlace por fecha (no enlaces en el texto)")
-        embeds = json.loads(SENT[0][0][-1])[0]["embeds"]
-        vueling = next(e for e in embeds if e["title"].startswith("Vueling"))
-        check(embeds[0]["image"]["url"] == "attachment://calendario.png" and vueling["color"] == int("e8a800", 16)
-              and any(f"dd={target_day}" in f["value"] for f in vueling["fields"]) and SENT[0][2].image.startswith(b"\x89PNG"),
-              "Discord: embed por proveedor con su color, un campo por fecha con su enlace y el calendario adjunto")
-        check("30 €" in discord, "precio bajo incluido en el aviso")
-        check("Ryanair" not in discord, "Ryanair (45 €) no supera el precio máximo de 40 €")
         with db.connect() as con:
             routes_saved = {(r[0], r[1], r[2]) for r in con.execute(text("SELECT provider, origin, destination FROM prices"))}
         check(("vueling", "SVQ", "TFN") in routes_saved and ("ryanair", "SVQ", "TFS") in routes_saved
@@ -1338,44 +1363,22 @@ def main():
         check(all(r["ok"] for r in runs) and not any("La web no devolvió" in (r["error"] or "") for r in runs),
               "una ruta no operada dentro de TCI no cuenta como error")
 
-        # --- no repite avisos de lo ya notificado
-        SENT.clear()
-        checker.run_checks(trigger="manual")
-        check(not SENT, "no reenvía avisos ya enviados")
-
-        # --- regla relativa: histórico caro previo + precio actual muy inferior
-        with db.connect() as con:
-            wid = db.create_watch(con, admin_id, {
-                "name": "Prueba relativa", "origin": "MAD", "destination": "BCN", "providers": ["mockweb"],
-                "max_price": None, "discount_pct": 30, "date_from": None, "date_to": None, "enabled": True,
-            })
-            db.set_watch_channels(con, wid, [admin_chan])
-            old = (datetime.now() - timedelta(days=3)).isoformat(timespec="seconds")
-            db.insert_prices(con, wid, "mockweb", old, [DayPrice(TODAY + timedelta(days=20 + i), 200) for i in range(40)])
-        SENT.clear()
-        checker.run_checks(watch_id=wid, trigger="manual")
-        check(len(SENT) == 1 and "habitual ≈ 200 €" in "\n".join(SENT[0][0]), "regla relativa sobre la mediana histórica")
-
-        # --- detalle, calendario y gráficas
-        detail = client.get(f"/watches/{wid}").json()
+        # --- detalle de un tramo (lo pinta el detalle de su viaje), calendario y gráficas
+        detail = client.get(f"/watches/{out_leg}").json()
         day = (TODAY + timedelta(days=11)).isoformat()  # el más barato de la ronda simulada
-        check(detail["prices"][0]["flight_date"] == day and detail["prices"][0]["price"] == 95, "precios de la última comprobación (del más barato)")
-        st = detail["stats"][0]
-        check(st["best"]["deal"] == "relative" and st["base"] == 200 and st["count"] == 3 and st["median"] == 120,
-              "resumen por web: chollo, habitual, mediana y nº de fechas")
-        check(detail["checks"] and 95 in [a["price"] for a in detail["alerts"]], "historial de comprobaciones y avisos")
-        charts = client.get(f"/watches/{wid}/charts").json()
-        check(charts["min_over_time"]["labels"] and "mockweb" in charts["min_over_time"]["series"], "API de gráficas")
-        hist = client.get(f"/watches/{wid}/date-history", params={"date": (TODAY + timedelta(days=20)).isoformat()}).json()
-        check(len(hist["labels"]) >= 1, "API del historial de una fecha")
-        cards = {w["id"]: w for w in client.get("/watches").json()["watches"]}
-        stats = {s["key"]: s for s in cards[1]["stats"]}
+        check(detail["prices"][0]["flight_date"] == day and detail["prices"][0]["price"] == 30,
+              "precios de la última comprobación del tramo (del más barato)")
+        stats = {s["key"]: s for s in detail["stats"]}
         check("tickets.vueling.com/booking" in stats["vueling"]["best"]["link"] and "d=TFN" in stats["vueling"]["best"]["link"],
-              "el panel muestra el enlace con fecha y aeropuerto real")
-        check("originIata=SVQ&destinationIata=TFS" in stats["ryanair"]["best"]["link"] and stats["ryanair"]["best"]["route"] == "SVQ→TFS",
-              "Ryanair enlaza a TFS dentro de TCI")
-        check(len(cards[wid]["trend"]) == 2 and cards[wid]["trend"][-1]["p"] == 95, "tendencia del precio mínimo para la minigráfica")
-        check(client.get("/alerts?limit=3").json()["alerts"][0]["watch_name"], "últimos avisos del usuario")
+              "el detalle del tramo muestra el enlace con fecha y aeropuerto real")
+        check("originIata=SVQ&destinationIata=TFS" in stats["ryanair"]["best"]["link"]
+              and stats["ryanair"]["best"]["route"] == "SVQ→TFS", "Ryanair enlaza a TFS dentro de TCI")
+        check(detail["checks"], "historial de comprobaciones del tramo")
+        charts = client.get(f"/watches/{out_leg}/charts").json()
+        check(charts["by_flight_date"]["labels"] and "vueling" in charts["min_over_time"]["series"], "API de gráficas")
+        hist = client.get(f"/watches/{out_leg}/date-history", params={"date": day}).json()
+        check(len(hist["labels"]) >= 1, "API del historial de una fecha")
+        check(ret_leg and client.get(f"/watches/{ret_leg}").status_code == 200, "el tramo de vuelta también tiene detalle")
 
         # --- ajustes y sus validaciones (las plantillas de enlace ya no están aquí: son de cada proveedor)
         r = client.put("/settings", {
@@ -1400,21 +1403,22 @@ def main():
               "plantilla de enlace del proveedor (cambiarla no pide contraseña)")
         client.put("/providers/ryanair", {**ryan, "link_template": original})
 
-        # --- CRUD de vigilancias
-        bad = client.post("/watches", {"origin": "S1", "destination": "TFN"})
+        # --- CRUD de viajes (sus tramos se crean inline; un viaje de solo ida es un único tramo)
+        bad = oneway(client, [], origin="S1", destination="TFN")
         check(bad.status_code == 422 and "código IATA" in errors(bad) and "al menos un proveedor" in errors(bad), "validación del formulario")
-        bad = client.post("/watches", {"origin": 3, "providers": "x"})
+        bad = client.post("/trips", {"outbound": {"origin": 3, "providers": "x"}})
         check(bad.status_code == 422 and "Datos no válidos" in errors(bad), "tipos incorrectos → 422 en castellano")
-        bad = client.post("/watches", {"origin": "agp", "destination": "bcn", "providers": ["vueling"]})
+        bad = oneway(client, ["vueling"], origin="agp", destination="bcn")
         check(bad.status_code == 422 and "Vueling no opera esta ruta" in errors(bad), "un proveedor que no opera la ruta no se puede elegir")
-        r = client.post("/watches", {"origin": "agp", "destination": "bcn", "providers": ["mockweb", "nope"], "max_price": "25,5"})
-        check(r.status_code == 201, "crear vigilancia")
-        new = r.json()["watch"]
-        check(new["origin"] == "AGP" and new["destination"] == "BCN" and new["max_price"] == 25.5 and new["providers"] == ["mockweb"]
-              and new["name"] == "AGP → BCN", "IATA en mayúsculas, decimales con coma y proveedores desconocidos fuera")
-        r = client.post(f"/watches/{new['id']}/toggle")
-        check(r.status_code == 200 and r.json()["watch"]["enabled"] is False, "pausar/reanudar")
-        check(client.delete(f"/watches/{new['id']}").status_code == 204 and client.get(f"/watches/{new['id']}").status_code == 404, "eliminar")
+        r = oneway(client, ["mockweb", "nope"], origin="agp", destination="bcn", max_total="25,5")
+        check(r.status_code == 201, "crear un viaje de solo ida")
+        new = r.json()["trip"]
+        check(new["outbound"]["origin"] == "AGP" and new["outbound"]["destination"] == "BCN" and new["max_total"] == 25.5
+              and new["outbound"]["providers"] == ["mockweb"] and new["return"] is None and new["name"] == "AGP → BCN",
+              "IATA en mayúsculas, total con coma, proveedores desconocidos fuera y sin tramo de vuelta")
+        r = client.post(f"/trips/{new['id']}/toggle")
+        check(r.status_code == 200 and r.json()["trip"]["enabled"] is False, "pausar/reanudar")
+        check(client.delete(f"/trips/{new['id']}").status_code == 204 and client.get(f"/trips/{new['id']}").status_code == 404, "eliminar")
         st = client.get("/status").json()
         check(st["running"] is False and st["current"] == "" and st["next_run"], "estado de ejecución y próxima ronda")
         check(sum(1 for r in client.get("/runs").json()["runs"] if r["ok"]) >= 2, "historial de ejecuciones")

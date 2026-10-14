@@ -400,18 +400,27 @@ def _leg_text(leg: dict) -> str:
     return text + (f" ({leg['route']})" if leg.get("route") else "")
 
 
-def trip_message(trip: dict, outbound: dict, ret: dict, deals: list[dict], base: float | None, panel_url: str = "",
-                 day_totals: dict | None = None) -> Message:
-    """Un mensaje por viaje: cada combinación (fecha de ida) con su total y un enlace por tramo.
-    `day_totals` ({fecha de ida: total más barato}) da el calendario resumen de la imagen."""
-    route = f"{outbound['origin']}⇄{outbound['destination']}"
+def trip_message(trip: dict, outbound: dict, ret: dict | None, deals: list[dict], base: float | None,
+                 panel_url: str = "", day_totals: dict | None = None) -> Message:
+    """Un mensaje por viaje: cada combinación (fecha de ida) con su total y un enlace por tramo. En un viaje de
+    solo ida (`ret` es None) cada combinación es solo la ida. `day_totals` ({fecha de ida: total más barato}) da
+    el calendario resumen de la imagen."""
+    one_way = ret is None
+    route = f"{outbound['origin']}{'→' if one_way else '⇄'}{outbound['destination']}"
     url = _panel(panel_url, f"/trips/{trip['id']}")
+    nights = "" if one_way else f" · {fmt_nights_range(trip['min_nights'], trip['max_nights'])}"
     msg = Message(f"🧳 {trip['name']}", url=url, color=DEAL,
-                  summary=f"{route} · {fmt_nights_range(trip['min_nights'], trip['max_nights'])}"
-                  + (f" · habitual ≈ {fmt_price(base)}" if base else ""))
-    sec = Section("Ida y vuelta más baratas", DEAL)
+                  summary=f"{route}{nights}" + (f" · habitual ≈ {fmt_price(base)}" if base else ""))
+    sec = Section("Más baratas" if one_way else "Ida y vuelta más baratas", DEAL)
     for q in sorted(deals, key=lambda q: q["total"]):
         o, r = q["out"], q["ret"]
+        if one_way:
+            times = _times(o)
+            links = [(_leg_text(o), o["link"])] if o["link"] else []
+            buttons = [f"{fmt_short_day(q['out_date'])} · {_leg_text(o)}"] if o["link"] else []
+            sec.items.append(Item(fmt_day(q["out_date"]), fmt_price(q["total"]),
+                                  _leg_text(o) + (f" ({times})" if times else ""), links, buttons))
+            continue
         title = f"{fmt_day(q['out_date'])} → {fmt_day(q['ret_date'])} · {fmt_nights(q['nights'])}"
         detail = []
         for label, leg in (("ida", o), ("vuelta", r)):
@@ -427,9 +436,10 @@ def trip_message(trip: dict, outbound: dict, ret: dict, deals: list[dict], base:
     if url:
         msg.links.append(("📊 Todas las combinaciones", url))
     if day_totals:
+        subtitle = ("Precio más bajo por fecha de ida" if one_way else "Total más barato por fecha de ida") \
+            + " · con borde, las del aviso"
         msg.image = images.calendar_png(day_totals, {date.fromisoformat(q["out_date"]) for q in deals},
-                                        f"{trip['name']} ({route})",
-                                        "Total más barato por fecha de ida · con borde, las del aviso")
+                                        f"{trip['name']} ({route})", subtitle)
     return msg
 
 

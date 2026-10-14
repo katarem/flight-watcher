@@ -1,22 +1,26 @@
-"""Viajes de ida y vuelta del usuario: CRUD, combinaciones actuales, histórico y avisos."""
+"""Viajes: la entidad principal. CRUD con sus tramos inline (ida obligatoria, vuelta opcional = solo ida),
+combinaciones actuales, histórico y avisos. Un viaje posee sus tramos (vigilancias internas)."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import db, places, scheduler, trips
 from .deps import Invalid, current_user, own_channel_ids, own_trip
-from .watches import parse_dates, parse_number
+from .watches import LegIn, parse_dates, parse_leg, parse_number, watch_view, with_coverage
 
 router = APIRouter()
 
 
 def _leg_view(w: dict) -> dict:
-    return {k: w[k] for k in ("id", "name", "origin", "destination", "kind")} | {"enabled": bool(w["enabled"])}
+    """El tramo con todo lo que el panel necesita para pintarlo y para editarlo dentro del viaje."""
+    v = watch_view(w)
+    return {k: v[k] for k in ("id", "name", "kind", "origin", "destination", "origin_place",
+                              "destination_place", "providers", "coverage", "max_stops", "enabled")}
 
 
 def _warnings(out_w: dict, ret_w: dict) -> list[str]:
-    """Avisos que no impiden guardar: tramos en pausa o que no encajan (p. ej. ida a TFN y vuelta desde TFS)."""
+    """Avisos que no impiden guardar: tramos que no encajan (p. ej. ida a TFN y vuelta desde TFS)."""
     out = []
     if out_w["kind"] != ret_w["kind"]:
         out.append("La ida y la vuelta son de transportes distintos.")
@@ -28,17 +32,15 @@ def _warnings(out_w: dict, ret_w: dict) -> list[str]:
         out.append(f"La vuelta sale de {ret_w['origin']} y la ida llega a {out_w['destination']}.")
     if not nodes(ret_w["destination"], ret_w) & nodes(out_w["origin"], out_w):
         out.append(f"La vuelta llega a {ret_w['destination']} y la ida sale de {out_w['origin']}.")
-    for label, w in (("ida", out_w), ("vuelta", ret_w)):
-        if not w["enabled"]:
-            out.append(f"La vigilancia de {label} («{w['name']}») está en pausa: sus precios no se actualizan.")
     return out
 
 
-def trip_view(t: dict, out_w: dict, ret_w: dict) -> dict:
-    return {k: t[k] for k in ("id", "name", "outbound_id", "return_id", "min_nights", "max_nights", "date_from",
-                              "date_to", "max_total", "discount_pct", "channel_ids", "created_at")} | {
-        "enabled": bool(t["enabled"]), "outbound": _leg_view(out_w), "return": _leg_view(ret_w),
-        "warnings": _warnings(out_w, ret_w),
+def trip_view(t: dict, out_w: dict, ret_w: dict | None) -> dict:
+    """El viaje con sus tramos. El transporte (`kind`) se deriva del tramo de ida; `return` es None en solo ida."""
+    return {k: t[k] for k in ("id", "name", "min_nights", "max_nights", "date_from", "date_to", "max_total",
+                              "discount_pct", "channel_ids", "created_at")} | {
+        "enabled": bool(t["enabled"]), "kind": out_w["kind"], "outbound": _leg_view(out_w),
+        "return": _leg_view(ret_w) if ret_w else None, "warnings": _warnings(out_w, ret_w) if ret_w else [],
     }
 
 
@@ -49,7 +51,8 @@ def _price_view(r: dict) -> dict:
 
 def combo_view(c: dict, trip: dict, base: float | None) -> dict:
     return {k: c[k] for k in ("out_date", "ret_date", "nights", "total")} | {
-        "deal": trips.deal_reason(trip, c["total"], base), "out": _price_view(c["out"]), "ret": _price_view(c["ret"]),
+        "deal": trips.deal_reason(trip, c["total"], base), "out": _price_view(c["out"]),
+        "ret": _price_view(c["ret"]) if c["ret"] else None,  # None en los viajes de solo ida
     }
 
 
@@ -70,7 +73,7 @@ def list_trips(user: dict = Depends(current_user)):
         for t in db.list_trips(con, user["id"]):
             out_w, ret_w = trips.legs(con, t)
             combos, base = _current(con, s, t)
-            best = min(combos, key=lambda c: (c["total"], c["out_date"], c["nights"]), default=None)
+            best = min(combos, key=lambda c: (c["total"], c["out_date"], c["nights"] or 0), default=None)
             out.append({**trip_view(t, out_w, ret_w), "base": base, "best": best and combo_view(best, t, base),
                         "n_dates": len({c["out_date"] for c in combos}), "trend": db.trip_trend(con, t["id"])[-30:],
                         "channels": [names[i] for i in t["channel_ids"] if i in names]})
@@ -79,9 +82,10 @@ def list_trips(user: dict = Depends(current_user)):
 
 # ------------------------------------------------------------------------- CRUD
 class TripIn(BaseModel):
+    model_config = {"populate_by_name": True}
     name: str = ""
-    outbound_id: int | str | None = None
-    return_id: int | str | None = None
+    outbound: LegIn | None = None               # tramo de ida (obligatorio)
+    inbound: LegIn | None = Field(default=None, alias="return")  # tramo de vuelta (opcional = solo ida)
     min_nights: int | str | None = None
     max_nights: int | str | None = None
     date_from: str | None = None
@@ -92,25 +96,11 @@ class TripIn(BaseModel):
     channel_ids: list[int] = []
 
 
-def parse_trip(body: TripIn, user: dict) -> dict:
-    """Datos listos para guardar o `Invalid` con todos los errores encontrados."""
+def parse_trip(body: TripIn, current_legs: dict | None = None) -> dict:
+    """Datos listos para guardar (con la cobertura de cada tramo) o `Invalid` con todos los errores.
+
+    `current_legs` ({role: vigilancia}) al editar: conserva la cobertura de un tramo si no cambia su ruta."""
     errors: list[str] = []
-    with db.connect() as con:
-        mine = {w["id"]: w for w in db.list_watches(con, user["id"])}
-
-    def leg(value, label):
-        try:
-            wid = int(str(value).strip())
-        except ValueError:
-            wid = 0
-        if wid not in mine:
-            errors.append(f"Elige la vigilancia de {label} entre las tuyas.")
-            return None
-        return wid
-
-    out_id, ret_id = leg(body.outbound_id, "ida"), leg(body.return_id, "vuelta")
-    if out_id and out_id == ret_id:
-        errors.append("La ida y la vuelta tienen que ser vigilancias distintas.")
 
     def nights(value, label, default):
         text = str(value if value is not None else "").strip()
@@ -128,14 +118,22 @@ def parse_trip(body: TripIn, user: dict) -> dict:
     max_total = parse_number(body.max_total, "El precio total máximo", errors)
     disc = parse_number(body.discount_pct, "El descuento", errors, default=30.0, lo=-1.0, hi=95.0)
     d_from, d_to = parse_dates(body.date_from, body.date_to, errors)
+    if body.outbound is None:
+        errors.append("Un viaje necesita al menos el tramo de ida.")
+        raise Invalid(errors)
+    out_data = parse_leg(body.outbound, errors, body.enabled)
+    ret_data = parse_leg(body.inbound, errors, body.enabled) if body.inbound is not None else None
     if errors:
         raise Invalid(errors)
-    out_w, ret_w = mine[out_id], mine[ret_id]
+    current_legs = current_legs or {}
+    out_cov = with_coverage(out_data, current_legs.get("outbound"))
+    ret_cov = with_coverage(ret_data, current_legs.get("return")) if ret_data else None
+    arrow = "⇄" if ret_data else "→"
     return {
-        "name": body.name.strip()[:200] or f"{out_w['origin']} ⇄ {out_w['destination']}",
-        "outbound_id": out_id, "return_id": ret_id, "min_nights": lo, "max_nights": hi,
-        "date_from": d_from, "date_to": d_to, "max_total": max_total,
+        "name": body.name.strip()[:200] or f"{out_data['origin']} {arrow} {out_data['destination']}",
+        "min_nights": lo, "max_nights": hi, "date_from": d_from, "date_to": d_to, "max_total": max_total,
         "discount_pct": disc if disc is not None else 30.0, "enabled": body.enabled,
+        "outbound": out_cov, "return": ret_cov,
     }
 
 
@@ -146,7 +144,7 @@ def _saved(con, tid: int) -> dict:
 
 @router.post("/trips", status_code=201)
 def create_trip(body: TripIn, user: dict = Depends(current_user)):
-    data = parse_trip(body, user)
+    data = parse_trip(body)
     channel_ids = own_channel_ids(user, body.channel_ids)
     with db.connect() as con:
         tid = db.create_trip(con, user["id"], data)
@@ -182,7 +180,8 @@ def trip_options(tid: int, date: str, user: dict = Depends(current_user)):
 def update_trip(tid: int, body: TripIn, user: dict = Depends(current_user)):
     with db.connect() as con:
         own_trip(con, tid, user)
-    data = parse_trip(body, user)
+        current_legs = db.trip_legs(con, tid)
+    data = parse_trip(body, current_legs)
     channel_ids = own_channel_ids(user, body.channel_ids)
     with db.connect() as con:
         db.update_trip(con, tid, data)
@@ -208,7 +207,7 @@ def toggle_trip(tid: int, user: dict = Depends(current_user)):
 
 @router.post("/trips/{tid}/run")
 def run_trip(tid: int, user: dict = Depends(current_user)):
-    """Comprueba ahora los dos tramos del viaje (aunque estén en pausa) y después el viaje."""
+    """Comprueba ahora los tramos del viaje (aunque esté en pausa) y después el viaje."""
     with db.connect() as con:
         own_trip(con, tid, user)
     return {"started": scheduler.run_now(user_id=user["id"], trip_id=tid)}

@@ -246,13 +246,14 @@ def revalidate(trigger: str = "cron") -> dict:
                 lines += [f"• {label}: deja de operar {o}→{d}" for o, d in sorted(old - new)]
             if lines:
                 changes += 1
-                with db.connect() as con:
+                with db.connect() as con:  # los avisos son del viaje dueño del tramo
+                    trip = db.get_trip(con, w["trip_id"])
                     chans = [c for c in db.list_channels(con, w["user_id"], only_enabled=True)
-                             if c["id"] in w["channel_ids"]]
+                             if trip and c["id"] in trip["channel_ids"]]
                 if chans:
                     panel = (db.get_settings().get("panel_url") or "").rstrip("/")
                     notify.send_text(chans, f"🗓️ {w['name']}: cambios en las rutas", lines,
-                                     url=f"{panel}{notify.watch_path(w)}" if panel else "")
+                                     url=f"{panel}/trips/{trip['id']}" if panel else "")
         return {"status": "done", "watches": len(watches), "changed": changes}
     finally:
         _revalidate_lock.release()

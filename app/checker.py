@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from . import db, fx, notify, places, trips
 from .config import DEBUG_DIR
-from .providers import PROVIDERS, DayPrice, ProviderBlocked, link_for, ordered
+from .providers import PROVIDERS, DayPrice, ProviderBlocked, ordered
 
 log = logging.getLogger("checker")
 
@@ -157,26 +157,13 @@ def _check_one(browser, settings, tz, watch, prov, pairs, trigger) -> dict:
     if not prices and error is None:
         error = "La web no devolvió ningún precio (¿ha cambiado o hay bloqueo?)"
 
-    deals, base = [], None
+    # Solo se guardan los precios: los chollos y avisos se evalúan a nivel de viaje (trips.evaluate), no por tramo.
     with db.connect() as con:
         if prices:
-            base = db.baseline(con, watch["id"], prov.key, f"{today.isoformat()}T00:00:00",
-                               int(settings["min_samples"]))
             db.insert_prices(con, watch["id"], prov.key, started, prices)
-            for p in prices:
-                reason = deal_reason(watch, p.price_eur, base)
-                if reason and not db.already_alerted(con, watch["id"], prov.key, p.day.isoformat(), p.price_eur):
-                    deals.append({
-                        "provider": prov.key, "day": p.day, "price": p.price_eur, "reason": reason,
-                        "origin": p.origin, "destination": p.destination, "stops": p.stops,
-                        "currency": p.currency, "orig_price": p.price if p.currency != "EUR" else None,
-                        "departs_at": db.minutes(p.departure), "arrives_at": db.minutes(p.arrival),
-                        "link": link_for(prov.key, p.origin or watch["origin"],
-                                         p.destination or watch["destination"], p.day),
-                    })
         db.finish_run(con, run_id, datetime.now(tz).replace(tzinfo=None).isoformat(timespec="seconds"),
-                      error is None, len(prices), len(deals), error)
-    return {"deals": deals, "base": base, "error": error, "started": started, "prices": prices}
+                      error is None, len(prices), 0, error)
+    return {"error": error, "started": started}
 
 
 def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int | None = None,
@@ -196,15 +183,16 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
             trip = db.get_trip(con, trip_id) if trip_id else None
             if trip_id and not trip:
                 return "empty"
-            only = {trip["outbound_id"], trip["return_id"]} if trip else {watch_id} if watch_id else None
-            # Las vigilancias de un usuario desactivado no se comprueban (ni se avisa a nadie).
+            only = {w["id"] for w in db.trip_legs(con, trip_id).values()} if trip \
+                else {watch_id} if watch_id else None
+            # Las vigilancias (tramos) de un usuario desactivado no se comprueban (ni se avisa a nadie).
             watches = [w for w in db.list_watches(con, user_id)
                        if users.get(w["user_id"], {}).get("enabled")
                        and (w["id"] in only if only else w["enabled"])]
-            # Viajes: el pedido o los activos con algún tramo en esta ronda.
-            checked = {w["id"] for w in watches}
-            trip_list = [trip] if trip else [t for t in db.list_trips(con, user_id) if t["enabled"]
-                                             and {t["outbound_id"], t["return_id"]} & checked]
+            # Viajes: el pedido o los activos con algún tramo en esta ronda (los tramos llevan su trip_id).
+            checked_trips = {w["trip_id"] for w in watches}
+            trip_list = [trip] if trip else [t for t in db.list_trips(con, user_id)
+                                             if t["enabled"] and t["id"] in checked_trips]
             trip_list = [t for t in trip_list if users.get(t["user_id"], {}).get("enabled")]
         if not watches:
             return "empty"
@@ -214,10 +202,8 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
                             if k in PROVIDERS and c["active"])
         with (browser_session(settings) if needs_browser else nullcontext()) as browser:
             for w in watches:
-                owner = users[w["user_id"]]
-                mine = problems.setdefault(owner["id"], [])
-                all_deals, baselines, last_started = [], {}, None
-                day_min: dict = {}  # precio más bajo de cada día entre todas las webs (calendario del aviso)
+                mine = problems.setdefault(w["user_id"], [])
+                # Solo se consultan y guardan precios de cada tramo; los chollos se evalúan por viaje más abajo.
                 for key in ordered(w["providers"]):
                     prov, cov = PROVIDERS[key], w["coverage"][key]
                     if not cov["active"]:  # no opera la ruta ahora (p. ej. de temporada): ni se consulta
@@ -225,26 +211,8 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
                     pairs = cov["routes"] or places.routes(w["origin"], w["destination"], w["kind"])
                     STATE["current"] = f"{w['name']} · {prov.label}"
                     res = _check_one(browser, settings, tz, w, prov, pairs, trigger)
-                    all_deals += res["deals"]
-                    baselines[key] = res["base"]
-                    last_started = res["started"]
-                    for p in res["prices"]:
-                        day_min[p.day] = min(p.price_eur, day_min.get(p.day, p.price_eur))
                     if res["error"]:
                         mine.append(f"{w['name']} · {prov.label}: {res['error']}")
-
-                if all_deals:
-                    # Solo los canales que el usuario asignó a esta vigilancia (y siguen activos).
-                    chans = [c for c in user_channels[owner["id"]] if c["id"] in w["channel_ids"]]
-                    if not chans:  # sin marcar como avisados: se reenviarán cuando asigne algún canal
-                        log.info("Hay chollos en «%s» pero no tiene canales de aviso activos", w["name"])
-                        continue
-                    sent, errs = notify.send_deals(chans, w, all_deals, baselines, settings.get("panel_url", ""),
-                                                   day_min)
-                    mine += [f"{w['name']}: {e}" for e in errs]
-                    if sent:  # solo se marcan como avisadas si llegaron a algún canal
-                        with db.connect() as con:
-                            db.add_alerts(con, w["id"], all_deals, last_started)
 
         for t in trip_list:
             STATE["current"] = f"Viaje {t['name']}"
