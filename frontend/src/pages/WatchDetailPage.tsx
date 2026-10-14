@@ -1,28 +1,26 @@
-import { ChevronLeft, Pencil, Play } from 'lucide-react'
+import { ChevronLeft } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
-import { useCharts, useDateHistory, useProviders, useStatus, useWatch } from '@/api/queries'
-import { Button, buttonClass } from '@/components/ui/button'
+import { useCharts, useDateHistory, useProviders, useWatch } from '@/api/queries'
 import { Badge, Card, CardHeader, PageHeader, TableWrap, tableClass } from '@/components/ui/card'
 import { LoadError, PageLoading, Skeleton } from '@/components/ui/feedback'
 import { Field, Select } from '@/components/ui/form'
 import { CalendarLegend, PriceCalendar } from '@/components/watch/PriceCalendar'
 import { PriceChart } from '@/components/watch/PriceChart'
 import { ProviderTile } from '@/components/watch/ProviderTile'
-import { RoutePill, rulesText } from '@/components/watch/rules'
+import { RoutePill } from '@/components/watch/rules'
 import { AlertsTable } from '@/components/watch/tables'
 import { cn } from '@/lib/cn'
 import { fmtDateTime, fmtDay, fmtPrice } from '@/lib/format'
-import { useRunNow, useTitle } from '@/lib/hooks'
-import { kindSection, useKind, watchPath } from '@/lib/kinds'
+import { useTitle } from '@/lib/hooks'
+import { useKind } from '@/lib/kinds'
 
+/** Detalle de solo lectura de un tramo de un viaje (calendario, gráficas e histórico). Se edita desde el viaje. */
 export function WatchDetailPage() {
   const id = Number(useParams().id)
   const detail = useWatch(id)
   const charts = useCharts(id)
   const provider = useProviders()
-  const run = useRunNow()
-  const running = useStatus().data?.running
   const [filter, setFilter] = useState('')
   const [picked, setPicked] = useState('')
   const historyRef = useRef<HTMLElement>(null)
@@ -36,7 +34,7 @@ export function WatchDetailPage() {
 
   if (detail.isPending) return <PageLoading />
   if (detail.isError) return <LoadError error={detail.error} />
-  const { watch: w, stats, checks, alerts, trips } = detail.data
+  const { watch: w, stats, checks, alerts, trip } = detail.data
   const shown = filter ? rows.filter((r) => r.provider === filter) : rows
 
   const selectDay = (d: string) => {
@@ -48,8 +46,8 @@ export function WatchDetailPage() {
     <>
       <PageHeader
         back={
-          <Link to={kindSection(w.kind)} className="inline-flex items-center gap-1 text-sm text-muted hover:text-fg">
-            <ChevronLeft className="size-4" aria-hidden="true" /> {kind.label}
+          <Link to={`/trips/${trip.id}`} className="inline-flex items-center gap-1 text-sm text-muted hover:text-fg">
+            <ChevronLeft className="size-4" aria-hidden="true" /> {trip.name}
           </Link>
         }
         title={
@@ -61,30 +59,10 @@ export function WatchDetailPage() {
         description={
           <span className="flex flex-wrap items-center gap-2">
             <RoutePill origin={w.origin} destination={w.destination} />
-            {rulesText(w)}
+            Tramo del viaje «{trip.name}». Se edita desde el viaje.
           </span>
         }
-        actions={
-          <>
-            <Button onClick={() => run.mutate(w.id)} disabled={running} loading={run.isPending}>
-              {!run.isPending && <Play />} Comprobar ahora
-            </Button>
-            <Link to={watchPath(w.kind, w.id, '/edit')} className={buttonClass('secondary')}><Pencil /> Editar</Link>
-          </>
-        }
       />
-
-      {trips.length > 0 && (
-        <p className="-mt-3 mb-4 text-sm text-muted">
-          Tramo de {trips.length === 1 ? 'un viaje' : 'los viajes'}:{' '}
-          {trips.map((t, i) => (
-            <span key={t.id}>
-              {i > 0 && ', '}
-              <Link to={`/trips/${t.id}`} className="text-fg underline underline-offset-2">{t.name}</Link>
-            </span>
-          ))}
-        </p>
-      )}
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {stats.map((s) => <ProviderTile key={s.key} stat={s} detail className="bg-surface shadow-card" plural={kind.plural} />)}

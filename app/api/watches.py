@@ -244,9 +244,11 @@ def get_watch(wid: int, user: dict = Depends(current_user)):
     with db.connect() as con:
         w = own_watch(con, wid, user)
         stats, rows = _provider_stats(con, s, w, detail=True)
+        trip = db.get_trip(con, w["trip_id"])
         return {
             "watch": watch_view(w), "stats": stats, "prices": rows,
             "checks": db.checks_summary(con, wid, 40), "alerts": db.list_alerts(con, 15, wid),
+            "trip": {"id": trip["id"], "name": trip["name"]},  # el viaje del que es tramo
         }
 
 

@@ -204,8 +204,8 @@ export interface WatchDetail {
   prices: PriceRow[]
   checks: CheckSummary[]
   alerts: Alert[]
-  /** Viajes de los que esta vigilancia es tramo. */
-  trips: { id: number; name: string }[]
+  /** El viaje del que este tramo forma parte. */
+  trip: { id: number; name: string }
 }
 
 export interface Series {
@@ -416,7 +416,7 @@ export interface ImportPreview {
   providers: ImportItem[]
 }
 
-/** Tramo de un viaje: una vigilancia del usuario. */
+/** Tramo de un viaje (una vigilancia interna), con lo necesario para pintarlo y editarlo dentro del viaje. */
 export interface TripLeg {
   id: number
   kind: KindKey
@@ -424,13 +424,19 @@ export interface TripLeg {
   origin: string
   destination: string
   enabled: boolean
+  origin_place: Place
+  destination_place: Place
+  providers: string[]
+  coverage: WatchCoverage[]
+  /** 0 = solo directos; null = sin límite. */
+  max_stops: number | null
 }
 
 export interface Trip {
   id: number
   name: string
-  outbound_id: number
-  return_id: number
+  /** Transporte del viaje, derivado del tramo de ida. */
+  kind: KindKey
   min_nights: number
   max_nights: number
   date_from: string | null
@@ -441,8 +447,9 @@ export interface Trip {
   channel_ids: number[]
   created_at: string
   outbound: TripLeg
-  return: TripLeg
-  /** Avisos que no impiden guardar (tramos en pausa o que no encajan). */
+  /** null = viaje de solo ida. */
+  return: TripLeg | null
+  /** Avisos que no impiden guardar (tramos que no encajan). */
   warnings: string[]
 }
 
@@ -456,15 +463,15 @@ export interface TripPrice extends PriceExtras {
   checked_at: string
 }
 
-/** Una combinación ida + vuelta: fecha de ida, noches y total. */
+/** Una combinación de un viaje: fecha de ida y total. En un viaje de solo ida no hay vuelta ni noches. */
 export interface TripCombo {
   out_date: string
-  ret_date: string
-  nights: number
+  ret_date: string | null
+  nights: number | null
   total: number
   deal: 'fixed' | 'relative' | null
   out: TripPrice
-  ret: TripPrice
+  ret: TripPrice | null
 }
 
 export interface TripTrend {
@@ -484,7 +491,7 @@ export interface TripAlert {
   id: number
   trip_id: number
   out_date: string
-  ret_date: string
+  ret_date: string | null
   total: number
   sent_at: string
 }

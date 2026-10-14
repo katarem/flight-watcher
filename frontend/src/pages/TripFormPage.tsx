@@ -1,23 +1,36 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2 } from 'lucide-react'
-import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertTriangle, ArrowLeftRight, CheckCircle2, Clock, RefreshCw, Trash2, XCircle } from 'lucide-react'
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
+import { Link, useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
-import { del, errorList, post, put } from '@/api/client'
-import { keys, useChannels, useTrip, useWatches } from '@/api/queries'
-import type { Trip, WatchCard } from '@/api/types'
+import { ApiError, del, errorList, post, put } from '@/api/client'
+import { keys, useChannels, useMeta, useTrip } from '@/api/queries'
+import type { KindKey, Place, ProviderMeta, RouteCheck, RouteCheckProvider, Trip, TripLeg } from '@/api/types'
 import { Button, buttonClass } from '@/components/ui/button'
 import { Badge, PageHeader } from '@/components/ui/card'
 import { ConfirmDialog } from '@/components/ui/dialog'
-import { EmptyState, ErrorBox, LoadError, PageLoading } from '@/components/ui/feedback'
+import { ErrorBox, LoadError, PageLoading, Spinner } from '@/components/ui/feedback'
 import { Checkbox, Field, FormSection, Input, Select, Switch } from '@/components/ui/form'
+import { PlaceCombobox } from '@/components/watch/PlaceCombobox'
+import { cn } from '@/lib/cn'
 import { useTitle } from '@/lib/hooks'
-import { kindSection } from '@/lib/kinds'
+import { useKind } from '@/lib/kinds'
+
+/** Estado de un tramo del viaje (una vigilancia interna). */
+interface LegState {
+  origin: string
+  destination: string
+  originPlace: Place | null
+  destinationPlace: Place | null
+  providers: string[]
+  max_stops: string
+}
 
 interface FormState {
   name: string
-  outbound_id: string
-  return_id: string
+  oneWay: boolean
+  outbound: LegState
+  ret: LegState
   min_nights: string
   max_nights: string
   date_from: string
@@ -28,27 +41,168 @@ interface FormState {
   channel_ids: number[]
 }
 
-const fromTrip = (t: Trip): FormState => ({
-  name: t.name, outbound_id: String(t.outbound_id), return_id: String(t.return_id), min_nights: String(t.min_nights),
-  max_nights: String(t.max_nights), date_from: t.date_from ?? '', date_to: t.date_to ?? '',
-  max_total: t.max_total != null ? String(t.max_total) : '', discount_pct: String(Math.round(t.discount_pct)),
-  enabled: t.enabled, channel_ids: t.channel_ids,
+const BLANK_LEG: LegState = {
+  origin: '', destination: '', originPlace: null, destinationPlace: null, providers: [], max_stops: '0',
+}
+
+const legFrom = (l: TripLeg): LegState => ({
+  origin: l.origin, destination: l.destination, originPlace: l.origin_place, destinationPlace: l.destination_place,
+  providers: l.providers, max_stops: l.max_stops == null ? '' : String(l.max_stops),
 })
+
+const fromTrip = (t: Trip): FormState => ({
+  name: t.name, oneWay: !t.return, outbound: legFrom(t.outbound), ret: t.return ? legFrom(t.return) : { ...BLANK_LEG },
+  min_nights: String(t.min_nights), max_nights: String(t.max_nights), date_from: t.date_from ?? '',
+  date_to: t.date_to ?? '', max_total: t.max_total != null ? String(t.max_total) : '',
+  discount_pct: String(Math.round(t.discount_pct)), enabled: t.enabled, channel_ids: t.channel_ids,
+})
+
+const BLANK: FormState = {
+  name: '', oneWay: false, outbound: { ...BLANK_LEG }, ret: { ...BLANK_LEG }, min_nights: '3', max_nights: '7',
+  date_from: '', date_to: '', max_total: '', discount_pct: '30', enabled: true, channel_ids: [],
+}
 
 const toggle = <T,>(list: T[], v: T, on: boolean) => (on ? [...new Set([...list, v])] : list.filter((x) => x !== v))
 
-const overlap = (a: string[], b: string[]) => a.some((x) => b.includes(x))
+/** ¿Hay un lugar que comprobar? (elegido de la lista o un código escrito a mano). */
+const ready = (code: string, place: Place | null) => !!place || /^[A-Z]{2,3}$/.test(code)
 
-/** Lugares reales del transporte de la vigilancia que incluye un lugar (TCI → TFN y TFS en los vuelos). */
-const nodesOf = (w: WatchCard, place: WatchCard['origin_place']) => place.nodes?.[w.kind] ?? place.airports
+const STATUS_UI = {
+  ok: { icon: CheckCircle2, tone: 'text-deal' },
+  none: { icon: XCircle, tone: 'text-muted' },
+  too_many: { icon: XCircle, tone: 'text-muted' },
+  error: { icon: AlertTriangle, tone: 'text-warn' },
+  timeout: { icon: Clock, tone: 'text-warn' },
+} as const
 
-/** La vigilancia que hace el camino de vuelta de `w` (la ruta al revés, en el mismo transporte), si la hay. */
-const reverseOf = (w: WatchCard, all: WatchCard[]) =>
-  all.find((x) => x.id !== w.id && x.kind === w.kind && x.origin === w.destination && x.destination === w.origin)
+/** Una web con su casilla y lo que dice la comprobación de la ruta. */
+function ProviderOption({ p, checked, onChange, result, checking, kept }: {
+  p: ProviderMeta
+  checked: boolean
+  onChange: (v: boolean) => void
+  result?: RouteCheckProvider
+  checking: boolean
+  kept: boolean
+}) {
+  const id = useId()
+  const unavailable = result && (result.status === 'none' || result.status === 'too_many')
+  const ui = result ? STATUS_UI[result.status] : null
+  return (
+    <div className={cn('rounded-xl border p-3 transition', checked ? 'border-accent bg-accent-soft/50' : 'border-line',
+      unavailable && !kept && 'border-dashed')}>
+      <Checkbox checked={checked && !(unavailable && !kept)} onChange={onChange} disabled={!!unavailable && !kept} describedBy={id}>
+        <span aria-hidden="true" className="size-2.5 rounded-full" style={{ background: p.color }} />
+        {p.label}
+        {p.coverage === 'universal' && <Badge>cualquier aerolínea</Badge>}
+      </Checkbox>
+      <p id={id} className="mt-1.5 flex gap-1.5 pl-7.5 text-xs text-muted">
+        {checking ? (
+          <><Spinner className="size-3.5 shrink-0" /> Comprobando si opera la ruta (algunas webs tardan un rato)…</>
+        ) : result && ui ? (
+          <>
+            <ui.icon className={cn('mt-px size-3.5 shrink-0', ui.tone)} aria-hidden="true" />
+            <span>
+              {result.reason}
+              {unavailable && kept && ' Se mantiene en pausa y se revisa cada semana por si vuelve a operar (rutas de temporada).'}
+              {(result.status === 'error' || result.status === 'timeout') && ' Puedes elegirla igualmente: se comprobará más adelante.'}
+            </span>
+          </>
+        ) : (
+          <span>Elige origen y destino para ver si opera la ruta.</span>
+        )}
+      </p>
+    </div>
+  )
+}
 
-const watchLabel = (w: WatchCard) => `${w.name} (${w.origin} → ${w.destination})${w.enabled ? '' : ' · en pausa'}`
+/** Sub-formulario de un tramo: ruta, webs (con comprobación de la ruta) y escalas. */
+function LegFields({ kind, leg, onChange, isNew, keptProviders }: {
+  kind: KindKey
+  leg: LegState
+  onChange: (next: LegState) => void
+  isNew: boolean
+  keptProviders: string[]
+}) {
+  const meta = useMeta().data
+  const k = useKind(kind)
+  const providers = (meta?.providers ?? []).filter((p) => p.kind === kind)
+  const [swaps, setSwaps] = useState(0)
 
-function TripForm({ initial, tripId, watches }: { initial: FormState; tripId?: number; watches: WatchCard[] }) {
+  const routeKey = ready(leg.origin, leg.originPlace) && ready(leg.destination, leg.destinationPlace)
+    ? `${leg.origin}|${leg.destination}` : ''
+  const check = useQuery({
+    queryKey: ['route-check', kind, routeKey],
+    queryFn: () => post<RouteCheck>('/route-check', { kind, origin: leg.origin, destination: leg.destination }),
+    enabled: !!routeKey,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+  const results = new Map((check.data?.providers ?? []).map((r) => [r.key, r]))
+  const kept = new Set(keptProviders)
+
+  // Tramo nuevo: se marcan las webs que operan la ruta (hasta que el usuario toque las casillas).
+  const touched = useRef(!isNew)
+  const lastAuto = useRef('')
+  useEffect(() => {
+    const data = check.data
+    if (!data || touched.current || lastAuto.current === routeKey) return
+    lastAuto.current = routeKey
+    onChange({ ...leg, providers: data.providers.filter((r) => r.ok && r.coverage !== 'universal').map((r) => r.key) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [check.data, routeKey])
+
+  const checkError = check.error instanceof ApiError ? check.error.errors : check.error ? errorList(check.error) : []
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+        <PlaceCombobox key={`o${swaps}`} kind={kind} label="Origen" code={leg.origin} place={leg.originPlace} placeholder="Sevilla, SVQ…"
+          onChange={(code, place) => onChange({ ...leg, origin: code, originPlace: place })} />
+        <Button variant="ghost" size="icon" className="self-center sm:mt-7" aria-label="Intercambiar origen y destino"
+          onClick={() => {
+            onChange({ ...leg, origin: leg.destination, destination: leg.origin, originPlace: leg.destinationPlace, destinationPlace: leg.originPlace })
+            setSwaps((n) => n + 1)
+          }}>
+          <ArrowLeftRight className="rotate-90 sm:rotate-0" />
+        </Button>
+        <PlaceCombobox key={`d${swaps}`} kind={kind} label="Destino" code={leg.destination} place={leg.destinationPlace} placeholder="Tenerife, TCI…"
+          onChange={(code, place) => onChange({ ...leg, destination: code, destinationPlace: place })} />
+      </div>
+      <ErrorBox errors={checkError} />
+      <div className="grid gap-2 sm:grid-cols-2" role="group" aria-label="Webs a vigilar" aria-busy={check.isFetching || undefined}>
+        {providers.map((p) => (
+          <ProviderOption key={p.key} p={p} checked={leg.providers.includes(p.key)} result={check.isFetching ? undefined : results.get(p.key)}
+            checking={check.isFetching} kept={kept.has(p.key)}
+            onChange={(v) => { touched.current = true; onChange({ ...leg, providers: toggle(leg.providers, p.key, v) }) }} />
+        ))}
+      </div>
+      {routeKey && (
+        <Button variant="ghost" size="sm" onClick={() => check.refetch()} disabled={check.isFetching}>
+          <RefreshCw /> Volver a comprobar
+        </Button>
+      )}
+      <Field label="Escalas" hint={`La mayoría de las webs solo venden ${k.plural} directos; algunas también con escala.`}>
+        {(id, hint) => (
+          <Select id={id} aria-describedby={hint} value={leg.max_stops} onChange={(e) => onChange({ ...leg, max_stops: e.target.value })}
+            className="sm:max-w-64">
+            <option value="0">Solo directos</option>
+            <option value="1">Hasta 1 escala</option>
+            <option value="2">Hasta 2 escalas</option>
+            <option value="">Sin límite</option>
+          </Select>
+        )}
+      </Field>
+    </div>
+  )
+}
+
+function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
+  initial: FormState
+  tripId?: number
+  kind: KindKey
+  keptOut: string[]
+  keptRet: string[]
+}) {
   const isNew = tripId == null
   const channelData = useChannels('').data
   const channels = channelData ?? []
@@ -59,14 +213,7 @@ function TripForm({ initial, tripId, watches }: { initial: FormState; tripId?: n
   const errorRef = useRef<HTMLDivElement>(null)
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((s) => ({ ...s, [k]: v }))
 
-  const out = watches.find((w) => String(w.id) === f.outbound_id)
-  const ret = watches.find((w) => String(w.id) === f.return_id)
-  const reverse = out && reverseOf(out, watches)
-  const mismatch = out && ret && (
-    !overlap(nodesOf(out, out.destination_place), nodesOf(ret, ret.origin_place))
-    || !overlap(nodesOf(ret, ret.destination_place), nodesOf(out, out.origin_place)))
-
-  // Canales nuevos: por defecto, todos los activos (como en las vigilancias).
+  // Canales nuevos: por defecto, todos los activos.
   const defaulted = useRef(!isNew)
   useEffect(() => {
     if (!defaulted.current && channelData?.length) {
@@ -75,21 +222,25 @@ function TripForm({ initial, tripId, watches }: { initial: FormState; tripId?: n
     }
   }, [channelData])
 
-  const pickOutbound = (id: string) => {
-    const w = watches.find((x) => String(x.id) === id)
-    const back = w && reverseOf(w, watches)
-    // Si aún no hay vuelta elegida, se propone la ruta al revés.
-    setF((s) => ({ ...s, outbound_id: id, return_id: s.return_id || (back ? String(back.id) : '') }))
-  }
+  const legBody = (l: LegState) => ({
+    kind, origin: l.origin, destination: l.destination, providers: l.providers, max_stops: l.max_stops,
+  })
 
   const save = useMutation({
     mutationFn: () => {
-      const body = { ...f, max_total: f.max_total || null, date_from: f.date_from || null, date_to: f.date_to || null }
+      const body = {
+        name: f.name, min_nights: f.min_nights, max_nights: f.max_nights, max_total: f.max_total || null,
+        discount_pct: f.discount_pct, date_from: f.date_from || null, date_to: f.date_to || null,
+        enabled: f.enabled, channel_ids: f.channel_ids,
+        outbound: legBody(f.outbound), return: f.oneWay ? null : legBody(f.ret),
+      }
       return isNew ? post<{ trip: Trip }>('/trips', body) : put<{ trip: Trip }>(`/trips/${tripId}`, body)
     },
     onSuccess: ({ trip }) => {
       qc.invalidateQueries({ queryKey: keys.trips })
-      toast.success(isNew ? 'Viaje creado' : 'Cambios guardados')
+      toast.success(isNew ? 'Viaje creado' : 'Cambios guardados', {
+        description: isNew ? 'Pulsa «Comprobar ahora» para traer los primeros precios.' : undefined,
+      })
       navigate(`/trips/${trip.id}`)
     },
     onError: (e) => {
@@ -103,7 +254,7 @@ function TripForm({ initial, tripId, watches }: { initial: FormState; tripId?: n
     onSuccess: () => {
       qc.removeQueries({ queryKey: keys.trip(tripId!) })
       qc.invalidateQueries({ queryKey: keys.trips })
-      toast.success('Viaje eliminado (sus vigilancias se mantienen)')
+      toast.success('Viaje eliminado junto con sus tramos y su histórico')
       navigate('/trips')
     },
     onError: (e) => toast.error(errorList(e)[0]),
@@ -115,57 +266,42 @@ function TripForm({ initial, tripId, watches }: { initial: FormState; tripId?: n
     save.mutate()
   }
 
-  const newReturn = out && `${kindSection(out.kind)}/new?origin=${encodeURIComponent(out.destination)}&destination=${encodeURIComponent(out.origin)}&for_trip=${out.id}`
-
   return (
     <form onSubmit={submit} className="space-y-5" noValidate>
       <div ref={errorRef}><ErrorBox errors={errors} /></div>
 
-      <FormSection title="Ida y vuelta" description="Cada tramo es una de tus vigilancias: el viaje usa sus precios y sus webs.">
+      <FormSection title="El viaje" description="Un nombre y si es ida y vuelta o solo ida.">
         <Field label="Nombre (opcional)">
           {(id) => <Input id={id} value={f.name} onChange={(e) => set('name', e.target.value)} placeholder="Tenerife en noviembre" maxLength={200} />}
         </Field>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Vigilancia de ida">
-            {(id) => (
-              <Select id={id} value={f.outbound_id} onChange={(e) => pickOutbound(e.target.value)}>
-                <option value="">Elige una…</option>
-                {watches.map((w) => <option key={w.id} value={w.id}>{watchLabel(w)}</option>)}
-              </Select>
-            )}
-          </Field>
-          <Field label="Vigilancia de vuelta">
-            {(id) => (
-              <Select id={id} value={f.return_id} onChange={(e) => set('return_id', e.target.value)}>
-                <option value="">Elige una…</option>
-                {watches.map((w) => <option key={w.id} value={w.id}>{watchLabel(w)}</option>)}
-              </Select>
-            )}
-          </Field>
-        </div>
-        {out && !reverse && (
-          <p className="text-sm text-muted">
-            No tienes ninguna vigilancia de {out.destination} a {out.origin}.{' '}
-            <Link to={newReturn!} className="text-accent underline underline-offset-2">Crear la vigilancia de vuelta</Link>{' '}
-            (después vuelves aquí con los dos tramos elegidos).
-          </p>
-        )}
-        {mismatch && (
-          <p className="rounded-xl border border-warn/30 bg-warn/10 p-3 text-sm text-warn">
-            La vuelta no sale de donde llega la ida o no vuelve a donde sale: se puede guardar igualmente
-            (p. ej. si vas en coche de un aeropuerto a otro).
-          </p>
-        )}
+        <Checkbox checked={f.oneWay} onChange={(v) => set('oneWay', v)}>Solo ida (sin vuelta)</Checkbox>
       </FormSection>
 
-      <FormSection title="Noches y fechas" description="Se prueban todas las combinaciones de fecha de ida y noches.">
+      <FormSection title="Tramo de ida" description="La ruta, las webs y las escalas de la ida. El viaje usa sus precios.">
+        <LegFields kind={kind} leg={f.outbound} onChange={(l) => set('outbound', l)} isNew={isNew} keptProviders={keptOut} />
+      </FormSection>
+
+      {!f.oneWay && (
+        <FormSection title="Tramo de vuelta" description="La ruta de vuelta (normalmente al revés que la ida).">
+          <LegFields kind={kind} leg={f.ret} onChange={(l) => set('ret', l)} isNew={isNew} keptProviders={keptRet} />
+        </FormSection>
+      )}
+
+      {!f.oneWay && (
+        <FormSection title="Noches y fechas" description="Se prueban todas las combinaciones de fecha de ida y noches.">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Noches como mínimo">
+              {(id) => <Input id={id} inputMode="numeric" value={f.min_nights} onChange={(e) => set('min_nights', e.target.value)} placeholder="3" />}
+            </Field>
+            <Field label="Noches como máximo">
+              {(id) => <Input id={id} inputMode="numeric" value={f.max_nights} onChange={(e) => set('max_nights', e.target.value)} placeholder="7" />}
+            </Field>
+          </div>
+        </FormSection>
+      )}
+
+      <FormSection title="Fechas de ida" description="Sin límites se comprueban todas las fechas con precio desde hoy.">
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Noches como mínimo">
-            {(id) => <Input id={id} inputMode="numeric" value={f.min_nights} onChange={(e) => set('min_nights', e.target.value)} placeholder="3" />}
-          </Field>
-          <Field label="Noches como máximo">
-            {(id) => <Input id={id} inputMode="numeric" value={f.max_nights} onChange={(e) => set('max_nights', e.target.value)} placeholder="5" />}
-          </Field>
           <Field label="Ida desde (opcional)">
             {(id) => <Input id={id} type="date" value={f.date_from} onChange={(e) => set('date_from', e.target.value)} />}
           </Field>
@@ -176,14 +312,15 @@ function TripForm({ initial, tripId, watches }: { initial: FormState; tripId?: n
         </div>
       </FormSection>
 
-      <FormSection title="Cuándo avisar" description="Sobre el total (ida + vuelta). Basta con que se cumpla una de las dos reglas.">
+      <FormSection title="Cuándo avisar"
+        description={`Sobre ${f.oneWay ? 'el precio de la ida' : 'el total (ida + vuelta)'}. Basta con que se cumpla una de las dos reglas.`}>
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Si el total cuesta como mucho (€)" hint="Déjalo vacío para usar solo la regla relativa.">
+          <Field label={`Si ${f.oneWay ? 'cuesta' : 'el total cuesta'} como mucho (€)`} hint="Déjalo vacío para usar solo la regla relativa.">
             {(id, hint) => <Input id={id} aria-describedby={hint} inputMode="decimal" value={f.max_total}
               onChange={(e) => set('max_total', e.target.value)} placeholder="120" />}
           </Field>
           <Field label="…o si baja un (%) sobre lo habitual"
-            hint="Lo habitual es la mediana de los totales guardados de este viaje (cuando hay suficientes).">
+            hint="Lo habitual es la mediana de los precios guardados de este viaje (cuando hay suficientes).">
             {(id, hint) => <Input id={id} aria-describedby={hint} inputMode="decimal" value={f.discount_pct}
               onChange={(e) => set('discount_pct', e.target.value)} placeholder="30" />}
           </Field>
@@ -210,7 +347,7 @@ function TripForm({ initial, tripId, watches }: { initial: FormState; tripId?: n
 
       <div className="rounded-2xl border border-line bg-surface p-4 shadow-card sm:p-5">
         <Switch checked={f.enabled} onChange={(v) => set('enabled', v)} label="Viaje activo"
-          description="En pausa no se recalcula en las rondas automáticas." />
+          description="En pausa no se comprueba en las rondas automáticas." />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -221,7 +358,7 @@ function TripForm({ initial, tripId, watches }: { initial: FormState; tripId?: n
             <ConfirmDialog
               trigger={<Button variant="ghost" className="text-danger"><Trash2 /> Eliminar</Button>}
               title="¿Eliminar este viaje?"
-              description="Se borrará su histórico de totales y avisos. Las vigilancias de ida y vuelta se mantienen."
+              description="Se borrarán sus tramos y todo su histórico de precios, avisos y ejecuciones. No se puede deshacer."
               onConfirm={() => remove.mutate()}
               loading={remove.isPending}
             />
@@ -232,44 +369,28 @@ function TripForm({ initial, tripId, watches }: { initial: FormState; tripId?: n
   )
 }
 
-const BLANK: FormState = {
-  name: '', outbound_id: '', return_id: '', min_nights: '3', max_nights: '5', date_from: '', date_to: '',
-  max_total: '', discount_pct: '30', enabled: true, channel_ids: [],
-}
-
 export function TripFormPage() {
   const params = useParams()
-  const [search] = useSearchParams()
   const id = params.id ? Number(params.id) : undefined
   const existing = useTrip(id ?? 0)
-  const watches = useWatches()
   useTitle(id ? 'Editar viaje' : 'Nuevo viaje')
 
-  if ((id != null && existing.isPending) || watches.isPending) return <PageLoading />
+  if (id != null && existing.isPending) return <PageLoading />
   if (id != null && existing.isError) return <LoadError error={existing.error} />
-  if (watches.isError) return <LoadError error={watches.error} />
-  // Desde «Crear la vigilancia de vuelta» se vuelve con los dos tramos elegidos (?outbound=…&return=…).
-  const initial = id != null && existing.data ? fromTrip(existing.data.trip)
-    : { ...BLANK, outbound_id: search.get('outbound') ?? '', return_id: search.get('return') ?? '' }
+  const trip = id != null ? existing.data?.trip : undefined
+  const initial = trip ? fromTrip(trip) : BLANK
+  const kind = trip?.kind ?? 'flight'
+  // Al editar, los proveedores de temporada (inactivos) de cada tramo se conservan aunque la ruta no los opere.
+  const keptOut = trip ? trip.outbound.providers : []
+  const keptRet = trip?.return ? trip.return.providers : []
 
   return (
     <div className="mx-auto max-w-3xl">
       <PageHeader
         title={id ? 'Editar viaje' : 'Nuevo viaje'}
-        description={id ? existing.data?.trip.name : 'Elige la ida, la vuelta, cuántas noches y cuándo quieres que te avisemos.'}
+        description={id ? trip?.name : 'Elige la ruta de la ida (y la vuelta), las webs y cuándo quieres que te avisemos.'}
       />
-      {watches.data.length < 2 && id == null ? (
-        <EmptyState
-          icon={<Plus />}
-          title="Hacen falta dos vigilancias"
-          action={<Link to={`${kindSection('flight')}/new`} className={buttonClass()}><Plus /> Nueva vigilancia</Link>}
-        >
-          Un viaje junta una vigilancia de ida y otra de vuelta. Crea primero las dos (p. ej. Sevilla → Tenerife y
-          Tenerife → Sevilla).
-        </EmptyState>
-      ) : (
-        <TripForm key={id ?? 'new'} initial={initial} tripId={id} watches={watches.data} />
-      )}
+      <TripForm key={id ?? 'new'} initial={initial} tripId={id} kind={kind} keptOut={keptOut} keptRet={keptRet} />
     </div>
   )
 }
