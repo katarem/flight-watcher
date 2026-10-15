@@ -5,9 +5,9 @@ import type { TripCard } from '@/api/types'
 import { buttonClass } from '@/components/ui/button'
 import { Badge, Card, CardHeader, PageHeader, TableWrap, tableClass } from '@/components/ui/card'
 import { EmptyState, LoadError, PageLoading } from '@/components/ui/feedback'
-import { LegLink, TripPill } from '@/components/trip/parts'
+import { ComboParts, comboDates as datesOf, TripPill } from '@/components/trip/parts'
 import { AlertsTable, RunsTable } from '@/components/watch/tables'
-import { fmtDay, fmtNights, fmtPrice } from '@/lib/format'
+import { fmtPrice } from '@/lib/format'
 import { useTitle } from '@/lib/hooks'
 import { tripPath } from '@/lib/paths'
 
@@ -24,9 +24,8 @@ function Stat({ id, label, value, detail }: { id: string; label: string; value: 
   )
 }
 
-/** Fechas de una combinación: «12 nov → 19 nov · 7 noches» o, en solo ida, «12 nov». */
-const comboDates = (t: TripCard) =>
-  t.best!.ret_date ? `${fmtDay(t.best!.out_date)} → ${fmtDay(t.best!.ret_date)} · ${fmtNights(t.best!.nights ?? 0)}` : fmtDay(t.best!.out_date)
+/** Fechas de la mejor combinación de un viaje. */
+const comboDates = (t: TripCard) => datesOf(t.best!)
 
 /** Los chollos de ahora mismo: la combinación más barata de cada viaje que cumple sus reglas de aviso. */
 function CurrentDeals({ trips }: { trips: TripCard[] }) {
@@ -39,8 +38,7 @@ function CurrentDeals({ trips }: { trips: TripCard[] }) {
           <tr>
             <th scope="col">Viaje</th>
             <th scope="col">Fechas</th>
-            <th scope="col">Ida</th>
-            <th scope="col">Vuelta</th>
+            <th scope="col">Desglose</th>
             <th scope="col" className="text-right!">Precio</th>
           </tr>
         </thead>
@@ -54,8 +52,7 @@ function CurrentDeals({ trips }: { trips: TripCard[] }) {
                 </span>
               </td>
               <td className="whitespace-nowrap">{comboDates(t)}</td>
-              <td><LegLink leg={t.best!.out} /></td>
-              <td>{t.best!.ret ? <LegLink leg={t.best!.ret} /> : <span className="text-muted">solo ida</span>}</td>
+              <td><ComboParts combo={t.best!} /></td>
               <td className="text-right font-semibold whitespace-nowrap tabular-nums">{fmtPrice(t.best!.total)}</td>
             </tr>
           ))}
@@ -80,6 +77,8 @@ export function DashboardPage() {
   const cheapest = priced[0]
   const deals = list.filter((t) => t.best?.deal).length
   const roundTrips = list.filter((t) => t.return).length
+  const stayOnly = list.filter((t) => !t.outbound).length
+  const oneWay = list.length - roundTrips - stayOnly
 
   return (
     <>
@@ -95,8 +94,8 @@ export function DashboardPage() {
           title="Aún no vigilas ningún viaje"
           action={<Link to="/trips/new" className={buttonClass()}><Plus /> Crear el primero</Link>}
         >
-          Elige la ruta de ida (y la de vuelta, si la hay) y las webs, y te avisamos cuando el viaje baje de lo que
-          marques o de lo habitual.
+          Elige la ida (y la vuelta), el alojamiento o los dos, y te avisamos cuando el viaje baje de lo que marques o
+          de lo habitual.
         </EmptyState>
       ) : (
         <div className="grid gap-4 sm:grid-cols-3">
@@ -104,8 +103,8 @@ export function DashboardPage() {
             id="resumen-viajes" label="Viajes" value={list.length}
             detail={
               <>
-                {[roundTrips && `${roundTrips} de ida y vuelta`, list.length > roundTrips && `${list.length - roundTrips} solo ida`]
-                  .filter(Boolean).join(', ')}
+                {[roundTrips && `${roundTrips} de ida y vuelta`, oneWay && `${oneWay} solo ida`,
+                  stayOnly && `${stayOnly} solo alojamiento`].filter(Boolean).join(', ')}
                 {' · '}
                 <Link to="/trips" className="text-accent underline underline-offset-2">ver todos</Link>
               </>

@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
-from .. import __version__, auth, avatars, checker, db, kinds, notify, places, scheduler
+from .. import __version__, auth, avatars, checker, db, kinds, notify, party, places, scheduler, stays
 from ..providers import PROVIDERS
 from .deps import Invalid, current_user, public, start_session
 
@@ -65,6 +65,8 @@ def meta():
             for key, k in notify.KINDS.items()
         ],
         "avatar_max_bytes": avatars.MAX_BYTES,
+        "stay_options": stays.options(),
+        "party_options": party.options(),
     }
 
 

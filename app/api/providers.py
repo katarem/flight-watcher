@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ValidationError
 
-from .. import auth, checker, coverage, db, health, kinds, places, scheduler
+from .. import auth, checker, coverage, db, health, kinds, places, scheduler, stays
 from ..providers import COVERAGE_LABELS, PROVIDERS, bundle, scripted, stealth
 from .deps import Invalid, require_admin
 
@@ -55,7 +55,8 @@ class ProviderIn(BaseModel):
 
 
 class TestIn(ProviderIn):
-    #: Ruta de la prueba (aeropuertos o lugares de su transporte); vacía = la ruta de prueba del formulario.
+    #: Ruta de la prueba (aeropuertos o lugares de su transporte; en uno de alojamiento, `origin` es el destino de
+    #: prueba en texto); vacía = la ruta de prueba del formulario.
     origin: str = ""
     destination: str = ""
 
@@ -70,7 +71,8 @@ def _view(row: dict, usage: dict[str, int], last: dict | None = None, code: bool
         "enabled": bool(row["enabled"]), "stealth": stealth.level(row.get("stealth")) or stealth.OFF,
         "loaded": loaded, "error": scripted.ERRORS.get(row["key"]),
         "coverage_label": COVERAGE_LABELS.get(row["coverage"], row["coverage"]),
-        "stops_filter": loaded and prov.stops_filter, "n_watches": usage.get(row["key"], 0),
+        "stops_filter": loaded and prov.stops_filter, "party_aware": loaded and prov.party_aware,
+        "n_watches": usage.get(row["key"], 0),
         "last": last and {k: last[k] for k in ("status", "detail", "latency_ms", "checked_at")},
     } | ({"code": row["code"]} if code else {})
 
@@ -110,6 +112,14 @@ def _airport(raw: str, label: str, errors: list[str], kind: str = kinds.DEFAULT,
     return code
 
 
+def _stay_place(raw: str, errors: list[str], what: str) -> str:
+    text = " ".join((raw or "").split())
+    if not 2 <= len(text) <= stays.PLACE_MAX:
+        errors.append(f"Indica un destino {what} para el alojamiento (una ciudad o una zona, de 2 a "
+                      f"{stays.PLACE_MAX} caracteres).")
+    return text
+
+
 def _check_key(key: str, errors: list[str]):
     if not scripted.KEY_RE.fullmatch(key) or key in scripted.RESERVED_KEYS:
         errors.append("La clave debe tener 2-30 caracteres: minúsculas, números o guion bajo, empezando por una letra"
@@ -143,10 +153,14 @@ def _parse(body: ProviderIn, for_test: bool = False, errors: list[str] | None = 
                 raise ValueError
         except ValueError:
             errors.append(f"El máximo de pares debe ser un entero entre 1 y {places.MAX_PAIRS}.")
-    origin = _airport(body.health_origin, "origen", errors, kind)
-    destination = _airport(body.health_destination, "destino", errors, kind)
-    if origin and origin == destination:
-        errors.append("El origen y el destino de la ruta de prueba no pueden ser iguales.")
+    if kind == kinds.STAY:  # alojamiento: un destino de prueba en texto, sin ruta ni cobertura
+        origin, destination = _stay_place(body.health_origin, errors, "de prueba"), ""
+        body.coverage = "universal"
+    else:
+        origin = _airport(body.health_origin, "origen", errors, kind)
+        destination = _airport(body.health_destination, "destino", errors, kind)
+        if origin and origin == destination:
+            errors.append("El origen y el destino de la ruta de prueba no pueden ser iguales.")
     link = body.link_template.strip()
     if link and not link.startswith(("http://", "https://")):
         errors.append("La plantilla de enlace debe empezar por https://")
@@ -223,6 +237,7 @@ def list_providers():
     return {
         "providers": [_view(r, usage, last.get(r["key"])) for r in rows],
         "editable": scripted.EDITABLE, "template": scripted.TEMPLATE, "status_labels": health.STATUS_LABELS,
+        "templates": {k: scripted.template_for(k) for k in kinds.provider_kinds()},
         "sources": sources,
         "catalogs": [{"label": label, "url": bundle.CATALOG_URL + name} for name, label in bundle.CATALOGS],
         "kinds": [kinds.view(kinds.KINDS[k]) for k in kinds.provider_kinds()],
@@ -322,12 +337,16 @@ def test_provider(body: TestIn, admin: dict = Depends(require_admin)):
     _require_editable()
     values = _parse(body, for_test=True)
     errors: list[str] = []
-    origin = (_airport(body.origin, "origen", errors, values["kind"], "de la prueba") if body.origin.strip()
-              else values["health_origin"])
-    destination = (_airport(body.destination, "destino", errors, values["kind"], "de la prueba")
-                   if body.destination.strip() else values["health_destination"])
-    if origin == destination:
-        errors.append("Origen y destino no pueden ser iguales.")
+    if values["kind"] == kinds.STAY:
+        origin = _stay_place(body.origin, errors, "de la prueba") if body.origin.strip() else values["health_origin"]
+        destination = ""
+    else:
+        origin = (_airport(body.origin, "origen", errors, values["kind"], "de la prueba") if body.origin.strip()
+                  else values["health_origin"])
+        destination = (_airport(body.destination, "destino", errors, values["kind"], "de la prueba")
+                       if body.destination.strip() else values["health_destination"])
+        if origin == destination:
+            errors.append("Origen y destino no pueden ser iguales.")
     if errors:
         raise Invalid(errors)
     _confirm(admin, body.password)
@@ -352,12 +371,13 @@ def test_provider(body: TestIn, admin: dict = Depends(require_admin)):
             raise
 
     def work():
-        say("info", f"Prueba de «{values['label']}» ({key}) en {origin}→{destination} desde la IP del servidor")
+        where = origin if values["kind"] == kinds.STAY else f"{origin}→{destination}"
+        say("info", f"Prueba de «{values['label']}» ({key}) en {where} desde la IP del servidor")
         try:
             result = health.check_draft(build, origin, destination, say)
         except Exception as exc:  # noqa: BLE001 - la prueba informa de cualquier fallo
             say("error", f"{type(exc).__name__}: {exc}")
-            result = {"key": key, "status": "error", "route": f"{origin}→{destination}", "steps": [], "latency_ms": 0,
+            result = {"key": key, "status": "error", "route": where, "steps": [], "latency_ms": 0,
                       "checked_at": health._now(), "sample": [], "n_prices": 0}
         say("info", f"Fin de la prueba: {health.STATUS_LABELS[result['status']].lower()}")
         done.set()

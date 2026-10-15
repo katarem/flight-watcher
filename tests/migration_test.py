@@ -5,7 +5,8 @@ avisos y ejecuciones; aplica las migraciones pendientes como la app (`db.init`) 
 pierde nada (el ON DELETE CASCADE al recrear tablas en SQLite) y que los datos se convierten bien.
 Crea los proveedores incluidos como al arrancar (`bundle.seed`, con la plantilla de enlace que había en Ajustes y
 los del paquete sin verificar que ya usaba una vigilancia). Después crea un viaje (0005) y un proveedor (0006),
-comprueba los tipos y las horas (0008), baja a 0007, a 0006, a 0005, a 0004 y a 0003 y vuelve a subir.
+comprueba los tipos y las horas (0008), baja a 0007 y vuelve; crea estancias, viajeros y un proveedor de alojamiento
+(0010) y baja a 0009 (se quitan sin tocar lo demás); baja a 0006, a 0005, a 0004 y a 0003 y vuelve a subir.
 
 Aparte (en otro proceso, con su propia BD), una BD anterior a los usuarios (0001, vigilancias sin dueño): sube a
 head y `bootstrap_admin` le da al administrador el viaje en que la 0009 envuelve cada vigilancia.
@@ -116,6 +117,42 @@ def main():
           "downgrade a 0007 quita tipos y horas sin perder filas")
     migrate("head")
     check(counts() == before and c.execute("PRAGMA foreign_key_check").fetchall() == [], "y vuelta a 0008")
+
+    # --- 0010: estancias, viajeros y proveedores de alojamiento; bajar a 0009 los quita sin tocar lo demás
+    stay_leg = {"name": "Alojamiento", "kind": "hotel", "origin": "", "destination": "Puerto de la Cruz, Tenerife",
+                "providers": ["casas"], "filters": '{"rooms": 1, "types": ["hotel"]}', "max_price": None,
+                "discount_pct": 30, "date_from": None, "date_to": None, "max_stops": None, "enabled": True}
+    with db.connect() as con:
+        db.save_provider_script(con, "casas", {"kind": "hotel", "label": "Casas", "color": "#000000",
+                                               "coverage": "universal", "max_routes": None,
+                                               "health_origin": "Puerto de la Cruz, Tenerife", "health_destination": "",
+                                               "link_template": "", "notes": "", "min_interval": 1.5,
+                                               "code": "def fetch_stay(*a):\n    return []\n", "enabled": 1}, "admin")
+        first = db.list_trips(con)[0]
+        db.update_trip(con, first["id"], {**first, "party": '{"travelers": [{"age": null}, {"age": 8}]}',
+                                          "outbound": db.get_watch(con, 1), "stay": stay_leg})
+        alone = db.create_trip(con, 1, {"name": "Solo estancia", "min_nights": 2, "max_nights": 3, "date_from": None,
+                                        "date_to": None, "max_total": None, "discount_pct": 30, "enabled": True,
+                                        "max_per_person": 50, "stay": stay_leg})
+        legs = db.trip_legs(con, first["id"])
+    check(set(legs) == {"outbound", "stay"} and legs["outbound"]["id"] == 1 and set(legs["outbound"]["coverage"]) == {"vueling", "ryanair"}
+          and legs["stay"]["coverage"]["casas"]["routes"] == [], "0010: un viaje con estancia (la ida no cambia)")
+    c.execute("INSERT INTO prices(watch_id, provider, flight_date, price, currency, checked_at, nights, offer) "
+              f"VALUES ({legs['stay']['id']}, 'casas', '2026-11-01', 200, 'EUR', '2026-10-01T08:00:00', 3, '{{}}')")
+    c.execute("INSERT INTO trip_quotes(trip_id, checked_at, out_date, ret_date, total, out_price, stay_price) "
+              f"VALUES ({alone}, '2026-10-01T08:00:00', '2026-11-01', '2026-11-04', 200, NULL, 200)")
+    c.execute(f"INSERT INTO stay_queries VALUES ({legs['stay']['id']}, 'casas', '2026-11-01', 3, '2026-10-01T08:00:00')")
+    c.commit()
+    migrate("0009", down=True)
+    tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    cols = {r[1] for r in c.execute("PRAGMA table_info(trips)")}
+    check(counts() == before and "stay_queries" not in tables and not cols & {"party", "max_per_person"}
+          and c.execute("SELECT count(*) FROM trips WHERE name = 'Solo estancia'").fetchone()[0] == 0
+          and c.execute("SELECT count(*) FROM provider_scripts WHERE key = 'casas'").fetchone()[0] == 0
+          and c.execute("SELECT count(*) FROM trips").fetchone()[0] == 2,
+          "downgrade a 0009 quita las estancias, los viajes sin ida y los proveedores de alojamiento")
+    migrate("head")
+    check(counts() == before and c.execute("PRAGMA foreign_key_check").fetchall() == [], "y vuelta a 0010")
     migrate("0006", down=True)
     cols = {r[1] for r in c.execute("PRAGMA table_info(provider_scripts)")}
     check(counts() == before and not cols & {"source", "stealth"} and c.execute("SELECT count(*) FROM provider_scripts").fetchone()[0] == 4,

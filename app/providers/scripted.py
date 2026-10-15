@@ -5,8 +5,8 @@ vez (`bundle.seed()`) y se pueden editar, exportar o borrar desde el panel.
 
 Contrato
 --------
-Cada proveedor es de un tipo (`kind`, ver `app/kinds.py`): hoy vuelos (`flight`); barcos, trenes y buses comparten
-este mismo contrato (el alojamiento tendrá el suyo). El script es un módulo de Python que define:
+Cada proveedor es de un tipo (`kind`, ver `app/kinds.py`): vuelos (`flight`) y alojamiento (`hotel`); barcos, trenes
+y buses comparten el contrato de los vuelos. Un script de transporte es un módulo de Python que define:
 
     def fetch_route(api, origin, destination, start, max_months):
         # Precios de origin→destination (aeropuertos IATA en los vuelos; estaciones, puertos o paradas en los demás)
@@ -16,12 +16,27 @@ este mismo contrato (el alojamiento tendrá el suyo). El script es un módulo de
         #     DayPrice(day, 39.99, departure="06:35", arrival="08:10")   # o datetime/time
         # Si además acepta `max_stops` (fetch_route(…, max_months, max_stops=None)), recibe el máximo de escalas
         # de la vigilancia (0 = solo directos, None = sin límite) y filtra él mismo.
+        # Si acepta `passengers` (fetch_route(…, passengers=None)), recibe los viajeros del viaje (`app/party.py`:
+        # passengers.adults, .children —edades—, .infants, .seats, .residents —{"canarias": 1}—, .large_family) y
+        # devuelve el precio de todos ellos con sus descuentos. Si no lo acepta, su precio es el de un adulto y el
+        # checker lo multiplica por las plazas (marcado como estimado, sin descuentos).
 
 y, según la cobertura elegida en el formulario:
 
     network    def network(api, origin) -> códigos (IATA en los vuelos) con trayecto directo desde `origin`
     probe      def probe(api, origin, destination) -> True/False (¿opera la ruta?)
     universal  nada más (cubre cualquier ruta)
+
+Un script de alojamiento (siempre «cualquier ruta») define en su lugar:
+
+    def fetch_stay(api, destination, checkin, nights, guests, filters):
+        # Alojamientos en `destination` (texto libre: «Puerto de la Cruz») con entrada `checkin` (date) y `nights`
+        # noches para los viajeros `guests` (el mismo objeto que `passengers`: .adults, .child_ages…) y los filtros
+        # `filters` (`app/stays.py`: .rooms, .types, .entire, .min_rating, .min_stars, .boards, .free_cancel,
+        # .amenities; aplica en la búsqueda los que la web permita).
+        # Devuelve una lista de StayOffer(precio_total, name=…, type="hotel", rating=8.6, stars=4,
+        # board="breakfast", free_cancel=True, entire=True, url="https://…"); [] si no hay nada. El checker se queda
+        # con la más barata que cumple los filtros.
 
 `api` (`ScriptApi`) hace las peticiones en el turno del proveedor: una a la vez y con pausas, 403/429/página
 anti-bot → bloqueado, 404 → None y copia en diagnóstico si está activo. Una petición que no responde en 30 s se
@@ -30,8 +45,8 @@ repite una vez (otra vez sin respuesta → `ProviderTimeout`); para una web lent
 `get_json`/`post_json` aceptan `headers=` y `api.cookie(name, url=None)` da el valor de una cookie de la sesión
 (de Chrome si las peticiones van por él), para las webs que piden copiarla en una cabecera (XSRF/CSRF). En el
 espacio de nombres del script ya
-están `date`, `datetime`, `timedelta`, `re`, `json`, `math`, `DayPrice`, `ProviderError`, `ProviderBlocked` y
-`add_months`. `api.log(…)` y `print(…)` escriben en el log del servidor y en la consola de la prueba del editor,
+están `date`, `datetime`, `timedelta`, `re`, `json`, `math`, `DayPrice`, `StayOffer`, `ProviderError`,
+`ProviderBlocked` y `add_months`. `api.log(…)` y `print(…)` escriben en el log del servidor y en la consola de la prueba del editor,
 que además muestra cada petición (URL, estado, tiempo, tamaño y forma del JSON) y en qué línea falla el script.
 
 «Medidas anti-bot» (`stealth`, se elige en el formulario: ninguna, huella de Chrome o siempre Chrome; ver
@@ -61,6 +76,7 @@ from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
 from .. import kinds, places
+from ..stays import StayOffer
 from . import stealth
 from .base import ApiProvider, DayPrice, ProviderBlocked, ProviderError, ProviderTimeout, add_months
 
@@ -78,7 +94,7 @@ COVERAGE_FUNCS = {"network": "network", "probe": "probe", "universal": None}
 #: Lo que el script tiene a mano sin importarlo.
 SCRIPT_GLOBALS = {
     "date": date, "datetime": datetime, "timedelta": timedelta, "re": re, "json": json, "math": math, "DayPrice": DayPrice,
-    "ProviderError": ProviderError, "ProviderBlocked": ProviderBlocked, "add_months": add_months,
+    "StayOffer": StayOffer, "ProviderError": ProviderError, "ProviderBlocked": ProviderBlocked, "add_months": add_months,
 }
 
 TEMPLATE = '''"""Proveedor nuevo. Rellena las URL y adapta la lectura del JSON a lo que devuelva la web."""
@@ -115,6 +131,38 @@ def fetch_route(api, origin, destination, start, max_months):
                 out[day] = min(float(dia["precio"]), out.get(day, math.inf))
     return out
 '''
+
+
+STAY_TEMPLATE = '''"""Proveedor de alojamiento nuevo. Rellena la URL y adapta la lectura del JSON a lo que devuelva la web."""
+
+SEARCH_URL = "https://www.ejemplo.com/api/buscar"
+#: Nuestros tipos de alojamiento (app/stays.py) en los de la web.
+TYPES = {"hotel": "HOTEL", "apartment": "APARTMENT", "house": "VILLA", "hostal": "HOSTAL"}
+
+
+def fetch_stay(api, destination, checkin, nights, guests, filters):
+    """Alojamientos disponibles con su precio total (todas las noches y todos los viajeros)."""
+    data = api.get_json(SEARCH_URL, destino=destination, entrada=checkin.isoformat(),
+                        salida=(checkin + timedelta(days=nights)).isoformat(), adultos=guests.adults,
+                        edades=",".join(map(str, guests.child_ages)), habitaciones=filters.rooms,
+                        tipos=",".join(TYPES[t] for t in filters.types if t in TYPES) or None)
+    if data is None:  # 404: no conoce el destino
+        return []
+    api.log(checkin, nights, "noches →", len(data.get("resultados", [])), "alojamientos")
+    out = []
+    for r in data.get("resultados", []):
+        tipo = next((k for k, v in TYPES.items() if v == r.get("tipo")), r.get("tipo", ""))
+        out.append(StayOffer(float(r["precio_total"]), name=r.get("nombre", ""), type=tipo,
+                             rating=r.get("nota"), stars=r.get("estrellas"), url=r.get("enlace", "")))
+    return out
+'''
+
+#: Plantilla del editor para un proveedor nuevo de cada tipo.
+TEMPLATES = {"hotel": STAY_TEMPLATE}
+
+
+def template_for(kind: str) -> str:
+    return TEMPLATES.get(kind, TEMPLATE)
 
 
 class ScriptError(ProviderError):
@@ -327,6 +375,38 @@ def normalize(result, label: str) -> dict[date, DayPrice | float]:
     return out
 
 
+def normalize_stays(result, label: str) -> list[StayOffer]:
+    """Comprueba lo que devuelve `fetch_stay`: una lista de `StayOffer` (o dicts con sus campos) con precio > 0."""
+    if result is None:
+        return []
+    if not isinstance(result, (list, tuple)):
+        raise ProviderError(f"{label}: `fetch_stay` debe devolver una lista de StayOffer "
+                            f"(devolvió {type(result).__name__})")
+    out = []
+    for item in result:
+        try:
+            offer = item if isinstance(item, StayOffer) else StayOffer(**item)
+            if _price(offer.price) is None:
+                continue
+            offer.price = float(offer.price)
+            offer.currency = (offer.currency or "EUR").upper()
+            offer.type, offer.board = (offer.type or "").strip().lower(), (offer.board or "").strip().lower()
+            offer.name, offer.url = str(offer.name or "")[:200], str(offer.url or "")[:1000]
+            if offer.rating is not None:
+                offer.rating = float(offer.rating)
+                if not 0 <= offer.rating <= 10:
+                    raise ValueError("la nota va de 0 a 10")
+            if offer.stars is not None:
+                offer.stars = int(offer.stars)
+            if offer.amenities is not None:
+                offer.amenities = [str(a) for a in offer.amenities]
+        except (TypeError, ValueError) as exc:
+            raise ProviderError(f"{label}: `fetch_stay` devolvió un elemento no válido ({item!r}): {exc}; se espera "
+                                "StayOffer(precio, name=…, type=…, rating=0–10…)") from exc
+        out.append(offer)
+    return out
+
+
 #: Quien recibe las trazas de la consola de la prueba: (nivel, texto). Niveles: info, ok, warn, error, http, script.
 Console = Callable[[str, str], None]
 
@@ -359,11 +439,13 @@ class ScriptedProvider(ApiProvider):
         #: Página que abre Chrome (`BROWSER_PAGE` del script); None = la portada de la web de cada URL.
         self.browser_page: str | None = self.ns.get("BROWSER_PAGE")
         try:
-            params = inspect.signature(self.ns["fetch_route"]).parameters
+            params = inspect.signature(self.ns["fetch_route"]).parameters if "fetch_route" in self.ns else {}
         except (TypeError, ValueError):
             params = {}
         #: Si `fetch_route` acepta `max_stops`, recibe el filtro de escalas de la vigilancia.
         self.stops_filter = "max_stops" in params
+        #: Si `fetch_route` acepta `passengers`, recibe los viajeros del viaje y da el precio de todos.
+        self.party_aware = "passengers" in params
         if self.stealth:
             self.trace("info", stealth.describe(self.stealth, self.browser_page))
 
@@ -403,8 +485,18 @@ class ScriptedProvider(ApiProvider):
 
     def fetch_route(self, session, origin, destination, start, max_months, debug_dir, **kw):
         api = ScriptApi(self, session, debug_dir, f"{self.key}-{origin}-{destination}")
-        kw = {"max_stops": kw.get("max_stops")} if self.stops_filter else {}
-        return normalize(self._call("fetch_route", api, origin, destination, start, max_months, **kw), self.label)
+        extra = {"max_stops": kw.get("max_stops")} if self.stops_filter else {}
+        if self.party_aware:
+            extra["passengers"] = kw.get("passengers")
+        return normalize(self._call("fetch_route", api, origin, destination, start, max_months, **extra), self.label)
+
+    def fetch_stays(self, destination: str, checkin: date, nights: int, guests, filters,
+                    debug_dir=None) -> list[StayOffer]:
+        """Alojamientos (`fetch_stay` del script) para una combinación, comprobados (ver `normalize_stays`)."""
+        with self.new_session() as session:
+            api = ScriptApi(self, session, debug_dir, f"{self.key}-{checkin.isoformat()}-{nights}")
+            found = self._call("fetch_stay", api, destination, checkin, nights, guests, filters)
+        return normalize_stays(found, self.label)
 
     def network(self, session, origin):
         found = self._call("network", ScriptApi(self, session, None, ""), origin) or []

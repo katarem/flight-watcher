@@ -43,8 +43,10 @@ function ProviderCard({ p, onTest, testing, disabled, selected, onSelect }: {
               {p.loaded && (p.last ? <StatusBadge status={p.last.status} /> : <Badge>sin probar</Badge>)}
             </div>
             <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
-              <span>Cobertura: {p.coverage_label}{p.max_routes ? ` (máx. ${p.max_routes} pares)` : ''}</span>
+              {p.kind === 'hotel' ? <span>Alojamiento en cualquier destino</span>
+                : <span>Cobertura: {p.coverage_label}{p.max_routes ? ` (máx. ${p.max_routes} pares)` : ''}</span>}
               {p.stops_filter && <span>Filtra por escalas</span>}
+              {p.party_aware && <span>Admite varios viajeros</span>}
               <span>Pausa ≥ {p.min_interval} s entre peticiones</span>
               <span>{p.n_watches} {p.n_watches === 1 ? 'tramo de viaje' : 'tramos de viaje'}</span>
               <span>Guardado {fmtAgo(p.updated_at)} por @{p.updated_by}</span>

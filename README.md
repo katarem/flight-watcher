@@ -71,7 +71,7 @@ Para añadir otro tipo de canal (Slack, correo…), añade una entrada a `KINDS`
 
 ## Versiones e imagen Docker
 
-La versión vive en `app/__init__.py` (`__version__`, hoy **2.0.0**; se ve en el pie del panel) y los cambios se anotan en [CHANGELOG.md](CHANGELOG.md).
+La versión vive en `app/__init__.py` (`__version__`, hoy **2.1.0**; se ve en el pie del panel) y los cambios se anotan en [CHANGELOG.md](CHANGELOG.md).
 
 El CI (`.github/workflows/docker.yml`) ejecuta el test de humo, comprueba que las migraciones están al día, pasa el lint, los tests y las pruebas en navegador del panel, y publica la imagen en **ghcr.io/katarem/trip-watch** (`linux/amd64`):
 
@@ -179,9 +179,10 @@ Cada precio del panel y cada aviso lleva un enlace a esa fecha concreta, con la 
 
 ## Reglas de aviso
 
-Las reglas son de cada **viaje** (ver «Viajes» abajo): se avisa de una fecha de ida si el precio del viaje (ida + vuelta, o solo la ida en un viaje de solo ida)
+Las reglas son de cada **viaje** (ver «Viajes» abajo): se avisa de una fecha de ida (o de entrada, en uno de solo alojamiento) si el total del viaje (ida + vuelta + alojamiento, los tramos que tenga, para todos los viajeros)
 
 - es **≤ el precio máximo** que definas, **o**
+- sale **≤ el máximo por persona** (el total entre los viajeros; útil si cambia el grupo), **o**
 - es un **X % inferior a lo habitual** (mediana de los totales guardados de ese viaje; se activa con las *muestras mínimas* de Ajustes, 30 por defecto).
 
 No se repite el aviso de la misma fecha salvo que el precio baje aún más. Si el viaje no tiene ningún canal, los avisos no se marcan como enviados y se mandarán cuando le asignes uno.
@@ -190,7 +191,7 @@ No se repite el aviso de la misma fecha salvo que el precio baje aún más. Si e
 
 Cada aviso es un mensaje **enriquecido**, no un texto suelto:
 
-- **Discord:** un *embed* de cabecera con el viaje (enlazado al panel) y **un campo por fecha de ida** con el total, las noches y el precio de cada tramo, que enlaza directamente a esa fecha en su web (con las horas de salida y llegada si la web las da).
+- **Discord:** un *embed* de cabecera con el viaje (enlazado al panel) y **un campo por fecha de ida** con el total (y el precio por persona si sois varios), las noches y el **desglose por tramo**: cada transporte y el alojamiento (nombre, tipo, estrellas, nota y régimen), con el enlace directo a esa fecha en su web (y las horas de salida y llegada si la web las da).
 - **Telegram:** el resumen en el texto y **un botón por tramo** que abre esa fecha en la web (más uno para abrir el panel), en lugar de enlaces sueltos en el texto. Si Telegram no acepta algún enlace como botón (por ejemplo, la URL del panel en la red local), el aviso se repite con los enlaces en el texto.
 - **Calendario en PNG** en los dos: los meses del aviso con el total más barato de cada fecha de ida, del más barato (verde) al más caro (rojo), y con borde las fechas de las que avisa.
 
@@ -198,9 +199,24 @@ Cada aviso es un mensaje **enriquecido**, no un texto suelto:
 
 ## Viajes
 
-Desde la 2.0 todo se organiza en **viajes**. Un viaje tiene su **tramo de ida** y, si quieres, el de **vuelta** (sin vuelta es un viaje de *solo ida*). Cada tramo tiene su ruta, sus webs (con la comprobación de la ruta) y su máximo de escalas, y se crea, edita y borra desde el formulario del viaje (**Al revés que la ida** rellena la vuelta). El viaje lleva el rango de noches (p. ej. de 3 a 5), una ventana opcional de fechas de ida, las reglas de aviso y los canales.
+Desde la 2.0 todo se organiza en **viajes**. Un viaje vigila el **transporte**, el **alojamiento** o los dos:
 
-En cada ronda se consultan las webs de los tramos y, con esos precios, se recalcula el viaje: para cada fecha de ida y cada número de noches permitido, el total es el vuelo de ida más barato de ese día más el de vuelta más barato del día de regreso (entre todas las webs de cada tramo, en euros); en un solo ida, el de la ida. Para no llenarte de mensajes, cada ronda avisa solo de las **5 fechas de ida más baratas** que cumplen una regla, con las fechas, las noches y un enlace por tramo, y de cada fecha una sola vez (salvo que baje más).
+- **Transporte:** el **tramo de ida** y, si quieres, el de **vuelta** (sin vuelta es un viaje de *solo ida*). Cada tramo tiene su ruta, sus webs (con la comprobación de la ruta) y su máximo de escalas (**Al revés que la ida** rellena la vuelta).
+- **Alojamiento** (desde la 2.1): la **estancia**, con un destino en texto libre («Puerto de la Cruz», «Costa Adeje»: lo busca cada web), sus webs de alojamiento y sus filtros. Sin transporte es un viaje de *solo alojamiento*: una escapada cerca de casa.
+
+Todos los tramos se crean, editan y borran desde el formulario del viaje. El viaje lleva además sus **viajeros**, el rango de noches (p. ej. de 3 a 5), una ventana opcional de fechas de ida (o de entrada), las reglas de aviso y los canales.
+
+En cada ronda se consultan las webs de los tramos y, con esos precios, se recalcula el viaje: para cada fecha de ida y cada número de noches permitido, el total es la ida más barata de ese día, más la vuelta más barata del día de regreso y el alojamiento más barato con entrada ese día y esas noches (los tramos que tenga, entre todas las webs de cada uno, en euros y para todos los viajeros); en un solo ida, el de la ida. Para no llenarte de mensajes, cada ronda avisa solo de las **5 fechas de ida más baratas** que cumplen una regla, con las fechas, las noches y un enlace por tramo, y de cada fecha una sola vez (salvo que baje más).
+
+### Viajeros
+
+Cada viajero es un adulto o un menor con su edad, y puede tener el **descuento de residente** (Canarias, Baleares, Ceuta o Melilla); el viaje puede ser de **familia numerosa** (general o especial). Los transportes se buscan para todos: una web que admite varios viajeros da el precio de todos con sus descuentos; si no, se usa el de un adulto multiplicado por las plazas (los bebés no ocupan plaza) y se marca como **estimado** (sin descuentos). El alojamiento se busca para el grupo (adultos y edades de los menores).
+
+### Alojamiento
+
+Filtros de la estancia: **habitaciones**, **tipos de alojamiento** (hotel, aparthotel, apartamento, casa o chalé, casa rural, pensión o B&B, hostal, albergue, camping: sin marcar ninguno, cualquiera; desmarca los hostales si no los quieres), **solo alojamientos enteros**, **puntuación** y **estrellas mínimas**, **régimen** (solo alojamiento, desayuno, media pensión, pensión completa, todo incluido), **cancelación gratuita** y **servicios imprescindibles** (piscina, parking, cocina, aire acondicionado, wifi, mascotas). Cada web aplica los que puede en la búsqueda y después se vuelve a filtrar con lo que diga cada oferta; se guarda la más barata que cumple, con su nombre, tipo, nota y enlace.
+
+En las webs de alojamiento cada fecha de entrada con cada número de noches suele ser una búsqueda, así que cada ronda consulta **como mucho 40 combinaciones por web**: en un viaje con transporte, las de las fechas de ida más baratas (con entrada el día de la ida); en uno de solo alojamiento, las de la ventana de fechas (sin «hasta», los próximos 60 días). Primero las que nunca se han consultado y después las más antiguas, así que en unas pocas rondas se cubre toda la ventana: cuanto más la acotes, antes.
 
 Los precios de un tramo con más de 3 días no cuentan (p. ej. si la web ha dejado de responder). Pausar un viaje pausa sus tramos; borrarlo borra sus tramos y su histórico.
 
@@ -211,13 +227,14 @@ Al actualizar desde la 1.x, cada vigilancia suelta pasa a ser un viaje de solo i
 Aplicación React (carpeta `frontend/`) que habla con la API JSON del servidor (`/api/v1`). Tema claro u oscuro (sigue al sistema o se elige en el menú de usuario), pensado para móvil y accesible (navegable con teclado, revisado con axe contra WCAG 2.1 AA).
 
 - **Panel:** el resumen de tus viajes (cuántos hay, cuántos tienen chollo y el más barato ahora), los **chollos de ahora mismo** (la mejor combinación de cada viaje que cumple sus reglas) y los últimos avisos y ejecuciones.
-- **Viajes** (`/trips`): cada viaje con su combinación más barata ahora y el enlace de cada tramo, minigráfica de tendencia y canales. En su detalle, las combinaciones más baratas, todas las noches de una fecha de ida, la evolución del total y los avisos enviados.
+- **Viajes** (`/trips`): cada viaje con su combinación más barata ahora (y el precio por persona) y el enlace de cada tramo, minigráfica de tendencia y canales. En su detalle, las combinaciones más baratas con el desglose de transporte y alojamiento, todas las noches de una fecha de ida, la evolución del total y los avisos enviados.
 - **Detalle de un tramo** (`/trips/{viaje}/legs/{tramo}`, de solo lectura; se edita desde el viaje):
   - El mejor precio actual por web, con enlace a esa fecha, etiqueta *chollo* y errores.
   - **Calendario de precios** de la última comprobación: color según lo barato que sale cada día, borde para los chollos, filtro por web. Pulsar un precio abre esa fecha en la web; pulsar el día muestra su historial. Si la web da la hora de salida y de llegada, salen con el precio.
   - Gráficas de la **evolución del precio mínimo** por web, del **precio actual por fecha de vuelo** y del **historial de una fecha concreta**, y el historial de comprobaciones.
+  - En el alojamiento, el calendario va por fecha de entrada (la estancia más barata de cada una) y una tabla con las **estancias más baratas** por entrada y noches, con su alojamiento.
 - **Ejecuciones** y **Diagnóstico** para ver qué pasó en cada comprobación.
-- **Proveedores** (administradores): la lista de proveedores, **agrupada y filtrable por tipo** (vuelos, y más adelante barcos, trenes…), con su prueba de acceso (ver «Prueba de acceso» arriba), su editor con consola, importar y exportar (ver «Añadir otra aerolínea»).
+- **Proveedores** (administradores): la lista de proveedores, **agrupada y filtrable por tipo** (vuelos y alojamiento, y más adelante barcos, trenes…), con su prueba de acceso (ver «Prueba de acceso» arriba), su editor con consola, importar y exportar (ver «Añadir otra aerolínea»).
 
 ### Desarrollo del panel
 
@@ -258,15 +275,33 @@ def fetch_route(api, origin, destination, start, max_months):
     return out
 ```
 
-- Cada proveedor es de un **tipo** (hoy, *Vuelos*): solo sale en los viajes de ese transporte. Barcos, trenes y buses comparten este mismo contrato (con estaciones, puertos o paradas en vez de aeropuertos), así que ya se pueden escribir y probar aunque sus viajes lleguen en la 3.x. El tipo viaja en el `.fwp`; los paquetes antiguos se importan como vuelos.
+- Cada proveedor es de un **tipo** (*Vuelos* o *Alojamiento*, ver abajo): solo sale en los tramos de su tipo. Barcos, trenes y buses comparten este mismo contrato (con estaciones, puertos o paradas en vez de aeropuertos), así que ya se pueden escribir y probar aunque sus viajes lleguen en la 3.x. El tipo viaja en el `.fwp`; los paquetes antiguos se importan como vuelos.
 - `DayPrice` admite la **hora de salida y de llegada** (`departure=`, `arrival=`: `"06:35"`, un `time` o un `datetime`; una llegada anterior a la salida es del día siguiente). Se guardan con el precio y salen en el panel y en los avisos. Ryanair las da siempre y Wizz Air la de salida cuando ese día hay un solo vuelo.
 - Opcional: `BROWSER_PAGE = "https://…"`, la página que abre Chrome cuando sus peticiones van por él (ver «Medidas anti-bot»).
-- `fetch_route` devuelve `{fecha: precio}`, `{fecha: DayPrice}` o una lista de `DayPrice` (`{}` si no opera la ruta). Si además acepta `max_stops=None`, recibe el máximo de escalas del tramo y filtra él mismo (como Air Europa). Con la cobertura «Pregunta por cada ruta» hay que definir `probe(api, origin, destination)` → `True`/`False`; con «Cualquier ruta», nada más.
+- `fetch_route` devuelve `{fecha: precio}`, `{fecha: DayPrice}` o una lista de `DayPrice` (`{}` si no opera la ruta), el precio de **un adulto**. Si además acepta `max_stops=None`, recibe el máximo de escalas del tramo y filtra él mismo (como Air Europa). Si acepta `passengers=None`, recibe los **viajeros** del viaje (`passengers.adults`, `.children` —edades—, `.infants`, `.seats`, `.residents` —p. ej. `{"canarias": 1}`—, `.large_family`) y devuelve el precio de todos con sus descuentos; si no, el del adulto se multiplica por las plazas y se marca como estimado. Con la cobertura «Pregunta por cada ruta» hay que definir `probe(api, origin, destination)` → `True`/`False`; con «Cualquier ruta», nada más.
 - `api.get_json`, `api.post_json` y `api.request` respetan el turno y las pausas del proveedor, convierten 403/429/anti-bot en «bloqueado» y un 404 en `None`, y guardan la respuesta en Diagnóstico si está activo. Una petición que no responde en 30 s se repite una vez; para una web lenta, pasa `timeout=` en segundos (`api.post_json(url, cuerpo, timeout=60)`). `api.get_json` y `api.post_json` aceptan también `headers=` (cabeceras de esa petición).
 - `api.cookie("NOMBRE")` da el valor de una cookie de la sesión (o `None`), para las webs que exigen copiarla en una cabecera (el token XSRF de Iberia Express, por ejemplo). Con las peticiones por Chrome la lee de Chrome, en la misma página desde la que pide; con la huella de Chrome, tras visitar la portada de `url=` si se indica. `api.log(...)` y `print(...)` escriben en el log del servidor y en la consola de la prueba.
 - **Probar el script** lo carga y hace la prueba de acceso sin guardar nada. Encima del código se abre una **consola** que cuenta en directo cada paso, cada petición (URL, estado, tiempo, tamaño y forma del JSON recibido), los mensajes del script y, si falla, la línea del script con su código. Debajo, una muestra de los precios.
 - Al guardarlo activo aparece en todo el panel. Desactivado no se carga; al eliminarlo se quita de los tramos que lo usan y sus precios se conservan como histórico.
 - Los scripts de Vueling y Ryanair (en **Editar**) son buenos ejemplos de verdad.
+
+### Proveedores de alojamiento
+
+Un proveedor de tipo **Alojamiento** (siempre «cualquier destino», sin cobertura) define en su lugar:
+
+```python
+def fetch_stay(api, destination, checkin, nights, guests, filters):
+    data = api.get_json("https://www.ejemplo.com/api/buscar", destino=destination, entrada=checkin.isoformat(),
+                        noches=nights, adultos=guests.adults, edades=",".join(map(str, guests.child_ages)),
+                        habitaciones=filters.rooms)
+    return [StayOffer(r["precio_total"], name=r["nombre"], type="hotel", rating=r["nota"], stars=r["estrellas"],
+                      board="breakfast", free_cancel=True, url=r["enlace"]) for r in (data or [])]
+```
+
+- `destination` es el texto que escribe el usuario; `guests`, los viajeros; `filters`, los filtros de la estancia (`rooms`, `types`, `entire`, `min_rating`, `min_stars`, `boards`, `free_cancel`, `amenities`): aplica en la búsqueda los que la web permita.
+- Cada `StayOffer` lleva el **precio total** (todas las noches, todos los viajeros) y lo que diga la web: tipo y régimen con las claves de `app/stays.py`, nota sobre 10, estrellas, si es un alojamiento entero, servicios y su enlace. Lo que falte se deja sin poner y pasa los filtros.
+- Su ruta de prueba es un **destino de prueba**; la prueba busca dentro de un mes, 2 noches, para 2 adultos. La plantilla de enlace (si la oferta no trae el suyo) admite `{destination} {date} {checkout} {nights} {adults} {children} {rooms}`.
+- Booking y Airbnb no tienen API pública: sus proveedores llegarán al catálogo cuando se puedan verificar contra la web real.
 
 ### Importar y exportar
 
@@ -304,7 +339,9 @@ app/
   scheduler.py    planificación (se cambia desde Ajustes)
   notify.py       avisos enriquecidos: el mensaje estructurado y cómo lo pinta cada tipo de canal (Discord / Telegram)
   images.py       calendario resumen en PNG para los avisos (Pillow)
-  kinds.py        tipos de transporte y de proveedor (vuelos; barcos, trenes, buses y alojamiento, más adelante)
+  kinds.py        tipos de transporte y de proveedor (vuelos y alojamiento; barcos, trenes y buses, más adelante)
+  party.py        viajeros de un viaje (edades, residente, familia numerosa)
+  stays.py        estancias: filtros, ofertas de alojamiento y qué combinaciones consultar en cada ronda
   db.py           acceso a datos (SQLAlchemy Core: SQLite, PostgreSQL, MySQL, MariaDB)
   migrations/     migraciones de Alembic
   providers/      base.py (abstracción), extract.py, scripted.py (contrato, carga y registro de los scripts),
@@ -323,7 +360,8 @@ Pruebas de Python (necesitan además `pip install httpx`): `python -m tests.smok
 
 ## Limitaciones conocidas
 
-- Un viaje tiene como mucho dos tramos (ida y vuelta) del mismo transporte; el alojamiento como tercer tramo llega en la 2.1.
+- Un viaje tiene como mucho tres tramos (ida, vuelta y alojamiento), con la ida y la vuelta del mismo transporte. El alojamiento entra el día de la ida aunque el vuelo llegue de madrugada.
+- Aún no hay proveedores de alojamiento en el catálogo (Booking y Airbnb no tienen API pública y hay que verificarlos contra la web real).
 - Los viajes no tienen en cuenta horarios: cuentan noches por fecha de vuelo (las horas se guardan cuando la web las da, para poder usarlas más adelante).
 - Los precios del calendario son «desde» y no incluyen equipaje facturado.
 - La regla «habitual» compara con la mediana de la ruta, no con la de esa misma fecha.

@@ -218,8 +218,9 @@ def revalidate(trigger: str = "cron") -> dict:
     try:
         with db.connect() as con:
             users = {u["id"]: u for u in db.list_users(con)}
+            # Las estancias no tienen rutas: no hay nada que revalidar.
             watches = [w for w in db.list_watches(con)
-                       if w["enabled"] and users.get(w["user_id"], {}).get("enabled")]
+                       if w["enabled"] and users.get(w["user_id"], {}).get("enabled") and kinds.get(w["kind"]).transport]
         pairs_cache: dict[tuple[str, str, str, str], Result] = {}
         changes = 0
         for w in watches:

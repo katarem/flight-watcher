@@ -4,7 +4,8 @@ Sustituye el navegador y los proveedores por datos simulados y comprueba de extr
 guardado de precios, reglas de aviso, enlaces con fecha, mensajes, la API del panel (sesión, permisos,
 vigilancias, gráficas, canales, usuarios, ajustes), lugares y cobertura de rutas, escalas y monedas, la
 revalidación semanal, los proveedores (incluidos, scripts, prueba con consola, exportar e importar paquetes y
-prueba de acceso), los viajes de ida y vuelta y que el servidor entrega el panel compilado.
+prueba de acceso), los viajes de ida y vuelta, el alojamiento y los viajeros (2.1) y que el servidor entrega el panel
+compilado.
 """
 import base64
 import os
@@ -30,7 +31,7 @@ os.environ["WEB_DIR"] = str(WEB)
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
-from app import checker, config, coverage, db, fx, health, images, notify, places, trips  # noqa: E402
+from app import checker, config, coverage, db, fx, health, images, notify, party, places, stays, trips  # noqa: E402
 from app.main import app  # noqa: E402
 from app.providers import PROVIDERS, DayPrice, link_for  # noqa: E402
 from app.providers.base import Provider  # noqa: E402
@@ -883,7 +884,8 @@ def scripts_flow(admin: Api, admin_chan: int):
     next_day = (date.fromisoformat(days[1]) + timedelta(days=1)).isoformat()
     check(res["n_prices"] == 2 and res["sample"][1] == {"day": days[1], "price": 15, "currency": "GBP", "origin": "SVQ",
                                                         "destination": "TFN", "stops": 0, "departs_at": f"{days[1]}T22:40",
-                                                        "arrives_at": f"{next_day}T00:15"}
+                                                        "arrives_at": f"{next_day}T00:15", "nights": None,
+                                                        "offer": None}
           and res["sample"][0]["departs_at"] is None, "prueba del borrador: precios con sus horas (sin los días a 0)")
     con_text = console_text(events)
     check("http: GET https://api.prueba.test/rutas/SVQ" in con_text and "ok:   ← 200 en" in con_text
@@ -1164,6 +1166,169 @@ def bundle_flow(admin: Api):
     check(PROVIDERS["ryanair"].label == "Ryanair", "volver a importar el original (con el enlace antiguo del catálogo)")
 
 
+def stays_flow(admin: Api, admin_chan: int):
+    """2.1: viajeros (plazas, descuentos, precio por persona) y estancias (proveedores de alojamiento, filtros, viajes
+    de solo estancia y con transporte, qué combinaciones se consultan en cada ronda)."""
+    d = {n: (TODAY + timedelta(days=n)).isoformat() for n in range(0, 15)}
+    r = admin.post("/providers/import", {"text": fakes.CASAS, "keys": ["casas"], "password": "clave-de-prueba-1"})
+    check(r.status_code == 200 and PROVIDERS["casas"].kind == "hotel" and PROVIDERS["casas"].coverage == "universal",
+          "importar un proveedor de alojamiento")
+    meta = admin.get("/meta").json()
+    check({k["key"]: k for k in meta["kinds"]}["hotel"]["available"] and "hotel" in {p["kind"] for p in meta["providers"]}
+          and {t["key"] for t in meta["stay_options"]["types"]} >= {"hotel", "hostal", "apartment"}
+          and {x["key"] for x in meta["party_options"]["regions"]} == {"canarias", "baleares", "ceuta", "melilla"},
+          "/meta: el alojamiento, sus filtros y las opciones de los viajeros")
+
+    # --- validación
+    stay = {"destination": "Puerto de la Cruz", "providers": ["casas"],
+            "filters": {"types": ["hotel", "apartment"], "min_rating": "8"}}
+    group = {"travelers": [{"age": None}, {"age": None, "resident": "canarias"}, {"age": 8}], "large_family": ""}
+    bad = admin.post("/trips", {"name": "x"})
+    check(bad.status_code == 422 and "tramo de ida, la estancia o los dos" in errors(bad), "un viaje necesita ida o estancia")
+    bad = admin.post("/trips", {"return": leg("TCI", "SVQ", ["vueling"]), "stay": stay})
+    check("necesita también la ida" in errors(bad), "no hay vuelta sin ida")
+    bad = admin.post("/trips", {"stay": {"destination": "x", "providers": ["vueling"], "filters": {"types": ["cueva"]}}})
+    check("Indica el destino" in errors(bad) and "solo se pueden elegir webs de alojamiento" in errors(bad)
+          and "Tipo de alojamiento desconocido" in errors(bad), "validación de la estancia")
+    bad = admin.post("/trips", {"stay": stay, "party": {"travelers": [{"age": 5}, {"age": 9, "resident": "marte"}]}})
+    check("al menos un adulto" in errors(bad) and "Residencia desconocida en el viajero 2" in errors(bad),
+          "validación de los viajeros")
+    bad = admin.post("/trips", {"stay": stay, "party": {"travelers": [{"age": "20"}], "large_family": "enorme"}})
+    check("edad del viajero 1" in errors(bad) and "familia numerosa" in errors(bad), "edades de 0 a 17 (o adulto)")
+    bad = admin.post("/trips", {"stay": stay, "party": {"travelers": [{}] * 10}})
+    check("Como mucho 9 viajeros" in errors(bad), "como mucho 9 viajeros")
+    bad = admin.post("/trips", {"outbound": leg("SVQ", "TCI", ["casas"])})
+    check("Solo se pueden elegir webs de vuelos" in errors(bad), "una web de alojamiento no vale para un vuelo")
+
+    # --- viaje de solo estancia: entradas de +5 a +7, de 2 a 3 noches, 2 adultos y un niño
+    SENT.clear()
+    r = admin.post("/trips", {"stay": stay, "party": group, "min_nights": 2, "max_nights": 3, "date_from": d[5],
+                              "date_to": d[7], "max_per_person": "63", "channel_ids": [admin_chan]})
+    t = r.json()["trip"]
+    check(r.status_code == 201 and t["outbound"] is None and t["return"] is None and t["kind"] == "hotel"
+          and t["stay"]["destination"] == "Puerto de la Cruz" and t["stay"]["filters"]["types"] == ["hotel", "apartment"]
+          and t["stay"]["filters"]["min_rating"] == 8 and t["name"] == "Estancia en Puerto de la Cruz"
+          and t["party"]["size"] == 3 and t["party"]["label"] == "2 adultos y 1 niño (8 años) · 1 residente en Canarias"
+          and t["max_per_person"] == 63, "crear un viaje de solo estancia con sus viajeros")
+    stay_id = t["stay"]["id"]
+    checker.run_checks(trip_id=t["id"], trigger="manual")
+    with db.connect() as con:
+        queried = db.stay_checked(con, stay_id, "casas")
+    check(len(queried) == 6 and set(queried) == {(d[n], k) for n in (5, 6, 7) for k in (2, 3)},
+          "se consultan las entradas de la ventana con cada número de noches")
+    detail = admin.get(f"/trips/{t['id']}").json()
+    q = {x["out_date"]: x for x in detail["quotes"]}
+    first = q[d[5]]
+    # Por noche y viajero: hostal 20 € (fuera por el tipo), apartamento 25 € (fuera por la nota), hotel 30 € (+1 €/día).
+    check(set(q) == {d[5], d[6], d[7]} and first["total"] == 180 and first["nights"] == 2 and first["ret_date"] == d[7]
+          and first["out"] is None and first["ret"] is None and first["stay"]["offer"]["name"] == "Hotel Playa"
+          and first["stay"]["link"] == "https://casas.test/hotel-playa" and first["per_person"] == 60
+          and first["deal"] == "fixed" and q[d[7]]["total"] == 192 and q[d[7]]["deal"] is None,
+          "la estancia más barata que cumple los filtros, con el total y el precio por persona")
+    msgs = ["\n".join(m[0]) for m in SENT if "🧳" in m[0][0]]
+    check(len(msgs) == 1 and "🏨 Puerto de la Cruz" in msgs[0] and "Hotel Playa (hotel, 4★, 8,6)" in msgs[0]
+          and "desayuno" in msgs[0] and "60 €/persona" in msgs[0] and "2 adultos y 1 niño" in msgs[0]
+          and "192 €" not in msgs[0] and "Vuelta" not in msgs[0], "aviso de solo estancia con el alojamiento y por persona")
+    leg_detail = admin.get(f"/watches/{stay_id}").json()
+    check(leg_detail["role"] == "stay" and leg_detail["watch"]["filters"]["min_rating"] == 8
+          and leg_detail["watch"]["origin_place"] is None and leg_detail["prices"][0]["nights"] == 2
+          and leg_detail["prices"][0]["offer"]["name"] == "Hotel Playa" and len(leg_detail["prices"]) == 6,
+          "detalle de la estancia: una fila por entrada y noches, con el alojamiento")
+    charts = admin.get(f"/watches/{stay_id}/charts").json()
+    check(charts["by_flight_date"]["labels"] == [d[5], d[6], d[7]] and charts["by_flight_date"]["series"]["casas"][0] == 180,
+          "gráfica de la estancia: el más barato de cada entrada")
+
+    # --- qué se consulta en cada ronda: primero lo nunca consultado, después lo más antiguo
+    trip_row = {"date_from": d[5], "date_to": d[7], "min_nights": 2, "max_nights": 3}
+    checked = {(d[5], 2): "2026-01-02", (d[5], 3): "2026-01-01"}
+    picked = stays.plan(trip_row, TODAY, None, None, checked, limit=5)
+    check(picked[:4] == [(TODAY + timedelta(days=n), k) for n, k in ((6, 2), (6, 3), (7, 2), (7, 3))]
+          and picked[4] == (TODAY + timedelta(days=5), 3), "rotación: lo nunca consultado y después lo más antiguo")
+    out_days = {d[10]: {"price": 100}, d[11]: {"price": 20}}
+    ret_days = {d[12]: {"price": 10}, d[13]: {"price": 500}}
+    picked = stays.plan({**trip_row, "date_from": None, "date_to": None, "min_nights": 1, "max_nights": 2},
+                        TODAY, out_days, ret_days, {})
+    check(picked == [(TODAY + timedelta(days=11), 1), (TODAY + timedelta(days=10), 2), (TODAY + timedelta(days=11), 2)],
+          "con transporte: solo las fechas con ida y vuelta, de la más barata a la más cara")
+    with db.connect() as con:
+        con.execute(text("DELETE FROM stay_queries"))
+    real = stays.MAX_QUERIES
+    stays.MAX_QUERIES = 4
+    try:
+        checker.run_checks(trip_id=t["id"], trigger="manual")
+        with db.connect() as con:
+            check(len(db.stay_checked(con, stay_id, "casas")) == 4, "como mucho MAX_QUERIES combinaciones por ronda")
+    finally:
+        stays.MAX_QUERIES = real
+
+    # --- vuelos para varios viajeros: la web que no los admite da el de un adulto (× plazas, estimado)
+    SENT.clear()
+    svq_tci, tci_svq = leg("SVQ", "TCI", ["vueling", "ryanair"]), leg("TCI", "SVQ", ["vueling", "ryanair"])
+    two = {"travelers": [{"age": None}, {"age": None}]}
+    full = admin.post("/trips", {"outbound": svq_tci, "return": tci_svq, "stay": {**stay, "filters": {}},
+                                 "party": two, "min_nights": 1, "max_nights": 2, "channel_ids": [admin_chan],
+                                 "max_total": "300"}).json()["trip"]
+    check(full["name"] == "SVQ ⇄ TCI · Puerto de la Cruz" and full["stay"] and full["return"],
+          "un viaje con ida, vuelta y estancia")
+    checker.run_checks(trip_id=full["id"], trigger="manual")
+    quotes = {x["out_date"]: x for x in admin.get(f"/trips/{full['id']}").json()["quotes"]}
+    best = quotes[d[10]]
+    # Ida y vuelta: 55, 30 y 70 € por adulto los días +10, +11 y +12 (× 2); alojamiento: el hostal (sin filtros),
+    # 20 € por noche y viajero.
+    check(best["out"]["price"] == 110 and best["out"]["estimated"] and best["ret"]["price"] == 60
+          and best["stay"]["price"] == 40 and best["total"] == 210 and best["nights"] == 1 and best["per_person"] == 105
+          and best["stay"]["offer"]["name"] == "Hostal Centro", "total = ida + vuelta + alojamiento, para los dos")
+    msgs = ["\n".join(m[0]) for m in SENT if "🧳" in m[0][0]]
+    check(len(msgs) == 1 and "[Alojamiento: Casas de prueba 40 € · Hostal Centro" in msgs[0]
+          and "[Ida: Vueling 110 € (SVQ→TFN)]" in msgs[0] and "transporte estimado" in msgs[0]
+          and "105 €/persona" in msgs[0], "aviso con el desglose de transporte y alojamiento")
+    with db.connect() as con:
+        link = trips.stays_by_combo(con, db.get_settings(), db.get_trip(con, full["id"]),
+                                    db.trip_legs(con, full["id"])["stay"], trips.local_now(db.get_settings()))[(d[10], 1)]["link"]
+    check(link == f"https://casas.test/buscar?q=Puerto%20de%20la%20Cruz&entrada={d[10]}&salida={d[11]}&adultos=2",
+          "sin enlace propio de la oferta, la plantilla del proveedor con entrada, salida y viajeros")
+
+    # --- una web que admite viajeros da el precio de todos (sin estimar)
+    check(PROVIDERS["buscador"].party_aware and not PROVIDERS["vueling"].party_aware, "qué webs admiten viajeros")
+    bus = oneway(admin, ["buscador"], origin="MAD", destination="BCN", max_stops=None).json()["trip"]
+    admin.put(f"/trips/{bus['id']}", {"outbound": leg("MAD", "BCN", ["buscador"], max_stops=None), "party": two})
+    checker.run_checks(trip_id=bus["id"], trigger="manual")
+    with db.connect() as con:
+        snap = db.latest_snapshot(con, bus["outbound"]["id"], "buscador")
+    check(snap[0]["price"] == 140 and not snap[0]["estimated"], "el Buscador recibe los viajeros: precio de los dos")
+
+    # --- editar: quitar la estancia la borra (con su histórico); añadirla a un viaje de solo ida
+    r = admin.put(f"/trips/{full['id']}", {"outbound": svq_tci, "return": tci_svq, "party": two, "min_nights": 1,
+                                           "max_nights": 2})
+    with db.connect() as con:
+        check(r.json()["trip"]["stay"] is None and db.get_watch(con, full["stay"]["id"]) is None,
+              "quitar el alojamiento borra la estancia")
+    r = admin.put(f"/trips/{bus['id']}", {"outbound": leg("MAD", "BCN", ["buscador"], max_stops=None), "stay": stay,
+                                          "min_nights": 2, "max_nights": 2})
+    check(r.status_code == 200 and r.json()["trip"]["stay"]["destination"] == "Puerto de la Cruz"
+          and r.json()["trip"]["party"]["size"] == 1, "añadir alojamiento a un viaje de solo ida (y volver a un viajero)")
+    with db.connect() as con:
+        check(db.get_trip(con, bus["id"])["party"] is None, "un adulto sin descuentos no se guarda (es el de por defecto)")
+
+    # --- la estancia en la prueba de acceso y en la prueba del editor
+    res = {x["key"]: x for x in admin.post("/providers/health", {"providers": ["casas"]}).json()["results"]}["casas"]
+    check(res["status"] == "ok" and res["route"] == "Puerto de la Cruz" and res["steps"][0]["name"] == "Alojamientos (una búsqueda)"
+          and "3 alojamientos" in res["steps"][0]["detail"], "prueba de acceso de un proveedor de alojamiento")
+    casas = admin.get("/providers/casas").json()["provider"]
+    _r, result, events = run_test(admin, {**casas, "origin": "Ningún sitio", "password": "clave-de-prueba-1"})
+    check(result["status"] == "empty" and result["route"] == "Ningún sitio" and "Define fetch_stay" in console_text(events)
+          and "script: busco Ningún sitio" in console_text(events),
+          "prueba del editor de un alojamiento: sin resultados en un destino desconocido")
+    _r, result, _e = run_test(admin, {**casas, "password": "clave-de-prueba-1"})
+    check(result["status"] == "ok" and result["sample"][0]["offer"]["name"] and result["sample"][0]["nights"] == 2,
+          "prueba del editor de un alojamiento: muestra de ofertas")
+    bad = admin.put("/providers/casas", {**casas, "health_origin": ""})
+    check(bad.status_code == 422 and "destino de prueba" in errors(bad), "un alojamiento necesita su destino de prueba")
+    check("fetch_stay" in admin.get("/providers").json()["templates"]["hotel"], "plantilla del editor para alojamiento")
+    check(party.load(None).simple and party.load('{"travelers": [{"age": 1}, {}]}').seats == 1,
+          "un bebé no ocupa plaza")
+
+
 def kinds_flow(admin: Api):
     """Tipos de transporte y de proveedor (1.9) y lugares genéricos (estaciones, puertos y la ciudad que los agrupa)."""
     meta = admin.get("/meta").json()
@@ -1221,8 +1386,9 @@ def kinds_flow(admin: Api):
         check(bad.status_code == 422 and "Solo se pueden elegir webs de vuelos" in errors(bad), "un viaje de vuelos no usa un proveedor de trenes")
         bad = admin.post("/providers", {**body, "key": "otro", "health_origin": "TFN"})
         check(bad.status_code == 422 and "tipo estación" in errors(bad), "la ruta de prueba es de lugares de su transporte")
-        check("llegan en la 2.1" in errors(admin.post("/providers", {**body, "key": "hotel_x", "kind": "hotel"})),
-              "aún no hay proveedores de alojamiento")
+        bad = admin.post("/providers", {**body, "key": "hotel_x", "kind": "hotel", "health_origin": "Tenerife"})
+        check(bad.status_code == 422 and "Falta definir `fetch_stay`" in errors(bad),
+              "un proveedor de alojamiento tiene su propio contrato (fetch_stay)")
         text_fwp = admin.get("/providers/export", params={"keys": "renfe_prueba"}).text
         check('"kind": "train"' in text_fwp and bundle.loads(text_fwp)[0]["kind"] == "train", "el .fwp guarda el tipo")
         old = bundle.loads(text_fwp.replace('"kind": "train", ', ""))
@@ -1437,6 +1603,7 @@ def main():
         tid = trips_flow(client, admin_chan)
         providers_flow(client, admin_id, admin_chan)
         scripts_flow(client, admin_chan)
+        stays_flow(client, admin_chan)
         users_flow(client, admin_id)
         with db.connect() as con:
             check(db.get_trip(con, tid) is not None, "el viaje sigue ahí tras las demás pruebas")

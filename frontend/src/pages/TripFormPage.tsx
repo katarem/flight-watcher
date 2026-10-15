@@ -1,11 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowLeftRight, CheckCircle2, Clock, RefreshCw, Repeat, Trash2, XCircle } from 'lucide-react'
+import { AlertTriangle, ArrowLeftRight, CheckCircle2, Clock, Plus, RefreshCw, Repeat, Trash2, X, XCircle } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { ApiError, del, errorList, get, post, put } from '@/api/client'
 import { keys, useChannels, useMeta, useTrip } from '@/api/queries'
-import type { KindKey, Place, ProviderMeta, RouteCheck, RouteCheckProvider, Trip, TripLeg } from '@/api/types'
+import type { KindKey, Option, Place, ProviderMeta, RouteCheck, RouteCheckProvider, Trip, TripLeg, TripStay } from '@/api/types'
 import { Button, buttonClass } from '@/components/ui/button'
 import { Badge, PageHeader } from '@/components/ui/card'
 import { ConfirmDialog } from '@/components/ui/dialog'
@@ -27,16 +27,44 @@ interface LegState {
   max_stops: string
 }
 
+/** Estado de la estancia (alojamiento) del viaje: destino en texto, webs y filtros. */
+interface StayState {
+  destination: string
+  providers: string[]
+  rooms: string
+  types: string[]
+  entire: boolean
+  min_rating: string
+  min_stars: string
+  boards: string[]
+  free_cancel: boolean
+  amenities: string[]
+}
+
+/** Un viajero: edad ('' = adulto) y residencia ('' = sin descuento). */
+interface TravelerState {
+  age: string
+  resident: string
+}
+
 interface FormState {
   name: string
+  /** Vigila el transporte (ida y, si no es solo ida, vuelta). */
+  transport: boolean
   oneWay: boolean
   outbound: LegState
   ret: LegState
+  /** Vigila el alojamiento. */
+  withStay: boolean
+  stay: StayState
+  travelers: TravelerState[]
+  large_family: string
   min_nights: string
   max_nights: string
   date_from: string
   date_to: string
   max_total: string
+  max_per_person: string
   discount_pct: string
   enabled: boolean
   channel_ids: number[]
@@ -46,21 +74,39 @@ const BLANK_LEG: LegState = {
   origin: '', destination: '', originPlace: null, destinationPlace: null, providers: [], max_stops: '0',
 }
 
+const BLANK_STAY: StayState = {
+  destination: '', providers: [], rooms: '1', types: [], entire: false, min_rating: '', min_stars: '', boards: [],
+  free_cancel: false, amenities: [],
+}
+
+const stayFrom = (st: TripStay): StayState => ({
+  destination: st.destination, providers: st.providers, rooms: String(st.filters.rooms), types: st.filters.types,
+  entire: st.filters.entire, min_rating: st.filters.min_rating != null ? String(st.filters.min_rating) : '',
+  min_stars: st.filters.min_stars != null ? String(st.filters.min_stars) : '', boards: st.filters.boards,
+  free_cancel: st.filters.free_cancel, amenities: st.filters.amenities,
+})
+
 const legFrom = (l: TripLeg): LegState => ({
   origin: l.origin, destination: l.destination, originPlace: l.origin_place, destinationPlace: l.destination_place,
   providers: l.providers, max_stops: l.max_stops == null ? '' : String(l.max_stops),
 })
 
 const fromTrip = (t: Trip): FormState => ({
-  name: t.name, oneWay: !t.return, outbound: legFrom(t.outbound), ret: t.return ? legFrom(t.return) : { ...BLANK_LEG },
+  name: t.name, transport: !!t.outbound, oneWay: !t.return,
+  outbound: t.outbound ? legFrom(t.outbound) : { ...BLANK_LEG }, ret: t.return ? legFrom(t.return) : { ...BLANK_LEG },
+  withStay: !!t.stay, stay: t.stay ? stayFrom(t.stay) : { ...BLANK_STAY },
+  travelers: t.party.travelers.map((x) => ({ age: x.age == null ? '' : String(x.age), resident: x.resident })),
+  large_family: t.party.large_family,
   min_nights: String(t.min_nights), max_nights: String(t.max_nights), date_from: t.date_from ?? '',
   date_to: t.date_to ?? '', max_total: t.max_total != null ? String(t.max_total) : '',
+  max_per_person: t.max_per_person != null ? String(t.max_per_person) : '',
   discount_pct: String(Math.round(t.discount_pct)), enabled: t.enabled, channel_ids: t.channel_ids,
 })
 
 const BLANK: FormState = {
-  name: '', oneWay: false, outbound: { ...BLANK_LEG }, ret: { ...BLANK_LEG }, min_nights: '3', max_nights: '7',
-  date_from: '', date_to: '', max_total: '', discount_pct: '30', enabled: true, channel_ids: [],
+  name: '', transport: true, oneWay: false, outbound: { ...BLANK_LEG }, ret: { ...BLANK_LEG }, withStay: false,
+  stay: { ...BLANK_STAY }, travelers: [{ age: '', resident: '' }], large_family: '', min_nights: '3', max_nights: '7',
+  date_from: '', date_to: '', max_total: '', max_per_person: '', discount_pct: '30', enabled: true, channel_ids: [],
 }
 
 /** La vuelta de un tramo: la misma ruta al revés, con las mismas webs y escalas. */
@@ -208,6 +254,158 @@ function LegFields({ of, kind, leg, onChange, isNew, keptProviders }: {
   )
 }
 
+/** Un grupo de casillas (tipos de alojamiento, regímenes, servicios) con nombre para los lectores de pantalla. */
+function CheckGroup({ label, hint, options, value, onChange }: {
+  label: string
+  hint?: string
+  options: Option[]
+  value: string[]
+  onChange: (next: string[]) => void
+}) {
+  const id = useId()
+  return (
+    <div role="group" aria-labelledby={id} aria-describedby={hint ? `${id}-hint` : undefined} className="space-y-2">
+      <p id={id} className="text-sm font-medium">{label}</p>
+      {hint && <p id={`${id}-hint`} className="text-xs text-muted">{hint}</p>}
+      <div className="flex flex-wrap gap-x-5 gap-y-2">
+        {options.map((o) => (
+          <Checkbox key={o.key} checked={value.includes(o.key)} onChange={(v) => onChange(toggle(value, o.key, v))}>{o.label}</Checkbox>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** Sub-formulario de la estancia: destino (texto libre), webs de alojamiento y filtros. */
+function StayFields({ stay, onChange, isNew }: { stay: StayState; onChange: (next: StayState) => void; isNew: boolean }) {
+  const meta = useMeta().data
+  const options = meta?.stay_options
+  const providers = (meta?.providers ?? []).filter((p) => p.kind === 'hotel')
+  const set = <K extends keyof StayState>(k: K, v: StayState[K]) => onChange({ ...stay, [k]: v })
+
+  // Estancia nueva: todas las webs de alojamiento marcadas (no hay rutas que comprobar).
+  const defaulted = useRef(!isNew || stay.providers.length > 0)
+  useEffect(() => {
+    if (!defaulted.current && providers.length) {
+      defaulted.current = true
+      onChange({ ...stay, providers: providers.map((p) => p.key) })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providers.length])
+
+  return (
+    <div className="space-y-4">
+      <Field label="Destino del alojamiento" hint="Una ciudad, una isla o una zona («Puerto de la Cruz», «Costa Adeje»): lo busca cada web.">
+        {(id, hint) => <Input id={id} aria-describedby={hint} value={stay.destination} maxLength={options?.place_max ?? 120}
+          onChange={(e) => set('destination', e.target.value)} placeholder="Puerto de la Cruz" />}
+      </Field>
+      {providers.length ? (
+        <div className="grid gap-2 sm:grid-cols-2" role="group" aria-label="Webs del alojamiento">
+          {providers.map((p) => (
+            <div key={p.key} className={cn('rounded-xl border p-3 transition', stay.providers.includes(p.key) ? 'border-accent bg-accent-soft/50' : 'border-line')}>
+              <Checkbox checked={stay.providers.includes(p.key)} onChange={(v) => set('providers', toggle(stay.providers, p.key, v))}>
+                <span aria-hidden="true" className="size-2.5 rounded-full" style={{ background: p.color }} />
+                {p.label}
+              </Checkbox>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="rounded-xl border border-warn/30 bg-warn/10 p-3 text-sm text-warn">
+          Todavía no hay webs de alojamiento. Un administrador puede añadirlas en Proveedores (tipo «Alojamiento»).
+        </p>
+      )}
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Field label="Habitaciones">
+          {(id) => <Input id={id} inputMode="numeric" value={stay.rooms} onChange={(e) => set('rooms', e.target.value)} placeholder="1" />}
+        </Field>
+        <Field label="Puntuación mínima">
+          {(id) => (
+            <Select id={id} value={stay.min_rating} onChange={(e) => set('min_rating', e.target.value)}>
+              <option value="">Cualquiera</option>
+              {['6', '7', '8', '9'].map((n) => <option key={n} value={n}>{n} o más (sobre 10)</option>)}
+            </Select>
+          )}
+        </Field>
+        <Field label="Estrellas mínimas">
+          {(id) => (
+            <Select id={id} value={stay.min_stars} onChange={(e) => set('min_stars', e.target.value)}>
+              <option value="">Cualquiera</option>
+              {['1', '2', '3', '4', '5'].map((n) => <option key={n} value={n}>{n} o más</option>)}
+            </Select>
+          )}
+        </Field>
+      </div>
+      <CheckGroup label="Tipos de alojamiento" hint="Sin marcar ninguno, cualquiera. Desmarca los que no quieras (p. ej. hostales)."
+        options={options?.types ?? []} value={stay.types} onChange={(v) => set('types', v)} />
+      <CheckGroup label="Régimen" hint="Sin marcar ninguno, cualquiera." options={options?.boards ?? []} value={stay.boards}
+        onChange={(v) => set('boards', v)} />
+      <CheckGroup label="Servicios imprescindibles" options={options?.amenities ?? []} value={stay.amenities}
+        onChange={(v) => set('amenities', v)} />
+      <div className="flex flex-wrap gap-x-6 gap-y-2.5">
+        <Checkbox checked={stay.entire} onChange={(v) => set('entire', v)}>Solo alojamientos enteros (nada de habitaciones compartidas)</Checkbox>
+        <Checkbox checked={stay.free_cancel} onChange={(v) => set('free_cancel', v)}>Con cancelación gratuita</Checkbox>
+      </div>
+    </div>
+  )
+}
+
+/** Los viajeros del viaje: edad (o adulto) y residencia de cada uno, y familia numerosa. */
+function TravelersFields({ travelers, largeFamily, onChange, onLargeFamily }: {
+  travelers: TravelerState[]
+  largeFamily: string
+  onChange: (next: TravelerState[]) => void
+  onLargeFamily: (v: string) => void
+}) {
+  const options = useMeta().data?.party_options
+  const max = options?.max_travelers ?? 9
+  const ages = Array.from({ length: options?.adult_age ?? 18 }, (_, n) => n)
+  const update = (i: number, patch: Partial<TravelerState>) => onChange(travelers.map((t, j) => (j === i ? { ...t, ...patch } : t)))
+  return (
+    <div className="space-y-3">
+      <ul className="space-y-3">
+        {travelers.map((t, i) => (
+          <li key={i} className="grid items-end gap-2 sm:grid-cols-[1fr_1fr_auto]">
+            <Field label={`Viajero ${i + 1}: edad`}>
+              {(id) => (
+                <Select id={id} value={t.age} onChange={(e) => update(i, { age: e.target.value })}>
+                  <option value="">Adulto</option>
+                  {ages.map((n) => <option key={n} value={String(n)}>{n === 0 ? 'Bebé (menos de 1 año)' : `${n} ${n === 1 ? 'año' : 'años'}`}</option>)}
+                </Select>
+              )}
+            </Field>
+            <Field label={`Viajero ${i + 1}: residencia`}>
+              {(id) => (
+                <Select id={id} value={t.resident} onChange={(e) => update(i, { resident: e.target.value })}>
+                  <option value="">Sin descuento de residente</option>
+                  {(options?.regions ?? []).map((r) => <option key={r.key} value={r.key}>Residente en {r.label}</option>)}
+                </Select>
+              )}
+            </Field>
+            <Button variant="ghost" size="icon" aria-label={`Quitar el viajero ${i + 1}`} disabled={travelers.length === 1}
+              onClick={() => onChange(travelers.filter((_, j) => j !== i))}>
+              <X />
+            </Button>
+          </li>
+        ))}
+      </ul>
+      <div className="flex flex-wrap items-end gap-3">
+        <Button variant="secondary" size="sm" disabled={travelers.length >= max}
+          onClick={() => onChange([...travelers, { age: '', resident: '' }])}>
+          <Plus /> Añadir viajero
+        </Button>
+        <Field label="Familia numerosa" className="w-full sm:w-56">
+          {(id) => (
+            <Select id={id} value={largeFamily} onChange={(e) => onLargeFamily(e.target.value)}>
+              {(options?.large_family ?? [{ key: '', label: 'No' }]).map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+            </Select>
+          )}
+        </Field>
+      </div>
+    </div>
+  )
+}
+
 function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
   initial: FormState
   tripId?: number
@@ -240,13 +438,27 @@ function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
     kind, origin: l.origin, destination: l.destination, providers: l.providers, max_stops: l.max_stops,
   })
 
+  const stayBody = (st: StayState) => ({
+    destination: st.destination, providers: st.providers,
+    filters: {
+      rooms: st.rooms, types: st.types, entire: st.entire, min_rating: st.min_rating || null,
+      min_stars: st.min_stars || null, boards: st.boards, free_cancel: st.free_cancel, amenities: st.amenities,
+    },
+  })
+
   const save = useMutation({
     mutationFn: () => {
       const body = {
         name: f.name, min_nights: f.min_nights, max_nights: f.max_nights, max_total: f.max_total || null,
+        max_per_person: f.max_per_person || null,
         discount_pct: f.discount_pct, date_from: f.date_from || null, date_to: f.date_to || null,
         enabled: f.enabled, channel_ids: f.channel_ids,
-        outbound: legBody(f.outbound), return: f.oneWay ? null : legBody(f.ret),
+        outbound: f.transport ? legBody(f.outbound) : null, return: f.transport && !f.oneWay ? legBody(f.ret) : null,
+        stay: f.withStay ? stayBody(f.stay) : null,
+        party: {
+          travelers: f.travelers.map((t) => ({ age: t.age === '' ? null : t.age, resident: t.resident })),
+          large_family: f.large_family,
+        },
       }
       return isNew ? post<{ trip: Trip }>('/trips', body) : put<{ trip: Trip }>(`/trips/${tripId}`, body)
     },
@@ -274,6 +486,12 @@ function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
     onError: (e) => toast.error(errorList(e)[0]),
   })
 
+  const nights = (f.transport && !f.oneWay) || f.withStay
+  const day = f.transport ? 'ida' : 'entrada'
+  const many = f.travelers.length > 1
+  const parts = [f.transport && 'ida', f.transport && !f.oneWay && 'vuelta', f.withStay && 'alojamiento'].filter(Boolean)
+  const totalOf = parts.length > 1 ? `el total (${parts.join(' + ')})` : `el precio ${f.transport ? 'de la ida' : 'del alojamiento'}`
+
   const submit = (e: FormEvent) => {
     e.preventDefault()
     setErrors([])
@@ -284,18 +502,33 @@ function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
     <form onSubmit={submit} className="space-y-5" noValidate>
       <div ref={errorRef}><ErrorBox errors={errors} /></div>
 
-      <FormSection title="El viaje" description="Un nombre y si es ida y vuelta o solo ida.">
+      <FormSection title="El viaje" description="Un nombre y qué vigila: el transporte, el alojamiento o los dos.">
         <Field label="Nombre (opcional)">
           {(id) => <Input id={id} value={f.name} onChange={(e) => set('name', e.target.value)} placeholder="Tenerife en noviembre" maxLength={200} />}
         </Field>
-        <Checkbox checked={f.oneWay} onChange={(v) => set('oneWay', v)}>Solo ida (sin vuelta)</Checkbox>
+        <div role="group" aria-label="Qué vigila el viaje" className="flex flex-wrap gap-x-6 gap-y-2.5">
+          <Checkbox checked={f.transport} onChange={(v) => set('transport', v)}>Transporte</Checkbox>
+          <Checkbox checked={f.withStay} onChange={(v) => set('withStay', v)}>Alojamiento</Checkbox>
+          {f.transport && <Checkbox checked={f.oneWay} onChange={(v) => set('oneWay', v)}>Solo ida (sin vuelta)</Checkbox>}
+        </div>
+        {!f.transport && !f.withStay && (
+          <p className="text-sm text-warn">Marca el transporte, el alojamiento o los dos.</p>
+        )}
       </FormSection>
 
-      <FormSection title="Tramo de ida" description="La ruta, las webs y las escalas de la ida. El viaje usa sus precios.">
-        <LegFields of="de la ida" kind={kind} leg={f.outbound} onChange={(l) => set('outbound', l)} isNew={isNew} keptProviders={keptOut} />
+      <FormSection title="Viajeros"
+        description="Cambian el precio: los transportes se buscan para todos (con sus descuentos si la web los admite) y el alojamiento, para el grupo.">
+        <TravelersFields travelers={f.travelers} largeFamily={f.large_family} onChange={(v) => set('travelers', v)}
+          onLargeFamily={(v) => set('large_family', v)} />
       </FormSection>
 
-      {!f.oneWay && (
+      {f.transport && (
+        <FormSection title="Tramo de ida" description="La ruta, las webs y las escalas de la ida. El viaje usa sus precios.">
+          <LegFields of="de la ida" kind={kind} leg={f.outbound} onChange={(l) => set('outbound', l)} isNew={isNew} keptProviders={keptOut} />
+        </FormSection>
+      )}
+
+      {f.transport && !f.oneWay && (
         <FormSection title="Tramo de vuelta" description="La ruta de vuelta (normalmente al revés que la ida).">
           {f.outbound.origin && f.outbound.destination && (
             <Button variant="secondary" size="sm" onClick={() => {
@@ -309,8 +542,15 @@ function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
         </FormSection>
       )}
 
-      {!f.oneWay && (
-        <FormSection title="Noches y fechas" description="Se prueban todas las combinaciones de fecha de ida y noches.">
+      {f.withStay && (
+        <FormSection title="Alojamiento"
+          description={f.transport ? 'Se busca para las fechas de ida más baratas, con entrada el día de la ida.' : 'Se busca para cada fecha de entrada y número de noches.'}>
+          <StayFields stay={f.stay} onChange={(v) => set('stay', v)} isNew={isNew || !initial.withStay} />
+        </FormSection>
+      )}
+
+      {nights && (
+        <FormSection title="Noches" description={`Se prueban todas las combinaciones de fecha de ${day} y noches.`}>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Noches como mínimo">
               {(id) => <Input id={id} inputMode="numeric" value={f.min_nights} onChange={(e) => set('min_nights', e.target.value)} placeholder="3" />}
@@ -322,12 +562,14 @@ function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
         </FormSection>
       )}
 
-      <FormSection title="Fechas de ida" description="Sin límites se comprueban todas las fechas con precio desde hoy.">
+      <FormSection title={`Fechas de ${day}`}
+        description={f.transport ? 'Sin límites se comprueban todas las fechas con precio desde hoy.'
+          : 'Sin «hasta» se buscan las entradas de los próximos dos meses. Cuanto más acotes, antes se cubren todas.'}>
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Ida desde (opcional)">
+          <Field label={`${f.transport ? 'Ida' : 'Entrada'} desde (opcional)`}>
             {(id) => <Input id={id} type="date" value={f.date_from} onChange={(e) => set('date_from', e.target.value)} />}
           </Field>
-          <Field label="Ida hasta (opcional)">
+          <Field label={`${f.transport ? 'Ida' : 'Entrada'} hasta (opcional)`}>
             {(id) => <Input id={id} type="date" value={f.date_to} min={f.date_from || undefined}
               onChange={(e) => set('date_to', e.target.value)} />}
           </Field>
@@ -335,11 +577,15 @@ function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
       </FormSection>
 
       <FormSection title="Cuándo avisar"
-        description={`Sobre ${f.oneWay ? 'el precio de la ida' : 'el total (ida + vuelta)'}. Basta con que se cumpla una de las dos reglas.`}>
+        description={`Sobre ${totalOf}${many ? ', para todos los viajeros' : ''}. Basta con que se cumpla una de las reglas.`}>
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label={`Si ${f.oneWay ? 'cuesta' : 'el total cuesta'} como mucho (€)`} hint="Déjalo vacío para usar solo la regla relativa.">
+          <Field label={`Si ${parts.length > 1 ? 'el total cuesta' : 'cuesta'} como mucho (€)`} hint="Déjalo vacío para usar solo las demás reglas.">
             {(id, hint) => <Input id={id} aria-describedby={hint} inputMode="decimal" value={f.max_total}
               onChange={(e) => set('max_total', e.target.value)} placeholder="120" />}
+          </Field>
+          <Field label="…o si sale como mucho por persona (€)" hint="El total entre los viajeros: útil si cambia el grupo.">
+            {(id, hint) => <Input id={id} aria-describedby={hint} inputMode="decimal" value={f.max_per_person}
+              onChange={(e) => set('max_per_person', e.target.value)} placeholder="60" />}
           </Field>
           <Field label="…o si baja un (%) sobre lo habitual"
             hint="Lo habitual es la mediana de los precios guardados de este viaje (cuando hay suficientes).">
@@ -349,7 +595,7 @@ function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
         </div>
       </FormSection>
 
-      <FormSection title="Canales de aviso" description="El viaje avisa solo a los canales marcados (de las 5 fechas de ida más baratas, una vez cada una).">
+      <FormSection title="Canales de aviso" description={`El viaje avisa solo a los canales marcados (de las 5 fechas de ${day} más baratas, una vez cada una).`}>
         {channels.length ? (
           <div className="space-y-2.5" role="group" aria-label="Canales de aviso">
             {channels.map((c) => (
@@ -415,16 +661,16 @@ export function TripFormPage() {
     originPlace: prefill.data.origin, destinationPlace: prefill.data.destination,
   } : null
   const initial = trip ? fromTrip(trip) : preOut ? { ...BLANK, outbound: preOut, ret: reversed(preOut) } : BLANK
-  const kind = trip?.kind ?? 'flight'
+  const kind = trip?.outbound?.kind ?? 'flight'
   // Al editar, los proveedores de temporada (inactivos) de cada tramo se conservan aunque la ruta no los opere.
-  const keptOut = trip ? trip.outbound.providers : []
+  const keptOut = trip?.outbound ? trip.outbound.providers : []
   const keptRet = trip?.return ? trip.return.providers : []
 
   return (
     <div className="mx-auto max-w-3xl">
       <PageHeader
         title={id ? 'Editar viaje' : 'Nuevo viaje'}
-        description={id ? trip?.name : 'Elige la ruta de la ida (y la vuelta), las webs y cuándo quieres que te avisemos.'}
+        description={id ? trip?.name : 'Elige el transporte (ida y vuelta), el alojamiento o los dos, los viajeros y cuándo quieres que te avisemos.'}
       />
       <TripForm key={id ?? 'new'} initial={initial} tripId={id} kind={kind} keptOut={keptOut} keptRet={keptRet} />
     </div>

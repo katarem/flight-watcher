@@ -2,7 +2,8 @@ import { AlertTriangle, ArrowUpRight, CalendarOff, Sparkles } from 'lucide-react
 import type { ProviderStat } from '@/api/types'
 import { Badge } from '@/components/ui/card'
 import { cn } from '@/lib/cn'
-import { fmtAgo, fmtDay, fmtPrice, priceExtras } from '@/lib/format'
+import { fmtAgo, fmtDay, fmtNights, fmtPrice, priceExtras } from '@/lib/format'
+import { useOfferText } from '@/lib/stays'
 
 /** Mejor precio actual de una web dentro de un tramo de un viaje. */
 export function ProviderTile({ stat, detail, className, plural = 'vuelos' }: {
@@ -13,6 +14,7 @@ export function ProviderTile({ stat, detail, className, plural = 'vuelos' }: {
   plural?: string
 }) {
   const best = stat.best
+  const offerText = useOfferText()
   return (
     <div
       className={cn('relative overflow-hidden rounded-xl border border-line bg-surface-2/50 p-3.5 pl-4', className)}
@@ -42,9 +44,11 @@ export function ProviderTile({ stat, detail, className, plural = 'vuelos' }: {
           <p className="mt-1 text-3xl font-semibold tracking-tight tabular-nums">{fmtPrice(best.price)}</p>
           <p className="text-sm text-muted">
             {fmtDay(best.flight_date)}
+            {best.nights != null && <span className="ml-1">· {fmtNights(best.nights)}</span>}
             {best.route && <span className="ml-1 font-mono text-xs">· {best.route}</span>}
             {priceExtras(best) && <span className="ml-1 text-xs">· {priceExtras(best)}</span>}
           </p>
+          {best.offer && <p className="text-sm">{offerText(best.offer)}</p>}
           {(() => {
             const facts = [
               detail && stat.median != null && `Mediana actual ${fmtPrice(stat.median)}`,

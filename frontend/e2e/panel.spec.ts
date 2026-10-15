@@ -196,6 +196,65 @@ test.describe('viajes', () => {
     await expect(page.getByRole('link', { name })).toHaveCount(0)
   })
 
+  test('un viaje de solo alojamiento con viajeros y filtros', async ({ page }) => {
+    const name = `Escapada isla ${Date.now() % 100000}`
+    await page.goto('/trips/new')
+    await page.getByLabel('Nombre (opcional)').fill(name)
+    const what = page.getByRole('group', { name: 'Qué vigila el viaje' })
+    await what.getByRole('checkbox', { name: 'Transporte' }).click()
+    await expect(page.getByRole('combobox', { name: 'Origen de la ida' })).toHaveCount(0)
+    await expect(page.getByText('Marca el transporte, el alojamiento o los dos.')).toBeVisible()
+    await what.getByRole('checkbox', { name: 'Alojamiento' }).click()
+
+    // Viajeros: dos adultos (uno, residente en Canarias) y una niña de 8 años.
+    await page.getByRole('button', { name: 'Añadir viajero' }).click()
+    await page.getByRole('button', { name: 'Añadir viajero' }).click()
+    await page.getByLabel('Viajero 1: residencia').selectOption({ label: 'Residente en Canarias' })
+    await page.getByLabel('Viajero 3: edad').selectOption({ label: '8 años' })
+
+    await page.getByLabel('Destino del alojamiento').fill('Puerto de la Cruz')
+    await expect(page.getByRole('group', { name: 'Webs del alojamiento' }).getByRole('checkbox', { name: 'Casas de prueba' })).toBeChecked()
+    const types = page.getByRole('group', { name: 'Tipos de alojamiento' })
+    await types.getByRole('checkbox', { name: 'Hotel', exact: true }).click()
+    await types.getByRole('checkbox', { name: 'Apartamento' }).click()
+    await page.getByLabel('Puntuación mínima').selectOption({ label: '8 o más (sobre 10)' })
+    await page.getByLabel('Noches como mínimo').fill('2')
+    await page.getByLabel('Noches como máximo').fill('3')
+    const today = new Date()
+    const iso = (days: number) => new Date(today.getTime() + days * 86_400_000).toISOString().slice(0, 10)
+    await page.getByLabel('Entrada desde (opcional)').fill(iso(5))
+    await page.getByLabel('Entrada hasta (opcional)').fill(iso(7))
+    await page.getByLabel('…o si sale como mucho por persona (€)').fill('70')
+    await expectAccessible(page)
+    await page.getByRole('button', { name: 'Crear viaje' }).click()
+
+    await expect(page.getByRole('heading', { level: 1 })).toContainText(name)
+    await expect(page.getByText(/2–3 noches · 2 adultos y 1 niño \(8 años\) · 1 residente en Canarias/)).toBeVisible()
+    await expect(page.getByText('Estancia más barata ahora')).toBeVisible()
+    await page.getByRole('button', { name: 'Comprobar ahora' }).click()
+    await expect(page.getByText('Comprobación terminada').first()).toBeVisible({ timeout: 20_000 })
+    const combos = page.getByRole('region', { name: 'Combinaciones más baratas' })
+    // Pasa los filtros el hotel (el hostal no es de los tipos elegidos y el apartamento tiene un 7,5).
+    await expect(combos.getByRole('link', { name: /Casas de prueba \d+ €/ }).first()).toHaveAttribute('href', 'https://casas.test/hotel-playa')
+    await expect(combos.getByText(/Hotel Playa · hotel, 4★, nota 8,6/).first()).toBeVisible()
+    await expect(combos.getByText(/€\/persona/).first()).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Todas las noches de una fecha de entrada' })).toBeVisible()
+    await expectAccessible(page)
+
+    await page.getByRole('link', { name: 'Alojamiento en Puerto de la Cruz' }).click()
+    await expect(page.getByText(/Alojamiento del viaje .*hotel o apartamento · nota 8\+/)).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Estancias más baratas' }).locator('tbody tr').first()).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Precios por fecha de entrada' }).locator('table').first()).toBeVisible()
+    await expectAccessible(page)
+
+    await page.getByRole('link', { name: 'Editar el viaje' }).click()
+    await expect(page.getByLabel('Destino del alojamiento')).toHaveValue('Puerto de la Cruz')
+    await expect(page.getByLabel('Viajero 3: edad')).toHaveValue('8')
+    await page.getByRole('button', { name: 'Eliminar' }).click()
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Eliminar' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Viajes' })).toBeVisible()
+  })
+
   test('las URL antiguas de «nueva vigilancia» precargan un viaje nuevo', async ({ page }) => {
     const name = `Budapest ${Date.now() % 100000}`
     await page.goto('/watches/new?origin=BCN&destination=BUD')
