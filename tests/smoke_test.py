@@ -4,7 +4,8 @@ Sustituye el navegador y los proveedores por datos simulados y comprueba de extr
 guardado de precios, reglas de aviso, enlaces con fecha, mensajes, la API del panel (sesión, permisos,
 vigilancias, gráficas, canales, usuarios, ajustes), lugares y cobertura de rutas, escalas y monedas, la
 revalidación semanal, los proveedores (incluidos, scripts, prueba con consola, exportar e importar paquetes y
-prueba de acceso), los viajes de ida y vuelta y que el servidor entrega el panel compilado.
+prueba de acceso), los viajes de ida y vuelta, el alojamiento y los viajeros (2.1) y que el servidor entrega el panel
+compilado.
 """
 import base64
 import os

@@ -1,5 +1,23 @@
 # Cambios
 
+## 2.1.0 — 2026-10-15
+
+**Alojamiento y viajeros.** Un viaje puede vigilar también el alojamiento (o solo el alojamiento, para una escapada sin transporte) y sabe cuántos viajáis, con vuestras edades y descuentos.
+
+### Añadido
+- **Alojamiento en los viajes.** Además de la ida y la vuelta, un viaje puede tener su **estancia**: un destino en texto libre («Puerto de la Cruz», «Costa Adeje»; lo busca cada web), sus webs de alojamiento y sus **filtros**: habitaciones, tipos de alojamiento (hotel, apartamento, casa, hostal…: desmarca los que no quieras), solo alojamientos enteros, puntuación y estrellas mínimas, régimen (desayuno, media pensión, todo incluido…), cancelación gratuita y servicios imprescindibles (piscina, parking, cocina…). El total del viaje suma ida + vuelta + el alojamiento de esas noches (con entrada el día de la ida).
+- **Viajes de solo alojamiento**, sin transporte: por cada fecha de entrada de la ventana y cada número de noches, la estancia más barata que cumple los filtros.
+- **Viajeros.** Cada viaje tiene sus viajeros: adultos y menores con su edad, el **descuento de residente** (Canarias, Baleares, Ceuta o Melilla) y **familia numerosa**. El alojamiento se busca para el grupo. En el transporte, una web que admite varios viajeros da el precio de todos con sus descuentos; si no, se usa el de un adulto por las plazas y se marca como **estimado**.
+- **Regla de aviso por persona** (el total entre los viajeros), además del precio máximo total y del descuento sobre lo habitual. El panel y los avisos muestran el precio por persona cuando sois varios.
+- **Avisos con el desglose**: cada fecha con la ida, la vuelta y el alojamiento (nombre, tipo, estrellas, nota, régimen) y un enlace (o un botón en Telegram) por tramo.
+- En el panel, el detalle del viaje tiene una columna por tramo y el del alojamiento, su calendario por fecha de entrada y las **estancias más baratas** (entrada, noches, alojamiento y enlace).
+- **Proveedores de alojamiento** (tipo «Alojamiento»): un script con `fetch_stay(api, destination, checkin, nights, guests, filters)` que devuelve una lista de `StayOffer`; con su plantilla en el editor, su prueba (una búsqueda dentro de un mes, 2 noches, 2 adultos) y su consola. Los scripts de transporte pueden aceptar `passengers=None` para recibir los viajeros.
+- Para no disparar los bloqueos, cada ronda consulta como mucho **40 combinaciones de entrada y noches por web**: con transporte, las de las fechas de ida más baratas; sin él, las de la ventana. Primero las que nunca se han consultado y después las más antiguas.
+- Migración `0010`: `watches.filters` (y el destino admite 120 caracteres), `prices.nights`/`offer`/`estimated`, `trips.party`/`max_per_person`, `trip_quotes.stay_price` (y `out_price` sin valor en los de solo alojamiento) y la tabla `stay_queries`.
+
+### Pendiente
+- Todavía no hay proveedores de alojamiento en el catálogo: Booking y Airbnb no tienen API pública y se añadirán cuando se puedan verificar contra la web real. Hasta entonces, un administrador puede escribir el suyo en **Proveedores**.
+
 ## 2.0.0 — 2026-10-15
 
 El **viaje** pasa a ser lo que creas y gestionas, y las vigilancias, sus **tramos** internos. Es un cambio de modelo (de ahí la versión mayor): la API ya no gestiona vigilancias sueltas y los avisos son por viaje. Así el alojamiento entrará en la 2.1 como un tramo más (ver el [ROADMAP](ROADMAP.md)).

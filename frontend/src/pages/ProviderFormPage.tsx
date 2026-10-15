@@ -14,6 +14,7 @@ import { ConfirmDialog } from '@/components/ui/dialog'
 import { ErrorBox, LoadError, PageLoading } from '@/components/ui/feedback'
 import { Field, FormSection, Input, Select, Switch, Textarea } from '@/components/ui/form'
 import { fmtAgo, fmtClock, fmtDay, fmtMoney, fmtStops } from '@/lib/format'
+import { useOfferText } from '@/lib/stays'
 import { useTitle } from '@/lib/hooks'
 
 const COVERAGES: { value: Coverage; label: string; fn: string }[] = [
@@ -58,9 +59,41 @@ const STEALTH: { value: StealthLevel; label: string; hint: string }[] = [
   },
 ]
 
-/** Código de un lugar de la ruta de prueba: IATA (3 letras) en los vuelos; de 4 a 10 letras o cifras en el resto. */
+/** Código de un lugar de la ruta de prueba: IATA (3 letras) en los vuelos; de 4 a 10 letras o cifras en el resto; en el
+ *  alojamiento, un destino en texto libre. */
 const placeCode = (kind: KindKey) => (v: string) =>
-  kind === 'flight' ? v.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3) : v.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10)
+  kind === 'hotel' ? v.slice(0, 120)
+    : kind === 'flight' ? v.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3) : v.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10)
+
+/** El contrato de un proveedor de alojamiento. */
+function StayContract() {
+  return (
+    <details className="rounded-xl border border-line bg-surface-2/50 p-3 text-sm">
+      <summary className="cursor-pointer font-medium">El contrato: qué tiene que definir el script</summary>
+      <div className="mt-3 space-y-2 text-muted">
+        <p>
+          <code className="text-fg">fetch_stay(api, destination, checkin, nights, guests, filters)</code>: alojamientos en
+          {' '}<code>destination</code> (texto libre: «Puerto de la Cruz») con entrada <code>checkin</code> (fecha) y
+          {' '}<code>nights</code> noches. <code>guests</code> son los viajeros (<code>guests.adults</code>,
+          {' '}<code>guests.child_ages</code>…) y <code>filters</code> los filtros del viaje (<code>filters.rooms</code>,
+          {' '}<code>.types</code>, <code>.entire</code>, <code>.min_rating</code>, <code>.min_stars</code>, <code>.boards</code>,
+          {' '}<code>.free_cancel</code>, <code>.amenities</code>): aplica en la búsqueda los que la web permita.
+        </p>
+        <p>
+          Devuelve una lista de <code>StayOffer(precio_total, name=…, type=&quot;hotel&quot;, rating=8.6, stars=4,
+          board=&quot;breakfast&quot;, free_cancel=True, entire=True, url=&quot;https://…&quot;)</code> (el precio, de todas las
+          noches y todos los viajeros; la nota, sobre 10) o <code>[]</code> si no hay nada. Lo que la web no diga se deja
+          sin poner: el checker vuelve a filtrar con lo que traiga cada oferta y se queda con la más barata.
+        </p>
+        <p>
+          Lo demás (<code>api</code>, la consola, las medidas anti-bot y <code>BROWSER_PAGE</code>) funciona igual que en los
+          proveedores de transporte. Ya están importados <code>date</code>, <code>timedelta</code>, <code>StayOffer</code>,
+          {' '}<code>ProviderError</code>, <code>ProviderBlocked</code>…
+        </p>
+      </div>
+    </details>
+  )
+}
 
 /** Qué tiene que definir el script (el contrato), según la cobertura elegida. */
 function Contract({ coverage, kind }: { coverage: Coverage; kind?: KindMeta }) {
@@ -75,11 +108,14 @@ function Contract({ coverage, kind }: { coverage: Coverage; kind?: KindMeta }) {
           <code className="text-fg">fetch_route(api, origin, destination, start, max_months)</code>: precios de
           {' '}<code>origin</code>→<code>destination</code> ({places}) desde <code>start</code> (fecha) durante
           {' '}<code>max_months</code> meses. Devuelve <code>{'{fecha: precio en euros}'}</code>, <code>{'{fecha: DayPrice}'}</code> o
-          una lista de <code>DayPrice</code>; <code>{'{}'}</code> si no opera la ruta. Con otra moneda o con escalas:
+          una lista de <code>DayPrice</code>; <code>{'{}'}</code> si no opera la ruta (el precio de un adulto). Con otra moneda o con escalas:
           {' '}<code>DayPrice(día, precio, currency=&quot;GBP&quot;, stops=1)</code>; con la hora de salida y de llegada, si la web
           las da: <code>DayPrice(día, precio, departure=&quot;06:35&quot;, arrival=&quot;08:10&quot;)</code> (también
           {' '}<code>datetime</code>; una llegada anterior a la salida es del día siguiente). Si además acepta
-          {' '}<code>max_stops=None</code>, recibe el máximo de escalas del tramo y filtra él mismo.
+          {' '}<code>max_stops=None</code>, recibe el máximo de escalas del tramo y filtra él mismo. Si acepta
+          {' '}<code>passengers=None</code>, recibe los viajeros del viaje (<code>passengers.adults</code>, <code>.children</code>,
+          {' '}<code>.infants</code>, <code>.seats</code>, <code>.residents</code>, <code>.large_family</code>) y devuelve el precio de
+          todos con sus descuentos; si no, el del adulto se multiplica por las plazas (como estimado).
         </p>
         {fn ? (
           <p>
@@ -99,7 +135,7 @@ function Contract({ coverage, kind }: { coverage: Coverage; kind?: KindMeta }) {
         </p>
         <p>
           Ya están importados <code>date</code>, <code>datetime</code>, <code>timedelta</code>, <code>re</code>, <code>json</code>,
-          {' '}<code>math</code>, <code>DayPrice</code>, <code>ProviderError</code>, <code>ProviderBlocked</code> y <code>add_months</code>.
+          {' '}<code>math</code>, <code>DayPrice</code>, <code>StayOffer</code>, <code>ProviderError</code>, <code>ProviderBlocked</code> y <code>add_months</code>.
           Las peticiones llevan un User-Agent que dice quiénes somos (<code>trip-watch</code>), salvo con medidas anti-bot.
         </p>
         <p>
@@ -112,14 +148,42 @@ function Contract({ coverage, kind }: { coverage: Coverage; kind?: KindMeta }) {
   )
 }
 
-function TestResult({ res }: { res: ScriptTestResult }) {
+function TestResult({ res, stay }: { res: ScriptTestResult; stay: boolean }) {
+  const offerText = useOfferText()
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <StatusBadge status={res.status} />
-        <span className="text-muted">{res.route} · {(res.latency_ms / 1000).toFixed(1)} s · {res.n_prices} días con precio</span>
+        <span className="text-muted">
+          {res.route} · {(res.latency_ms / 1000).toFixed(1)} s · {res.n_prices} {stay ? 'alojamientos' : 'días con precio'}
+        </span>
       </div>
-      {res.sample.length > 0 && (
+      {stay && res.sample.length > 0 && (
+        <div className="max-h-72 overflow-auto rounded-xl border border-line" tabIndex={0} aria-label="Alojamientos de la prueba">
+          <table className="w-full text-sm">
+            <caption className="sr-only">Alojamientos devueltos por el script</caption>
+            <thead className="sticky top-0 bg-surface-2 text-left text-xs text-muted">
+              <tr>
+                <th scope="col" className="px-3 py-2 font-medium">Entrada</th>
+                <th scope="col" className="px-3 py-2 font-medium">Noches</th>
+                <th scope="col" className="px-3 py-2 font-medium">Precio</th>
+                <th scope="col" className="px-3 py-2 font-medium">Alojamiento</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {res.sample.map((p, i) => (
+                <tr key={i}>
+                  <td className="px-3 py-1.5">{fmtDay(p.day)}</td>
+                  <td className="px-3 py-1.5 tabular-nums">{p.nights}</td>
+                  <td className="px-3 py-1.5 tabular-nums">{fmtMoney(p.price, p.currency)}</td>
+                  <td className="px-3 py-1.5">{offerText(p.offer)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!stay && res.sample.length > 0 && (
         <div className="max-h-72 overflow-auto rounded-xl border border-line" tabIndex={0} aria-label="Precios de la prueba">
           <table className="w-full text-sm">
             <caption className="sr-only">Precios devueltos por el script (próximo mes)</caption>
@@ -152,11 +216,13 @@ function TestResult({ res }: { res: ScriptTestResult }) {
 
 type TestEvent = ConsoleEvent | { result: ScriptTestResult }
 
-function ProviderForm({ initial, existing, editable, kinds }: {
+function ProviderForm({ initial, existing, editable, kinds, templates }: {
   initial: FormState
   existing?: Provider
   editable: boolean
   kinds: KindMeta[]
+  /** Plantilla del script para un proveedor nuevo de cada tipo. */
+  templates: Record<string, string>
 }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -171,7 +237,15 @@ function ProviderForm({ initial, existing, editable, kinds }: {
   const [consoleOpen, setConsoleOpen] = useState(false)
   const received = useRef(0)
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((s) => ({ ...s, [k]: v }))
+  /** Al cambiar el tipo de uno nuevo sin tocar su código, el código pasa a la plantilla de ese tipo. */
+  const setKind = (next: KindKey) => setF((s) => ({
+    ...s, kind: next, code: Object.values(templates).includes(s.code) ? (templates[next] ?? s.code) : s.code,
+    health_origin: (next === 'hotel') !== (s.kind === 'hotel') ? '' : s.health_origin,
+    health_destination: next === 'hotel' ? '' : s.health_destination,
+    coverage: next === 'hotel' ? 'universal' : s.coverage,
+  }))
   const kind = kinds.find((k) => k.key === f.kind)
+  const stay = f.kind === 'hotel'
   const code = placeCode(f.kind)
   const nodeHint = f.kind === 'flight' ? 'aeropuertos IATA' : `código de ${kind?.node_label ?? 'lugar'}`
   const refresh = () => {
@@ -275,10 +349,11 @@ function ProviderForm({ initial, existing, editable, kinds }: {
               ? 'No se puede cambiar mientras lo use algún viaje.'
               : kind && !kind.available
                 ? `Aún no hay viajes en ${kind.noun} (llegan en la ${kind.since}), pero ya se puede escribir y probar.`
-                : 'Qué transporte vende: solo sale en los viajes de ese transporte.'}>
+                : stay ? 'Alojamiento: sale en la estancia de los viajes y tiene su propio contrato (fetch_stay).'
+                  : 'Qué transporte vende: solo sale en los viajes de ese transporte.'}>
             {(id, hint) => (
               <Select id={id} aria-describedby={hint} value={f.kind} disabled={!!existing?.n_watches}
-                onChange={(e) => set('kind', e.target.value as KindKey)}>
+                onChange={(e) => setKind(e.target.value as KindKey)}>
                 {kinds.map((k) => <option key={k.key} value={k.key}>{k.label}{k.available ? '' : ` (viajes en la ${k.since})`}</option>)}
               </Select>
             )}
@@ -293,14 +368,14 @@ function ProviderForm({ initial, existing, editable, kinds }: {
               </div>
             )}
           </Field>
-          <Field label="Cobertura" hint="Qué función extra exige el contrato (ver abajo).">
+          {!stay && <Field label="Cobertura" hint="Qué función extra exige el contrato (ver abajo).">
             {(id, hint) => (
               <Select id={id} aria-describedby={hint} value={f.coverage} onChange={(e) => set('coverage', e.target.value as Coverage)}>
                 {COVERAGES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
               </Select>
             )}
-          </Field>
-          {f.coverage === 'universal' && (
+          </Field>}
+          {f.coverage === 'universal' && !stay && (
             <Field label="Máximo de combinaciones de origen y destino (opcional)" hint="Por tramo de viaje. Vacío = el límite general.">
               {(id, hint) => <Input id={id} aria-describedby={hint} inputMode="numeric" value={f.max_routes}
                 onChange={(e) => set('max_routes', e.target.value.replace(/\D/g, ''))} />}
@@ -310,20 +385,32 @@ function ProviderForm({ initial, existing, editable, kinds }: {
             {(id, hint) => <Input id={id} aria-describedby={hint} inputMode="decimal" value={f.min_interval}
               onChange={(e) => set('min_interval', e.target.value)} />}
           </Field>
-          <Field label="Ruta de prueba: origen" hint={`Una ruta que opere de verdad (${nodeHint}).`}>
-            {(id, hint) => <Input id={id} aria-describedby={hint} value={f.health_origin} placeholder="SVQ" required
-              className="font-mono uppercase" autoComplete="off" spellCheck={false}
-              onChange={(e) => set('health_origin', code(e.target.value))} />}
-          </Field>
-          <Field label="Ruta de prueba: destino">
-            {(id) => <Input id={id} value={f.health_destination} placeholder="BCN" required className="font-mono uppercase"
-              autoComplete="off" spellCheck={false} onChange={(e) => set('health_destination', code(e.target.value))} />}
-          </Field>
+          {stay ? (
+            <Field label="Destino de prueba" hint="Uno donde la web tenga alojamientos (se busca dentro de un mes, 2 noches, 2 adultos).">
+              {(id, hint) => <Input id={id} aria-describedby={hint} value={f.health_origin} placeholder="Puerto de la Cruz" required
+                autoComplete="off" onChange={(e) => set('health_origin', code(e.target.value))} />}
+            </Field>
+          ) : (
+            <>
+              <Field label="Ruta de prueba: origen" hint={`Una ruta que opere de verdad (${nodeHint}).`}>
+                {(id, hint) => <Input id={id} aria-describedby={hint} value={f.health_origin} placeholder="SVQ" required
+                  className="font-mono uppercase" autoComplete="off" spellCheck={false}
+                  onChange={(e) => set('health_origin', code(e.target.value))} />}
+              </Field>
+              <Field label="Ruta de prueba: destino">
+                {(id) => <Input id={id} value={f.health_destination} placeholder="BCN" required className="font-mono uppercase"
+                  autoComplete="off" spellCheck={false} onChange={(e) => set('health_destination', code(e.target.value))} />}
+              </Field>
+            </>
+          )}
         </div>
         <Field label="Plantilla de enlace (opcional)"
-          hint="Enlace de cada fecha en los avisos. Marcadores: {origin} {destination} {date} {date_dmy} {year} {month} {day}. Se puede cambiar después en Ajustes.">
+          hint={stay
+            ? 'Enlace de búsqueda si la oferta no trae el suyo. Marcadores: {destination} {date} (entrada) {checkout} {nights} {adults} {children} {rooms}.'
+            : 'Enlace de cada fecha en los avisos. Marcadores: {origin} {destination} {date} {date_dmy} {year} {month} {day}. Se puede cambiar después en Ajustes.'}>
           {(id, hint) => <Input id={id} aria-describedby={hint} value={f.link_template} spellCheck={false} className="font-mono text-xs"
-            placeholder="https://www.ejemplo.com/vuelos?o={origin}&d={destination}&f={date}"
+            placeholder={stay ? 'https://www.ejemplo.com/buscar?q={destination}&entrada={date}&salida={checkout}&adultos={adults}'
+              : 'https://www.ejemplo.com/vuelos?o={origin}&d={destination}&f={date}'}
             onChange={(e) => set('link_template', e.target.value)} />}
         </Field>
         <Field label="Medidas anti-bot"
@@ -357,7 +444,7 @@ function ProviderForm({ initial, existing, editable, kinds }: {
       </section>
 
       <FormSection title="Script" description="Código de Python que cumple el contrato de proveedor.">
-        <Contract coverage={f.coverage} kind={kind} />
+        {stay ? <StayContract /> : <Contract coverage={f.coverage} kind={kind} />}
         {!editable && (
           <p className="rounded-xl border border-warn/30 bg-warn/10 p-3 text-sm text-warn">
             En este servidor no se puede cambiar ni probar el código desde el panel (<code>PROVIDER_SCRIPTS=0</code>).
@@ -368,28 +455,37 @@ function ProviderForm({ initial, existing, editable, kinds }: {
           <div>
             <h3 id="probar-script" className="text-sm font-semibold">Probar sin guardar</h3>
             <p className="text-xs text-muted">
-              Carga el script de abajo y hace la prueba de acceso (cobertura y precios de un mes) desde la IP del
-              servidor. La consola cuenta cada paso y cada petición mientras ocurren. No guarda nada.
+              Carga el script de abajo y hace la prueba de acceso ({stay ? 'una búsqueda de alojamiento' : 'cobertura y precios de un mes'})
+              {' '}desde la IP del servidor. La consola cuenta cada paso y cada petición mientras ocurren. No guarda nada.
             </p>
           </div>
           <ErrorBox errors={testErrors} />
           <div className="flex flex-wrap items-end gap-3">
-            <Field label="Origen (opcional)" className="w-36">
-              {(id) => <Input id={id} value={route.origin} placeholder={f.health_origin || 'SVQ'}
-                className="font-mono uppercase" autoComplete="off" spellCheck={false}
-                onChange={(e) => setRoute((r) => ({ ...r, origin: code(e.target.value) }))} />}
-            </Field>
-            <Field label="Destino (opcional)" className="w-36">
-              {(id) => <Input id={id} value={route.destination} placeholder={f.health_destination || 'BCN'}
-                className="font-mono uppercase" autoComplete="off" spellCheck={false}
-                onChange={(e) => setRoute((r) => ({ ...r, destination: code(e.target.value) }))} />}
-            </Field>
+            {stay ? (
+              <Field label="Destino (opcional)" className="w-full sm:w-64">
+                {(id) => <Input id={id} value={route.origin} placeholder={f.health_origin || 'Puerto de la Cruz'} autoComplete="off"
+                  onChange={(e) => setRoute({ origin: code(e.target.value), destination: '' })} />}
+              </Field>
+            ) : (
+              <>
+                <Field label="Origen (opcional)" className="w-36">
+                  {(id) => <Input id={id} value={route.origin} placeholder={f.health_origin || 'SVQ'}
+                    className="font-mono uppercase" autoComplete="off" spellCheck={false}
+                    onChange={(e) => setRoute((r) => ({ ...r, origin: code(e.target.value) }))} />}
+                </Field>
+                <Field label="Destino (opcional)" className="w-36">
+                  {(id) => <Input id={id} value={route.destination} placeholder={f.health_destination || 'BCN'}
+                    className="font-mono uppercase" autoComplete="off" spellCheck={false}
+                    onChange={(e) => setRoute((r) => ({ ...r, destination: code(e.target.value) }))} />}
+                </Field>
+              </>
+            )}
             <Button type="button" variant="secondary" onClick={() => test.mutate()} loading={test.isPending} disabled={!editable}>
               {!test.isPending && <FlaskConical />} Probar el script
             </Button>
           </div>
           {consoleOpen && <ScriptConsole events={events} running={test.isPending} onClose={() => setConsoleOpen(false)} />}
-          <div aria-live="polite">{result && <TestResult res={result} />}</div>
+          <div aria-live="polite">{result && <TestResult res={result} stay={stay} />}</div>
         </section>
         <Field label="Código" hint="Python 3.12. Se ejecuta en el servidor al guardarlo activo, al probarlo y en cada ronda.">
           {(id, hint) => <Textarea id={id} aria-describedby={hint} value={f.code} onChange={(e) => set('code', e.target.value)}
@@ -457,7 +553,7 @@ export function ProviderFormPage() {
         </p>
       ) : (
         <ProviderForm key={key ?? 'new'} initial={initial} existing={existing.data} editable={list.data.editable}
-          kinds={list.data.kinds} />
+          kinds={list.data.kinds} templates={list.data.templates} />
       )}
     </div>
   )

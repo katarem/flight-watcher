@@ -89,12 +89,14 @@ export function fmtClock(departs: string | null | undefined, arrives?: string | 
 /** Moneda original, escalas y horas de un precio en una frase corta (vacía si es en euros, directo y sin horas). */
 export function priceExtras(p: {
   currency?: string; orig_price?: number | null; stops?: number | null; departs_at?: string | null; arrives_at?: string | null
+  estimated?: boolean
 }): string {
   const parts = []
   if (p.currency && p.currency !== 'EUR' && p.orig_price != null) parts.push(fmtMoney(p.orig_price, p.currency))
   if (p.stops) parts.push(fmtStops(p.stops))
   const clock = fmtClock(p.departs_at, p.arrives_at)
   if (clock) parts.push(clock)
+  if (p.estimated) parts.push('estimado')
   return parts.join(' · ')
 }
 

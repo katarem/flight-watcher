@@ -80,7 +80,7 @@ function TripCard({ t }: { t: TripCardData }) {
       </div>
       <div className="mt-4 space-y-3">
         <TripWarnings warnings={t.warnings} />
-        <BestCombo combo={t.best} base={t.base} nDates={t.n_dates} oneWay={!t.return} className="sm:max-w-md" />
+        <BestCombo combo={t.best} base={t.base} nDates={t.n_dates} trip={t} className="sm:max-w-md" />
       </div>
     </Card>
   )
@@ -102,7 +102,7 @@ export function TripsPage() {
         description={
           list.length
             ? `${list.length} ${list.length === 1 ? 'viaje' : 'viajes'} · ${deals ? `${deals} con chollo ahora mismo` : 'ningún chollo ahora mismo'}`
-            : 'Elige la ruta de ida (y la de vuelta, si la hay) y te avisamos cuando el viaje baje de precio.'
+            : 'Elige la ida (y la vuelta), el alojamiento o los dos, y te avisamos cuando el viaje baje de precio.'
         }
         actions={<Link to="/trips/new" className={buttonClass()}><Plus /> Nuevo viaje</Link>}
       />
@@ -113,8 +113,9 @@ export function TripsPage() {
           title="Aún no hay viajes"
           action={<Link to="/trips/new" className={buttonClass()}><Plus /> Crear el primero</Link>}
         >
-          Un viaje vigila la ida y, si quieres, la vuelta con las noches que quieres quedarte, y te avisa cuando el
-          precio (ida + vuelta) baja de lo que marques o de lo habitual.
+          Un viaje vigila la ida y, si quieres, la vuelta y el alojamiento con las noches que quieres quedarte (o solo
+          el alojamiento, para una escapada cerca de casa), y te avisa cuando el total baja de lo que marques o de lo
+          habitual.
         </EmptyState>
       ) : (
         <motion.div

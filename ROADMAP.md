@@ -2,7 +2,7 @@
 
 Hacia dónde va el proyecto: de vigilar vuelos a encontrar **la forma más barata de llegar a un destino**, con cualquier transporte y con alojamiento incluido.
 
-**Versión actual:** 2.0.0 · El detalle de lo publicado está en [CHANGELOG.md](CHANGELOG.md).
+**Versión actual:** 2.1.0 · El detalle de lo publicado está en [CHANGELOG.md](CHANGELOG.md).
 
 Marca cada punto con `[x]` cuando esté publicado en una versión.
 
@@ -25,7 +25,7 @@ Es la versión que decide cuánto cuestan las siguientes: generaliza lo que hoy 
 
 ### Proveedores por tipo
 - [x] Columna `kind` en `provider_scripts` (migración `0008`); los actuales pasan a `flight` (también `watches.kind`)
-- [x] Contrato por tipo (`app/kinds.py`): los de transporte comparten `fetch_route`; `hotel` tendrá el suyo (`fetch_stay`, 2.1)
+- [x] Contrato por tipo (`app/kinds.py`): los de transporte comparten `fetch_route`; `hotel` tiene el suyo (`fetch_stay`, 2.1)
 - [x] El formato `.fwp` guarda el tipo (los paquetes antiguos se importan como `flight`)
 - [x] La zona «Proveedores» filtra y agrupa por tipo
 
@@ -83,26 +83,32 @@ sin refactorizar dos veces.
 
 ---
 
-## 2.1 — Alojamiento (hoteles y alquiler vacacional)
+## 2.1 — Alojamiento y viajeros (publicada en la 2.1.0, salvo los proveedores)
 
-Sobre el modelo de la 2.0 la estancia entra como un tramo más del viaje (`role` = `stay`). Como solo añade y no rompe nada, va como versión menor.
+Sobre el modelo de la 2.0 la estancia entra como un tramo más del viaje (`role` = `stay`). Como solo añade y no rompe nada, va como versión menor. Decisiones del usuario (2026-10-15): el alojamiento no tiene apartado propio, va **dentro de los viajes** (un viaje puede ser de solo alojamiento, para una escapada sin transporte); el destino es **texto libre** que resuelve cada web; los **viajeros** son del viaje y cambian también el precio del transporte; los proveedores reales, al final (hace falta probarlos contra la web real).
 
 ### Estancias
-- [ ] Entidad «estancia»: destino, fecha de entrada, noches, personas
-- [ ] Filtros para que el precio sea comparable: zona, puntuación mínima, tipo de alojamiento
-- [ ] Acotar consultas (fecha de entrada × noches): noches fijas o rango corto, o solo las fechas de ida que ya sean buenas
-- [ ] Histórico, gráficas y reglas de aviso (precio fijo y relativo) como en vuelos
-- [ ] Apartado propio de alojamiento en el panel
+- [x] Tramo de estancia: destino en texto libre, entrada (el día de la ida, o cada fecha de la ventana sin transporte), noches del viaje y los viajeros del viaje
+- [x] Filtros para que el precio sea comparable: habitaciones, tipo de alojamiento (fuera los hostales, p. ej.), alojamiento entero, puntuación y estrellas mínimas, régimen, cancelación gratuita y servicios
+- [x] Acotar consultas (fecha de entrada × noches): como mucho 40 por web y ronda; con transporte, solo las fechas de ida más baratas; rotando por las más antiguas
+- [x] Histórico, gráficas y reglas de aviso (precio fijo, por persona y relativo) como en vuelos
+- [x] ~~Apartado propio de alojamiento en el panel~~ → dentro de los viajes: viajes de **solo alojamiento**
+
+### Viajeros
+- [x] Viajeros del viaje: adultos y menores con su edad, descuento de residente (Canarias, Baleares, Ceuta, Melilla) y familia numerosa
+- [x] Las webs que admiten varios viajeros reciben `passengers` y dan el precio de todos; las demás, el de un adulto × plazas (estimado)
+- [x] Regla de aviso por persona (total / viajeros)
 
 ### Viajes con alojamiento
-- [ ] Un viaje puede incluir una estancia: total = ida + vuelta + alojamiento de esas noches
-- [ ] Avisos de viaje con el desglose de transporte y alojamiento
+- [x] Un viaje puede incluir una estancia: total = ida + vuelta + alojamiento de esas noches
+- [x] Avisos de viaje con el desglose de transporte y alojamiento (y el precio por persona)
 
 ### Proveedores `HOTEL`
-- [ ] Contrato de script para alojamiento (`fetch_stay` o similar)
+- [x] Contrato de script para alojamiento (`fetch_stay` → `StayOffer`), su prueba de acceso y su editor
 - [ ] Un agregador primero, que cubra muchos alojamientos con un solo proveedor; en vuelos cada aerolínea es el suyo (p. ej. Iberia Express)
 - [ ] Booking (estudiar viabilidad: su API es solo para afiliados)
 - [ ] Airbnb (estudiar viabilidad: no tiene API pública)
+- [ ] Pasar `passengers` (residente, familia numerosa) en los scripts de vuelos del catálogo que lo admitan (Binter, Vueling, Iberia Express…)
 
 ---
 
@@ -148,3 +154,4 @@ Llegar del origen al destino al menor precio, sin importar el transporte.
 ### Panel y avisos
 - [ ] Vista de la ruta con cada tramo, horas, transporte y precio
 - [ ] Avisos con la ruta completa y el desglose por tramo
+- [ ] **Mapa** (Google Maps, OpenStreetMap/Leaflet o similar; lo pidió el usuario el 2026-10-15): los lugares de cada viaje, las rutas pintadas en la web y el destino del alojamiento elegido sobre el mapa en vez de en texto libre

@@ -195,12 +195,14 @@ def download(url: str) -> str:
 
 def values(p: dict) -> dict:
     """Columnas de `provider_scripts` de un proveedor de un paquete de confianza (los incluidos), sin validar."""
+    kind = p.get("kind") or kinds.DEFAULT
+    stay = kind == kinds.STAY  # alojamiento: un destino de prueba en texto, sin ruta
     return {
-        "kind": p.get("kind") or kinds.DEFAULT,
+        "kind": kind,
         "label": p.get("label") or p["key"], "color": (p.get("color") or "#64748b").lower(),
-        "coverage": p.get("coverage") or "probe", "max_routes": p.get("max_routes"),
-        "health_origin": (p.get("health_origin") or "MAD").upper(),
-        "health_destination": (p.get("health_destination") or "BCN").upper(),
+        "coverage": "universal" if stay else p.get("coverage") or "probe", "max_routes": p.get("max_routes"),
+        "health_origin": p.get("health_origin") or "Madrid" if stay else (p.get("health_origin") or "MAD").upper(),
+        "health_destination": "" if stay else (p.get("health_destination") or "BCN").upper(),
         "link_template": p.get("link_template") or "", "notes": p.get("notes") or "",
         "min_interval": float(p["min_interval"]) if p.get("min_interval") is not None else 1.5, "code": p["code"],
         "stealth": stealth.level(p.get("stealth")) or stealth.OFF,

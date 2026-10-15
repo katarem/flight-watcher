@@ -71,7 +71,8 @@ def _view(row: dict, usage: dict[str, int], last: dict | None = None, code: bool
         "enabled": bool(row["enabled"]), "stealth": stealth.level(row.get("stealth")) or stealth.OFF,
         "loaded": loaded, "error": scripted.ERRORS.get(row["key"]),
         "coverage_label": COVERAGE_LABELS.get(row["coverage"], row["coverage"]),
-        "stops_filter": loaded and prov.stops_filter, "n_watches": usage.get(row["key"], 0),
+        "stops_filter": loaded and prov.stops_filter, "party_aware": loaded and prov.party_aware,
+        "n_watches": usage.get(row["key"], 0),
         "last": last and {k: last[k] for k in ("status", "detail", "latency_ms", "checked_at")},
     } | ({"code": row["code"]} if code else {})
 

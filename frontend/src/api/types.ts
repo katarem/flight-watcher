@@ -75,6 +75,28 @@ export interface ChannelKind {
   fields: ChannelField[]
 }
 
+export interface Option {
+  key: string
+  label: string
+}
+
+/** Lo que el formulario necesita para los filtros de una estancia (`app/stays.py`). */
+export interface StayOptions {
+  types: Option[]
+  boards: Option[]
+  amenities: Option[]
+  max_rooms: number
+  place_max: number
+}
+
+/** Lo que el formulario necesita para los viajeros (`app/party.py`). */
+export interface PartyOptions {
+  regions: Option[]
+  large_family: Option[]
+  max_travelers: number
+  adult_age: number
+}
+
 export interface Meta {
   version: string
   kinds: KindMeta[]
@@ -82,6 +104,8 @@ export interface Meta {
   channel_kinds: ChannelKind[]
   avatar_max_bytes: number
   max_pairs: number
+  stay_options: StayOptions
+  party_options: PartyOptions
 }
 
 export interface Status {
@@ -106,9 +130,12 @@ export interface Watch {
   enabled: boolean
   channel_ids: number[]
   created_at: string
-  origin_place: Place
-  destination_place: Place
+  /** null en una estancia (su destino es texto libre). */
+  origin_place: Place | null
+  destination_place: Place | null
   coverage: WatchCoverage[]
+  /** Filtros de una estancia (null en los transportes). */
+  filters: StayFilters | null
 }
 
 /** Pares de aeropuertos que cubre cada proveedor del tramo ("SVQ-TFN"). */
@@ -119,7 +146,19 @@ export interface WatchCoverage {
   checked_at: string | null
 }
 
-/** Moneda original, escalas y horas de un precio (el precio siempre va en euros). */
+/** El alojamiento de un precio de una estancia (lo que diga la web). */
+export interface StayOfferInfo {
+  name?: string
+  type?: string
+  rating?: number
+  stars?: number
+  board?: string
+  free_cancel?: boolean
+  entire?: boolean
+  url?: string
+}
+
+/** Moneda original, escalas y horas de un precio (el precio siempre va en euros y es el de todos los viajeros). */
 export interface PriceExtras {
   currency: string
   orig_price: number | null
@@ -127,6 +166,11 @@ export interface PriceExtras {
   /** Salida y llegada («AAAA-MM-DDTHH:MM», hora local de cada lugar) si la web las da. */
   departs_at?: string | null
   arrives_at?: string | null
+  /** La web no admite varios viajeros: es el precio de un adulto × plazas, sin descuentos. */
+  estimated?: boolean
+  /** Estancias: noches y alojamiento (la fecha es la de entrada). */
+  nights?: number | null
+  offer?: StayOfferInfo | null
 }
 
 export interface RunInfo {
@@ -319,6 +363,8 @@ export interface Provider {
   stealth: StealthLevel
   /** `fetch_route` acepta `max_stops` (filtra él mismo por escalas). */
   stops_filter: boolean
+  /** `fetch_route` acepta `passengers` (da el precio de todos los viajeros, con sus descuentos). */
+  party_aware: boolean
   n_watches: number
   last: ProviderLast | null
   code?: string
@@ -329,6 +375,8 @@ export interface ProvidersData {
   /** false si el servidor no deja cambiar código desde el panel (PROVIDER_SCRIPTS=0). */
   editable: boolean
   template: string
+  /** Plantilla del editor para un proveedor nuevo de cada tipo. */
+  templates: Record<string, string>
   status_labels: Record<string, string>
   /** Enlaces de los que ya se han importado proveedores. */
   sources: string[]
@@ -356,6 +404,9 @@ export interface ScriptSample {
   stops: number | null
   departs_at: string | null
   arrives_at: string | null
+  /** Proveedores de alojamiento: noches y alojamiento de cada oferta. */
+  nights: number | null
+  offer: StayOfferInfo | null
 }
 
 export interface ScriptTestResult extends HealthResult {
@@ -401,7 +452,7 @@ export interface ImportPreview {
 }
 
 /** Papel de un tramo en su viaje. */
-export type LegRole = 'outbound' | 'return'
+export type LegRole = 'outbound' | 'return' | 'stay'
 
 /** Tramo de un viaje (una vigilancia interna), con lo necesario para pintarlo y editarlo dentro del viaje. */
 export interface TripLeg {
@@ -419,6 +470,50 @@ export interface TripLeg {
   max_stops: number | null
 }
 
+/** Filtros de una estancia (`app/stays.py`): lo vacío no filtra. */
+export interface StayFilters {
+  rooms: number
+  types: string[]
+  entire: boolean
+  min_rating: number | null
+  min_stars: number | null
+  boards: string[]
+  free_cancel: boolean
+  amenities: string[]
+}
+
+/** La estancia de un viaje (alojamiento): destino en texto libre, webs y filtros. */
+export interface TripStay {
+  id: number
+  name: string
+  kind: KindKey
+  destination: string
+  providers: string[]
+  enabled: boolean
+  filters: StayFilters
+  /** «1 habitación · hotel o apartamento · nota 8+». */
+  filters_label: string
+}
+
+export interface Traveler {
+  /** Edad de un menor (0–17); null = adulto. */
+  age: number | null
+  /** Región del descuento de residente ('' = no). */
+  resident: string
+}
+
+/** Los viajeros de un viaje (`app/party.py`). */
+export interface Party {
+  travelers: Traveler[]
+  /** '' | 'general' | 'special'. */
+  large_family: string
+  size: number
+  adults: number
+  seats: number
+  /** «2 adultos y 1 niño (8 años) · 1 residente en Canarias». */
+  label: string
+}
+
 export interface Trip {
   id: number
   name: string
@@ -433,14 +528,21 @@ export interface Trip {
   enabled: boolean
   channel_ids: number[]
   created_at: string
-  outbound: TripLeg
-  /** null = viaje de solo ida. */
+  /** null = viaje de solo estancia (sin transporte). */
+  outbound: TripLeg | null
+  /** null = viaje de solo ida (o sin transporte). */
   return: TripLeg | null
+  /** null = sin alojamiento. */
+  stay: TripStay | null
+  party: Party
+  /** Precio máximo por viajero (total / viajeros), además de `max_total`. */
+  max_per_person: number | null
   /** Avisos que no impiden guardar (tramos que no encajan). */
   warnings: string[]
 }
 
-/** Vuelo más barato de un tramo para un día (en euros, con su web y su enlace). */
+/** Lo más barato de un tramo para un día (en euros, para todos los viajeros, con su web y su enlace). En una
+ *  estancia, `flight_date` es la entrada y lleva `nights` y `offer`. */
 export interface TripPrice extends PriceExtras {
   flight_date: string
   price: number
@@ -450,15 +552,19 @@ export interface TripPrice extends PriceExtras {
   checked_at: string
 }
 
-/** Una combinación de un viaje: fecha de ida y total. En un viaje de solo ida no hay vuelta ni noches. */
+/** Una combinación de un viaje: fecha de ida (o de entrada, sin transporte) y total. Sin vuelta ni estancia (solo
+ *  ida) no hay noches; `ret_date` es la vuelta o la salida del alojamiento. */
 export interface TripCombo {
   out_date: string
   ret_date: string | null
   nights: number | null
   total: number
+  /** Total / viajeros. */
+  per_person: number
   deal: 'fixed' | 'relative' | null
-  out: TripPrice
+  out: TripPrice | null
   ret: TripPrice | null
+  stay: TripPrice | null
 }
 
 export interface TripTrend {
