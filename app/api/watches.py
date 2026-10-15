@@ -1,16 +1,17 @@
-"""Vigilancias del usuario: CRUD, detalle con precios, gráficas, avisos y ejecuciones."""
+"""Tramos de los viajes (vigilancias internas): detalle con precios y gráficas, validación de un tramo, lugares,
+comprobación de rutas, y los avisos y ejecuciones del usuario."""
 from __future__ import annotations
 
 import statistics
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from .. import checker, coverage, db, fmt, kinds, places, scheduler
+from .. import checker, coverage, db, fmt, kinds, places
 from ..providers import PROVIDERS, link_for, ordered
-from .deps import Invalid, current_user, own_channel_ids, own_watch
+from .deps import Invalid, current_user, own_watch
 
 router = APIRouter()
 
@@ -97,25 +98,14 @@ def _trend(con, wid: int, points: int = 30) -> list[dict]:
     return [{"d": d, "p": p} for d, p in sorted(by_day.items())[-points:]]
 
 
-# ------------------------------------------------------------------------- lista
-@router.get("/watches")
-def list_watches(kind: str | None = None, user: dict = Depends(current_user)):
-    """Vigilancias del usuario (de un transporte con `kind`, p. ej. las de vuelos)."""
-    s = db.get_settings()
-    out = []
-    with db.connect() as con:
-        names = {c["id"]: c["name"] for c in db.list_channels(con, user["id"], only_enabled=True)}
-        for w in db.list_watches(con, user["id"], kind or None):
-            stats, _ = _provider_stats(con, s, w)
-            out.append({**watch_view(w), "stats": stats, "trend": _trend(con, w["id"]),
-                        "channels": [names[i] for i in w["channel_ids"] if i in names]})
-    return {"watches": out}
-
-
+# Las vigilancias ya no se listan ni se gestionan sueltas: son tramos internos de un viaje (ver api/trips.py).
+# De aquí solo quedan el detalle de un tramo (calendario, gráficas) y las utilidades que usa el formulario de
+# viaje (lugares y comprobación de rutas), además de los avisos y ejecuciones del usuario.
 @router.get("/alerts")
 def list_alerts(limit: int = 10, user: dict = Depends(current_user)):
+    """Últimos avisos de los viajes del usuario (desde la 2.0 se avisa por viaje, no por tramo)."""
     with db.connect() as con:
-        return {"alerts": db.list_alerts(con, max(1, min(limit, 200)), user_id=user["id"])}
+        return {"alerts": db.list_user_trip_alerts(con, user["id"], max(1, min(limit, 200)))}
 
 
 @router.get("/runs")
@@ -125,21 +115,16 @@ def list_runs(limit: int = 50, user: dict = Depends(current_user)):
     return {"runs": [{**r, "ok": None if r["ok"] is None else bool(r["ok"])} for r in rows]}
 
 
-# ------------------------------------------------------------------------- CRUD
-class WatchIn(BaseModel):
-    #: Transporte de la vigilancia (app/kinds.py); vacío = vuelos.
+# --------------------------------------------------------------- tramos (vigilancias)
+class LegIn(BaseModel):
+    """Un tramo de un viaje. El precio máximo, el descuento y las fechas viven en el viaje, no en el tramo."""
+    #: Transporte del tramo (app/kinds.py); vacío = vuelos.
     kind: str = kinds.DEFAULT
     name: str = ""
     origin: str = ""
     destination: str = ""
     providers: list[str] = []
-    max_price: float | str | None = None
-    discount_pct: float | str | None = None
-    date_from: str | None = None
-    date_to: str | None = None
     max_stops: int | str | None = 0
-    enabled: bool = True
-    channel_ids: list[int] = []
 
 
 def parse_kind(raw: str | None, errors: list[str]) -> str:
@@ -148,8 +133,11 @@ def parse_kind(raw: str | None, errors: list[str]) -> str:
     if kind in kinds.KINDS and kinds.KINDS[kind].available and kinds.KINDS[kind].transport:
         return kind
     k = kinds.KINDS.get(kind)
-    errors.append(f"Las vigilancias de {k.label.lower()} llegan en la {k.since}." if k and k.since
-                  else "Tipo de transporte desconocido.")
+    if k and k.since:
+        errors.append(f"Los viajes en {k.noun} llegan en la {k.since}." if k.transport
+                      else f"El {k.label.lower()} llega en la {k.since}.")
+    else:
+        errors.append("Tipo de transporte desconocido.")
     return kinds.DEFAULT
 
 
@@ -212,35 +200,29 @@ def parse_dates(date_from, date_to, errors: list[str]) -> tuple[str | None, str 
     return d_from, d_to
 
 
-def parse_watch(body: WatchIn) -> dict:
-    """Datos listos para guardar o `Invalid` con todos los errores encontrados."""
-    errors = []
-    kind = parse_kind(body.kind, errors)
-    origin, destination = parse_route(body.origin, body.destination, errors, kind)
-    chosen = [p for p in dict.fromkeys(body.providers) if p in PROVIDERS]
+def parse_leg(leg: LegIn, errors: list[str], enabled: bool) -> dict:
+    """Valida un tramo y devuelve los datos para `db.create_watch` (los errores se acumulan en `errors`).
+    `max_price`/`date_from`/`date_to` quedan vacíos en el tramo: las reglas y la ventana viven en el viaje."""
+    kind = parse_kind(leg.kind, errors)
+    origin, destination = parse_route(leg.origin, leg.destination, errors, kind)
+    chosen = [p for p in dict.fromkeys(leg.providers) if p in PROVIDERS]
     providers = [p for p in chosen if PROVIDERS[p].kind == kind]
     if len(providers) < len(chosen):
         errors.append(f"Solo se pueden elegir webs de {kinds.get(kind).label.lower()}.")
     elif not providers:
         errors.append("Elige al menos un proveedor.")
-    stops_text = str(body.max_stops if body.max_stops is not None else "").strip()
+    stops_text = str(leg.max_stops if leg.max_stops is not None else "").strip()
     max_stops = None
     if stops_text:
         if stops_text in ("0", "1", "2"):
             max_stops = int(stops_text)
         else:
             errors.append("El máximo de escalas debe ser 0 (solo directos), 1, 2 o vacío (sin límite).")
-
-    max_p = parse_number(body.max_price, "El precio máximo", errors)
-    disc = parse_number(body.discount_pct, "El descuento", errors, default=30.0, lo=-1.0, hi=95.0)
-    d_from, d_to = parse_dates(body.date_from, body.date_to, errors)
-    if errors:
-        raise Invalid(errors)
     return {
-        "name": body.name.strip()[:200] or f"{origin} → {destination}", "kind": kind,
+        "name": leg.name.strip()[:200] or f"{origin} → {destination}", "kind": kind,
         "origin": origin, "destination": destination, "providers": providers,
-        "max_price": max_p, "discount_pct": disc if disc is not None else 30.0,
-        "date_from": d_from, "date_to": d_to, "max_stops": max_stops, "enabled": body.enabled,
+        "max_price": None, "discount_pct": 30.0, "date_from": None, "date_to": None,
+        "max_stops": max_stops, "enabled": enabled,
     }
 
 
@@ -259,64 +241,20 @@ def with_coverage(data: dict, current: dict | None = None) -> dict:
     return {**data, "coverage": cov}
 
 
-@router.post("/watches", status_code=201)
-def create_watch(body: WatchIn, user: dict = Depends(current_user)):
-    data = with_coverage(parse_watch(body))
-    channel_ids = own_channel_ids(user, body.channel_ids)
-    with db.connect() as con:
-        wid = db.create_watch(con, user["id"], data)
-        db.set_watch_channels(con, wid, channel_ids)
-        return {"watch": watch_view(db.get_watch(con, wid))}
-
-
 @router.get("/watches/{wid}")
 def get_watch(wid: int, user: dict = Depends(current_user)):
-    """Todo lo del detalle salvo las gráficas: resumen por web, precios de la última comprobación,
-    historial de comprobaciones, avisos enviados y viajes de los que es tramo."""
+    """Detalle de un tramo (en el panel, dentro de su viaje): resumen por web, precios de la última comprobación e
+    historial de comprobaciones. Las gráficas van aparte; los avisos son del viaje."""
     s = db.get_settings()
     with db.connect() as con:
         w = own_watch(con, wid, user)
         stats, rows = _provider_stats(con, s, w, detail=True)
+        trip = db.get_trip(con, w["trip_id"])
         return {
-            "watch": watch_view(w), "stats": stats, "prices": rows,
-            "checks": db.checks_summary(con, wid, 40), "alerts": db.list_alerts(con, 15, wid),
-            "trips": [{"id": t["id"], "name": t["name"]} for t in db.list_trips(con, watch_id=wid)],
+            "watch": watch_view(w), "role": w["role"], "stats": stats, "prices": rows,
+            "checks": db.checks_summary(con, wid, 40),
+            "trip": {"id": trip["id"], "name": trip["name"]},  # el viaje del que es tramo
         }
-
-
-@router.put("/watches/{wid}")
-def update_watch(wid: int, body: WatchIn, user: dict = Depends(current_user)):
-    with db.connect() as con:
-        current = own_watch(con, wid, user)
-    data = with_coverage(parse_watch(body), current)
-    channel_ids = own_channel_ids(user, body.channel_ids)
-    with db.connect() as con:
-        db.update_watch(con, wid, data)
-        db.set_watch_channels(con, wid, channel_ids)
-        return {"watch": watch_view(db.get_watch(con, wid))}
-
-
-@router.delete("/watches/{wid}", status_code=204)
-def delete_watch(wid: int, user: dict = Depends(current_user)):
-    with db.connect() as con:
-        own_watch(con, wid, user)
-        db.delete_watch(con, wid)
-    return Response(status_code=204)
-
-
-@router.post("/watches/{wid}/toggle")
-def toggle_watch(wid: int, user: dict = Depends(current_user)):
-    with db.connect() as con:
-        own_watch(con, wid, user)
-        db.toggle_watch(con, wid)
-        return {"watch": watch_view(db.get_watch(con, wid))}
-
-
-@router.post("/watches/{wid}/run")
-def run_watch(wid: int, user: dict = Depends(current_user)):
-    with db.connect() as con:
-        own_watch(con, wid, user)
-    return {"started": scheduler.run_now(wid, user["id"])}
 
 
 # --------------------------------------------------------------------- gráficas

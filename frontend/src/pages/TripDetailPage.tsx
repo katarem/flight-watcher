@@ -9,34 +9,38 @@ import { LoadError, PageLoading, Skeleton } from '@/components/ui/feedback'
 import { Field, Select } from '@/components/ui/form'
 import { BestCombo, DealBadge, LegLink, TripLegs, TripPill, TripWarnings, tripRulesText } from '@/components/trip/parts'
 import { PriceChart } from '@/components/watch/PriceChart'
-import { fmtDateTime, fmtDay, fmtPrice } from '@/lib/format'
+import { AlertsTable } from '@/components/watch/tables'
+import { fmtDay, fmtPrice } from '@/lib/format'
 import { useRunTrip, useTitle } from '@/lib/hooks'
+import { tripPath } from '@/lib/paths'
 
 const TOTAL = { total: { label: 'Total', color: 'var(--fw-accent)' } }
 const TOP = 15
 
-function CombosTable({ combos, label, showOut = true }: { combos: TripCombo[]; label: string; showOut?: boolean }) {
+function CombosTable({ combos, label, showOut = true, oneWay = false }: {
+  combos: TripCombo[]; label: string; showOut?: boolean; oneWay?: boolean
+}) {
   return (
     <TableWrap label={label}>
       <table className={tableClass}>
         <thead>
           <tr>
             {showOut && <th scope="col">Ida</th>}
-            <th scope="col">Vuelta</th>
-            <th scope="col" className="text-right!">Noches</th>
+            {!oneWay && <th scope="col">Vuelta</th>}
+            {!oneWay && <th scope="col" className="text-right!">Noches</th>}
             <th scope="col">Tramo de ida</th>
-            <th scope="col">Tramo de vuelta</th>
-            <th scope="col" className="text-right!">Total</th>
+            {!oneWay && <th scope="col">Tramo de vuelta</th>}
+            <th scope="col" className="text-right!">{oneWay ? 'Precio' : 'Total'}</th>
           </tr>
         </thead>
         <tbody>
           {combos.map((c) => (
-            <tr key={`${c.out_date}-${c.nights}`}>
+            <tr key={`${c.out_date}-${c.nights ?? 'ow'}`}>
               {showOut && <td className="whitespace-nowrap">{fmtDay(c.out_date)}</td>}
-              <td className="whitespace-nowrap">{fmtDay(c.ret_date)}</td>
-              <td className="text-right tabular-nums">{c.nights}</td>
+              {!oneWay && <td className="whitespace-nowrap">{c.ret_date ? fmtDay(c.ret_date) : '—'}</td>}
+              {!oneWay && <td className="text-right tabular-nums">{c.nights}</td>}
               <td><LegLink leg={c.out} /></td>
-              <td><LegLink leg={c.ret} /></td>
+              {!oneWay && <td>{c.ret ? <LegLink leg={c.ret} /> : '—'}</td>}
               <td className="text-right whitespace-nowrap">
                 <span className="font-semibold tabular-nums">{fmtPrice(c.total)}</span>
                 {c.deal && <span className="ml-1.5"><DealBadge /></span>}
@@ -65,6 +69,7 @@ export function TripDetailPage() {
   if (detail.isPending) return <PageLoading />
   if (detail.isError) return <LoadError error={detail.error} />
   const { trip: t, base, trend, alerts } = detail.data
+  const oneWay = !t.return
 
   const byDate = { labels: quotes.map((q) => q.out_date), series: { total: quotes.map((q) => q.total) } }
   const evolution = { labels: trend.map((x) => x.d), series: { total: trend.map((x) => x.p) } }
@@ -94,7 +99,7 @@ export function TripDetailPage() {
             <Button onClick={() => run.mutate(t.id)} disabled={running} loading={run.isPending}>
               {!run.isPending && <Play />} Comprobar ahora
             </Button>
-            <Link to={`/trips/${t.id}/edit`} className={buttonClass('secondary')}><Pencil /> Editar</Link>
+            <Link to={tripPath(t.id, '/edit')} className={buttonClass('secondary')}><Pencil /> Editar</Link>
           </>
         }
       />
@@ -102,40 +107,44 @@ export function TripDetailPage() {
       <div className="mb-6 space-y-3">
         <TripLegs trip={t} />
         <TripWarnings warnings={t.warnings} />
-        <BestCombo combo={cheapest[0] ?? null} base={base} nDates={quotes.length} className="bg-surface shadow-card sm:max-w-md" />
+        <BestCombo combo={cheapest[0] ?? null} base={base} nDates={quotes.length} oneWay={oneWay} className="bg-surface shadow-card sm:max-w-md" />
       </div>
 
       <Card className="mb-6" aria-labelledby="combinaciones">
         <CardHeader
           id="combinaciones"
-          title="Combinaciones más baratas"
-          description={`La mejor de cada fecha de ida (las ${TOP} más baratas), con los precios actuales de cada tramo.`}
+          title={oneWay ? 'Fechas más baratas' : 'Combinaciones más baratas'}
+          description={oneWay
+            ? `La más barata de cada fecha de ida (las ${TOP} más baratas), con los precios actuales.`
+            : `La mejor de cada fecha de ida (las ${TOP} más baratas), con los precios actuales de cada tramo.`}
         />
-        {cheapest.length ? <CombosTable combos={cheapest.slice(0, TOP)} label="Combinaciones más baratas" />
+        {cheapest.length ? <CombosTable combos={cheapest.slice(0, TOP)} label="Combinaciones más baratas" oneWay={oneWay} />
           : <p className="text-sm text-muted">Todavía no hay combinaciones. Pulsa «Comprobar ahora».</p>}
       </Card>
 
-      <Card className="mb-6" aria-labelledby="por-noches">
-        <CardHeader
-          id="por-noches"
-          title="Todas las noches de una fecha de ida"
-          description="Cuánto sale el viaje según el día de vuelta."
-          actions={
-            quotes.length > 0 && (
-              <Field label={<span className="sr-only">Fecha de ida</span>} className="w-full sm:w-72">
-                {(fid) => (
-                  <Select id={fid} value={date} onChange={(e) => setPicked(e.target.value)}>
-                    {quotes.map((q) => <option key={q.out_date} value={q.out_date}>{fmtDay(q.out_date)} · desde {fmtPrice(q.total)}</option>)}
-                  </Select>
-                )}
-              </Field>
-            )
-          }
-        />
-        {!quotes.length ? <p className="text-sm text-muted">Aún no hay datos.</p>
-          : options.data ? <CombosTable combos={options.data} label={`Noches con ida el ${fmtDay(date)}`} showOut={false} />
-            : <Skeleton className="h-32" />}
-      </Card>
+      {!oneWay && (
+        <Card className="mb-6" aria-labelledby="por-noches">
+          <CardHeader
+            id="por-noches"
+            title="Todas las noches de una fecha de ida"
+            description="Cuánto sale el viaje según el día de vuelta."
+            actions={
+              quotes.length > 0 && (
+                <Field label={<span className="sr-only">Fecha de ida</span>} className="w-full sm:w-72">
+                  {(fid) => (
+                    <Select id={fid} value={date} onChange={(e) => setPicked(e.target.value)}>
+                      {quotes.map((q) => <option key={q.out_date} value={q.out_date}>{fmtDay(q.out_date)} · desde {fmtPrice(q.total)}</option>)}
+                    </Select>
+                  )}
+                </Field>
+              )
+            }
+          />
+          {!quotes.length ? <p className="text-sm text-muted">Aún no hay datos.</p>
+            : options.data ? <CombosTable combos={options.data} label={`Noches con ida el ${fmtDay(date)}`} showOut={false} />
+              : <Skeleton className="h-32" />}
+        </Card>
+      )}
 
       <div className="mb-6 grid gap-4 lg:grid-cols-2">
         <Card aria-labelledby="total-por-fecha">
@@ -150,30 +159,8 @@ export function TripDetailPage() {
 
       <Card aria-labelledby="avisos">
         <CardHeader id="avisos" title="Avisos enviados" />
-        {alerts.length ? (
-          <TableWrap label="Avisos enviados">
-            <table className={tableClass}>
-              <thead>
-                <tr>
-                  <th scope="col">Enviado</th>
-                  <th scope="col">Ida</th>
-                  <th scope="col">Vuelta</th>
-                  <th scope="col" className="text-right!">Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {alerts.map((a) => (
-                  <tr key={a.id}>
-                    <td className="whitespace-nowrap text-muted">{fmtDateTime(a.sent_at)}</td>
-                    <td className="whitespace-nowrap">{fmtDay(a.out_date)}</td>
-                    <td className="whitespace-nowrap">{fmtDay(a.ret_date)}</td>
-                    <td className="text-right font-semibold tabular-nums">{fmtPrice(a.total)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </TableWrap>
-        ) : <p className="text-sm text-muted">Aún no se ha enviado ningún aviso de este viaje.</p>}
+        {alerts.length ? <AlertsTable alerts={alerts} showTrip={false} />
+          : <p className="text-sm text-muted">Aún no se ha enviado ningún aviso de este viaje.</p>}
       </Card>
     </>
   )

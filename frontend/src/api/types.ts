@@ -19,20 +19,18 @@ export type Coverage = 'network' | 'probe' | 'universal'
 /** Medidas anti-bot de un proveedor: 0 ninguna, 1 huella de Chrome (y Chrome si bloquean), 2 siempre Chrome. */
 export type StealthLevel = 0 | 1 | 2
 
-/** Transporte de una vigilancia o tipo de un proveedor (`app/kinds.py`). */
+/** Transporte de un viaje (y de sus tramos) o tipo de un proveedor (`app/kinds.py`). */
 export type KindKey = 'flight' | 'ship' | 'train' | 'bus' | 'hotel'
 
 export interface KindMeta {
   key: KindKey
-  /** «Vuelos»: nombre del apartado. */
+  /** «Vuelos». */
   label: string
   noun: string
   plural: string
   /** Tipo de lugar donde empieza y acaba (airport, station, port, stop); '' si no es un transporte. */
   node: string
   node_label: string
-  /** Ruta del apartado en el panel ('' = aún no tiene). */
-  section: string
   available: boolean
   /** Versión prevista si aún no está disponible. */
   since: string
@@ -113,7 +111,7 @@ export interface Watch {
   coverage: WatchCoverage[]
 }
 
-/** Pares de aeropuertos que cubre cada proveedor de la vigilancia ("SVQ-TFN"). */
+/** Pares de aeropuertos que cubre cada proveedor del tramo ("SVQ-TFN"). */
 export interface WatchCoverage {
   key: string
   routes: string[]
@@ -163,12 +161,6 @@ export interface ProviderStat {
   count?: number
 }
 
-export interface WatchCard extends Watch {
-  stats: ProviderStat[]
-  trend: { d: string; p: number }[]
-  channels: string[]
-}
-
 export interface PriceRow extends PriceExtras {
   provider: string
   flight_date: string
@@ -186,26 +178,15 @@ export interface CheckSummary {
   av: number
 }
 
-export interface Alert {
-  id: number
-  watch_id: number
-  watch_name: string
-  watch_kind: KindKey
-  provider: string
-  flight_date: string
-  price: number
-  link: string | null
-  sent_at: string
-}
-
+/** Detalle de un tramo (una vigilancia interna de un viaje). */
 export interface WatchDetail {
   watch: Watch
+  role: LegRole
   stats: ProviderStat[]
   prices: PriceRow[]
   checks: CheckSummary[]
-  alerts: Alert[]
-  /** Viajes de los que esta vigilancia es tramo. */
-  trips: { id: number; name: string }[]
+  /** El viaje del que este tramo forma parte. */
+  trip: { id: number; name: string }
 }
 
 export interface Series {
@@ -220,9 +201,12 @@ export interface Charts {
 
 export interface Run {
   id: number
+  /** El tramo comprobado y su viaje. */
   watch_id: number
   watch_name: string
   watch_kind: KindKey
+  trip_id: number
+  trip_name: string
   provider: string
   trigger: string
   started_at: string
@@ -251,7 +235,7 @@ export interface ChannelDetail extends Channel {
 }
 
 export interface AdminUser extends User {
-  n_watches: number
+  n_trips: number
   n_channels: number
 }
 
@@ -416,7 +400,10 @@ export interface ImportPreview {
   providers: ImportItem[]
 }
 
-/** Tramo de un viaje: una vigilancia del usuario. */
+/** Papel de un tramo en su viaje. */
+export type LegRole = 'outbound' | 'return'
+
+/** Tramo de un viaje (una vigilancia interna), con lo necesario para pintarlo y editarlo dentro del viaje. */
 export interface TripLeg {
   id: number
   kind: KindKey
@@ -424,13 +411,19 @@ export interface TripLeg {
   origin: string
   destination: string
   enabled: boolean
+  origin_place: Place
+  destination_place: Place
+  providers: string[]
+  coverage: WatchCoverage[]
+  /** 0 = solo directos; null = sin límite. */
+  max_stops: number | null
 }
 
 export interface Trip {
   id: number
   name: string
-  outbound_id: number
-  return_id: number
+  /** Transporte del viaje, derivado del tramo de ida. */
+  kind: KindKey
   min_nights: number
   max_nights: number
   date_from: string | null
@@ -441,8 +434,9 @@ export interface Trip {
   channel_ids: number[]
   created_at: string
   outbound: TripLeg
-  return: TripLeg
-  /** Avisos que no impiden guardar (tramos en pausa o que no encajan). */
+  /** null = viaje de solo ida. */
+  return: TripLeg | null
+  /** Avisos que no impiden guardar (tramos que no encajan). */
   warnings: string[]
 }
 
@@ -456,15 +450,15 @@ export interface TripPrice extends PriceExtras {
   checked_at: string
 }
 
-/** Una combinación ida + vuelta: fecha de ida, noches y total. */
+/** Una combinación de un viaje: fecha de ida y total. En un viaje de solo ida no hay vuelta ni noches. */
 export interface TripCombo {
   out_date: string
-  ret_date: string
-  nights: number
+  ret_date: string | null
+  nights: number | null
   total: number
   deal: 'fixed' | 'relative' | null
   out: TripPrice
-  ret: TripPrice
+  ret: TripPrice | null
 }
 
 export interface TripTrend {
@@ -484,9 +478,14 @@ export interface TripAlert {
   id: number
   trip_id: number
   out_date: string
-  ret_date: string
+  ret_date: string | null
   total: number
   sent_at: string
+}
+
+/** Aviso de cualquiera de los viajes del usuario (/alerts), con el nombre del viaje. */
+export interface UserAlert extends TripAlert {
+  trip_name: string
 }
 
 export interface TripDetail {

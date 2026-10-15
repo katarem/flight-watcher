@@ -46,23 +46,20 @@ fakes.FETCH["ryanair"] = rich_fetch("ryanair", 45, {"TFS"})
 
 
 def seed():
-    """Histórico de unos días (para que haya «habitual» y gráficas), un viaje con las dos vigilancias
-    iniciales y una ronda simulada."""
+    """Histórico de unos días (para que haya «habitual» y gráficas) en los tramos del viaje sembrado
+    (SVQ ⇄ TCI), con un canal asignado, y una ronda simulada."""
     with db.connect() as con:
         admin = db.get_user_by_username(con, "admin")
         chan = db.create_channel(con, admin["id"], "discord", "Discord de casa", {"webhook": "https://discord.com/api/webhooks/1/x"})
-        for w in db.list_watches(con, admin["id"]):
-            db.set_watch_channels(con, w["id"], [chan])
+        trip = db.list_trips(con, admin["id"])[0]  # el viaje inicial de ida y vuelta
+        db.set_trip_channels(con, trip["id"], [chan])
+        for w in db.trip_legs(con, trip["id"]).values():
+            o, d = ("SVQ", "TFN") if w["role"] == "outbound" else ("TFN", "SVQ")
             for back in range(6, 0, -1):
                 when = (datetime.now() - timedelta(days=back)).isoformat(timespec="seconds")
-                rows = [DayPrice(fakes.TODAY + timedelta(days=d), 60 + (d * 7 + back * 3) % 50, origin="SVQ", destination="TFN")
-                        for d in range(10, 70)]
+                rows = [DayPrice(fakes.TODAY + timedelta(days=day), 60 + (day * 7 + back * 3) % 50, origin=o, destination=d)
+                        for day in range(10, 70)]
                 db.insert_prices(con, w["id"], "vueling", when, rows)
-        trip = db.create_trip(con, admin["id"], {
-            "name": "Tenerife ida y vuelta", "outbound_id": 1, "return_id": 2, "min_nights": 3, "max_nights": 5,
-            "date_from": None, "date_to": None, "max_total": 130, "discount_pct": 30, "enabled": True,
-        })
-        db.set_trip_channels(con, trip, [chan])
     checker.run_checks(trigger="manual")
 
 

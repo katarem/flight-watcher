@@ -46,7 +46,7 @@ function SettingsForm({ data }: { data: SettingsData }) {
       <FormSection title="Panel">
         {text('panel_url', 'URL pública de este panel (opcional)', {
           placeholder: 'https://vuelos.midominio.com',
-          hint: 'Si la rellenas, cada aviso incluye un enlace al historial y las gráficas de la vigilancia.',
+          hint: 'Si la rellenas, cada aviso incluye un enlace al historial y las gráficas del viaje.',
         })}
         <p className="text-xs text-muted">
           Los canales de aviso (Discord, Telegram) los configura cada usuario en su{' '}
@@ -56,7 +56,7 @@ function SettingsForm({ data }: { data: SettingsData }) {
         </p>
       </FormSection>
 
-      <FormSection title="Programación" description="Cuándo se comprueban solas todas las vigilancias activas.">
+      <FormSection title="Programación" description="Cuándo se comprueban solos todos los viajes activos.">
         <div className="grid gap-4 sm:grid-cols-3">
           {text('schedule_hours', 'Horas (0-23, separadas por comas)', { placeholder: '8 o 8,20' })}
           {text('schedule_minute', 'Minuto', { numeric: true })}

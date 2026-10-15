@@ -282,7 +282,7 @@ def update_provider(key: str, body: ProviderIn, admin: dict = Depends(require_ad
         with db.connect() as con:
             used = db.provider_usage_counts(con).get(key, 0)
         if used:
-            raise Invalid(f"No se puede cambiar el tipo de un proveedor que usan {used} vigilancia(s): sus rutas son "
+            raise Invalid(f"No se puede cambiar el tipo de un proveedor que usan {used} tramo(s) de viaje: sus rutas son "
                           f"de {kinds.get(old['kind']).label.lower()}.")
     values = _parse(body)
     if values["code"] != old["code"]:

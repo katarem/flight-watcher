@@ -1,10 +1,10 @@
-import { ArrowUpRight, CheckCircle2, Clock, TriangleAlert } from 'lucide-react'
+import { CheckCircle2, Clock, TriangleAlert } from 'lucide-react'
 import { Link } from 'react-router'
 import { useProviders } from '@/api/queries'
-import type { Alert, Run } from '@/api/types'
+import type { Run, TripAlert } from '@/api/types'
 import { Badge, TableWrap, tableClass } from '@/components/ui/card'
 import { fmtDateTime, fmtDay, fmtPrice } from '@/lib/format'
-import { watchPath } from '@/lib/kinds'
+import { legPath, tripPath } from '@/lib/paths'
 
 export function RunStatus({ run }: { run: Run }) {
   if (run.finished_at == null)
@@ -13,17 +13,16 @@ export function RunStatus({ run }: { run: Run }) {
   return <Badge tone="danger"><TriangleAlert aria-hidden="true" /> con error</Badge>
 }
 
-export function AlertsTable({ alerts, showWatch = true }: { alerts: Alert[]; showWatch?: boolean }) {
-  const provider = useProviders()
+/** Avisos enviados de un viaje o, con `showTrip`, de todos los viajes del usuario. */
+export function AlertsTable({ alerts, showTrip = true }: { alerts: (TripAlert & { trip_name?: string })[]; showTrip?: boolean }) {
   return (
     <TableWrap label="Avisos enviados">
       <table className={tableClass}>
         <thead>
           <tr>
             <th scope="col">Enviado</th>
-            {showWatch && <th scope="col">Vigilancia</th>}
-            <th scope="col">Web</th>
-            <th scope="col">Fecha</th>
+            {showTrip && <th scope="col">Viaje</th>}
+            <th scope="col">Fechas</th>
             <th scope="col" className="text-right!">Precio</th>
           </tr>
         </thead>
@@ -31,18 +30,13 @@ export function AlertsTable({ alerts, showWatch = true }: { alerts: Alert[]; sho
           {alerts.map((a) => (
             <tr key={a.id}>
               <td className="whitespace-nowrap text-muted">{fmtDateTime(a.sent_at)}</td>
-              {showWatch && (
-                <td><Link to={watchPath(a.watch_kind, a.watch_id)} className="hover:underline">{a.watch_name}</Link></td>
+              {showTrip && (
+                <td><Link to={tripPath(a.trip_id)} className="hover:underline">{a.trip_name}</Link></td>
               )}
-              <td>{provider(a.provider).label}</td>
               <td className="whitespace-nowrap">
-                {a.link ? (
-                  <a href={a.link} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 text-accent hover:underline">
-                    {fmtDay(a.flight_date)} <ArrowUpRight className="size-3.5" aria-hidden="true" />
-                  </a>
-                ) : fmtDay(a.flight_date)}
+                {fmtDay(a.out_date)}{a.ret_date && <> → {fmtDay(a.ret_date)}</>}
               </td>
-              <td className="text-right font-semibold tabular-nums">{fmtPrice(a.price)}</td>
+              <td className="text-right font-semibold tabular-nums">{fmtPrice(a.total)}</td>
             </tr>
           ))}
         </tbody>
@@ -59,7 +53,8 @@ export function RunsTable({ runs, full }: { runs: Run[]; full?: boolean }) {
         <thead>
           <tr>
             <th scope="col">Inicio</th>
-            <th scope="col">Vigilancia</th>
+            {full && <th scope="col">Viaje</th>}
+            <th scope="col">Tramo</th>
             <th scope="col">Web</th>
             {full && <th scope="col">Origen</th>}
             <th scope="col">Estado</th>
@@ -72,7 +67,8 @@ export function RunsTable({ runs, full }: { runs: Run[]; full?: boolean }) {
           {runs.map((r) => (
             <tr key={r.id}>
               <td className="whitespace-nowrap text-muted">{fmtDateTime(r.started_at)}</td>
-              <td><Link to={watchPath(r.watch_kind, r.watch_id)} className="hover:underline">{r.watch_name}</Link></td>
+              {full && <td><Link to={tripPath(r.trip_id)} className="hover:underline">{r.trip_name}</Link></td>}
+              <td><Link to={legPath(r.trip_id, r.watch_id)} className="hover:underline">{r.watch_name}</Link></td>
               <td>{provider(r.provider).label}</td>
               {full && <td className="text-muted">{r.trigger === 'cron' ? 'automática' : 'manual'}</td>}
               <td><RunStatus run={r} /></td>

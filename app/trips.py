@@ -1,4 +1,4 @@
-"""Viajes de ida y vuelta: juntan dos vigilancias (ida y vuelta) en un precio total por fecha y noches.
+"""Viajes: poseen sus tramos (ida y, si la hay, vuelta) y los juntan en un precio total por fecha y noches.
 
 No consultan ninguna web: usan la última comprobación de cada tramo. Para cada fecha de ida `d` y cada
 número de noches `n` permitido, total = vuelo de ida más barato del día `d` + vuelo de vuelta más barato
@@ -59,19 +59,28 @@ def legs_by_day(con, settings: dict, watch: dict, now: datetime) -> dict[str, di
     return best
 
 
-def combinations(trip: dict, out_legs: dict[str, dict], ret_legs: dict[str, dict], today: date) -> list[dict]:
-    """Todas las combinaciones (fecha de ida × noches) con vuelo en ambos sentidos, en orden de ida y noches."""
+def combinations(trip: dict, out_legs: dict[str, dict], ret_legs: dict[str, dict] | None, today: date) -> list[dict]:
+    """Combinaciones de un viaje, en orden de ida y noches. Con tramo de vuelta (`ret_legs` = sus precios por día),
+    cada fecha de ida × noches con vuelo en ambos sentidos. En un viaje de solo ida (`ret_legs` es None), una
+    combinación por fecha de ida con el precio del tramo de ida (`ret_legs` vacío, {}, = hay vuelta pero sin
+    precios aún → sin combinaciones)."""
     lo = max(today.isoformat(), trip["date_from"] or "")
     hi = trip["date_to"]
+    one_way = ret_legs is None
     out = []
     for day in sorted(out_legs):
         if day < lo or (hi and day > hi):
+            continue
+        o = out_legs[day]
+        if one_way:
+            out.append({"out_date": day, "ret_date": None, "nights": None, "total": round(o["price"], 2),
+                        "out": o, "ret": None})
             continue
         start = date.fromisoformat(day)
         for n in range(trip["min_nights"], trip["max_nights"] + 1):
             back = (start + timedelta(days=n)).isoformat()
             if back in ret_legs:
-                o, r = out_legs[day], ret_legs[back]
+                r = ret_legs[back]
                 out.append({"out_date": day, "ret_date": back, "nights": n, "total": round(o["price"] + r["price"], 2),
                             "out": o, "ret": r})
     return out
@@ -96,15 +105,17 @@ def deal_reason(trip: dict, total: float, base: float | None) -> str | None:
     return None
 
 
-def legs(con, trip: dict) -> tuple[dict, dict]:
-    """Las vigilancias de ida y de vuelta del viaje."""
-    return db.get_watch(con, trip["outbound_id"]), db.get_watch(con, trip["return_id"])
+def legs(con, trip: dict) -> tuple[dict, dict | None]:
+    """El tramo de ida y el de vuelta del viaje (la vuelta es None en un viaje de solo ida)."""
+    legs = db.trip_legs(con, trip["id"])
+    return legs["outbound"], legs.get("return")
 
 
 def options(con, settings: dict, trip: dict, now: datetime) -> list[dict]:
-    """Combinaciones del viaje con los precios actuales de sus tramos."""
+    """Combinaciones del viaje con los precios actuales de sus tramos (solo ida = sin tramo de vuelta)."""
     out_w, ret_w = legs(con, trip)
-    return combinations(trip, legs_by_day(con, settings, out_w, now), legs_by_day(con, settings, ret_w, now), now.date())
+    ret_by_day = legs_by_day(con, settings, ret_w, now) if ret_w else None
+    return combinations(trip, legs_by_day(con, settings, out_w, now), ret_by_day, now.date())
 
 
 def evaluate(trip: dict, settings: dict, now: datetime, channels: list[dict]) -> list[str]:

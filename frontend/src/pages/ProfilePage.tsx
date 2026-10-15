@@ -45,7 +45,7 @@ function AccountCard({ me }: { me: Me }) {
           checked={notify}
           onChange={setNotify}
           label="Avisarme de errores"
-          description="Por todos mis canales activos, si una comprobación automática de mis vigilancias falla."
+          description="Por todos mis canales activos, si una comprobación automática de mis viajes falla."
         />
         <Button type="submit" loading={save.isPending}>Guardar perfil</Button>
       </form>

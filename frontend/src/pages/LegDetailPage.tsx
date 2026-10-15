@@ -1,28 +1,30 @@
-import { ChevronLeft, Pencil, Play } from 'lucide-react'
+import { ChevronLeft, Pencil } from 'lucide-react'
 import { useRef, useState } from 'react'
-import { Link, useParams } from 'react-router'
-import { useCharts, useDateHistory, useProviders, useStatus, useWatch } from '@/api/queries'
-import { Button, buttonClass } from '@/components/ui/button'
+import { Link, Navigate, useParams } from 'react-router'
+import { useCharts, useDateHistory, useProviders, useWatch } from '@/api/queries'
+import { buttonClass } from '@/components/ui/button'
 import { Badge, Card, CardHeader, PageHeader, TableWrap, tableClass } from '@/components/ui/card'
 import { LoadError, PageLoading, Skeleton } from '@/components/ui/feedback'
 import { Field, Select } from '@/components/ui/form'
 import { CalendarLegend, PriceCalendar } from '@/components/watch/PriceCalendar'
 import { PriceChart } from '@/components/watch/PriceChart'
 import { ProviderTile } from '@/components/watch/ProviderTile'
-import { RoutePill, rulesText } from '@/components/watch/rules'
-import { AlertsTable } from '@/components/watch/tables'
+import { RoutePill } from '@/components/watch/rules'
 import { cn } from '@/lib/cn'
-import { fmtDateTime, fmtDay, fmtPrice } from '@/lib/format'
-import { useRunNow, useTitle } from '@/lib/hooks'
-import { kindSection, useKind, watchPath } from '@/lib/kinds'
+import { fmtDateTime, fmtDay, fmtPrice, stopsRule } from '@/lib/format'
+import { useTitle } from '@/lib/hooks'
+import { useKind } from '@/lib/kinds'
+import { legPath, tripPath } from '@/lib/paths'
 
-export function WatchDetailPage() {
-  const id = Number(useParams().id)
+const ROLES = { outbound: 'Ida', return: 'Vuelta' } as const
+
+/** Detalle de solo lectura de un tramo de un viaje (calendario, gráficas e histórico). Se edita desde el viaje. */
+export function LegDetailPage() {
+  const params = useParams()
+  const id = Number(params.legId)
   const detail = useWatch(id)
   const charts = useCharts(id)
   const provider = useProviders()
-  const run = useRunNow()
-  const running = useStatus().data?.running
   const [filter, setFilter] = useState('')
   const [picked, setPicked] = useState('')
   const historyRef = useRef<HTMLElement>(null)
@@ -36,7 +38,9 @@ export function WatchDetailPage() {
 
   if (detail.isPending) return <PageLoading />
   if (detail.isError) return <LoadError error={detail.error} />
-  const { watch: w, stats, checks, alerts, trips } = detail.data
+  const { watch: w, role, stats, checks, trip } = detail.data
+  // Un enlace con otro viaje en la URL lleva a la del suyo.
+  if (String(trip.id) !== params.id) return <Navigate to={legPath(trip.id, w.id)} replace />
   const shown = filter ? rows.filter((r) => r.provider === filter) : rows
 
   const selectDay = (d: string) => {
@@ -48,43 +52,25 @@ export function WatchDetailPage() {
     <>
       <PageHeader
         back={
-          <Link to={kindSection(w.kind)} className="inline-flex items-center gap-1 text-sm text-muted hover:text-fg">
-            <ChevronLeft className="size-4" aria-hidden="true" /> {kind.label}
+          <Link to={tripPath(trip.id)} className="inline-flex items-center gap-1 text-sm text-muted hover:text-fg">
+            <ChevronLeft className="size-4" aria-hidden="true" /> {trip.name}
           </Link>
         }
         title={
           <span className="flex flex-wrap items-center gap-3">
             {w.name}
+            <Badge>{ROLES[role]}</Badge>
             {!w.enabled && <Badge tone="warn">en pausa</Badge>}
           </span>
         }
         description={
           <span className="flex flex-wrap items-center gap-2">
             <RoutePill origin={w.origin} destination={w.destination} />
-            {rulesText(w)}
+            Tramo de {ROLES[role].toLowerCase()} del viaje «{trip.name}» ({stopsRule(w.max_stops)}). Se edita desde el viaje.
           </span>
         }
-        actions={
-          <>
-            <Button onClick={() => run.mutate(w.id)} disabled={running} loading={run.isPending}>
-              {!run.isPending && <Play />} Comprobar ahora
-            </Button>
-            <Link to={watchPath(w.kind, w.id, '/edit')} className={buttonClass('secondary')}><Pencil /> Editar</Link>
-          </>
-        }
+        actions={<Link to={tripPath(trip.id, '/edit')} className={buttonClass('secondary')}><Pencil /> Editar el viaje</Link>}
       />
-
-      {trips.length > 0 && (
-        <p className="-mt-3 mb-4 text-sm text-muted">
-          Tramo de {trips.length === 1 ? 'un viaje' : 'los viajes'}:{' '}
-          {trips.map((t, i) => (
-            <span key={t.id}>
-              {i > 0 && ', '}
-              <Link to={`/trips/${t.id}`} className="text-fg underline underline-offset-2">{t.name}</Link>
-            </span>
-          ))}
-        </p>
-      )}
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {stats.map((s) => <ProviderTile key={s.key} stat={s} detail className="bg-surface shadow-card" plural={kind.plural} />)}
@@ -120,7 +106,7 @@ export function WatchDetailPage() {
             <PriceCalendar rows={shown} selected={date} onSelectDay={selectDay} />
           </div>
         ) : (
-          <p className="text-sm text-muted">Todavía no hay precios guardados. Pulsa «Comprobar ahora».</p>
+          <p className="text-sm text-muted">Todavía no hay precios guardados. Pulsa «Comprobar ahora» en el viaje.</p>
         )}
       </Card>
 
@@ -157,42 +143,35 @@ export function WatchDetailPage() {
             : <Skeleton className="h-64" />}
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card aria-labelledby="comprobaciones">
-          <CardHeader id="comprobaciones" title="Historial de comprobaciones" />
-          {checks.length ? (
-            <TableWrap label="Historial de comprobaciones">
-              <table className={tableClass}>
-                <thead>
-                  <tr>
-                    <th scope="col">Cuándo</th>
-                    <th scope="col">Web</th>
-                    <th scope="col" className="text-right!">Fechas</th>
-                    <th scope="col" className="text-right!">Mínimo</th>
-                    <th scope="col" className="text-right!">Media</th>
+      <Card aria-labelledby="comprobaciones">
+        <CardHeader id="comprobaciones" title="Historial de comprobaciones" />
+        {checks.length ? (
+          <TableWrap label="Historial de comprobaciones">
+            <table className={tableClass}>
+              <thead>
+                <tr>
+                  <th scope="col">Cuándo</th>
+                  <th scope="col">Web</th>
+                  <th scope="col" className="text-right!">Fechas</th>
+                  <th scope="col" className="text-right!">Mínimo</th>
+                  <th scope="col" className="text-right!">Media</th>
+                </tr>
+              </thead>
+              <tbody>
+                {checks.map((c) => (
+                  <tr key={`${c.provider}-${c.checked_at}`}>
+                    <td className="whitespace-nowrap text-muted">{fmtDateTime(c.checked_at)}</td>
+                    <td>{provider(c.provider).label}</td>
+                    <td className="text-right tabular-nums">{c.n}</td>
+                    <td className="text-right font-semibold tabular-nums">{fmtPrice(c.mn)}</td>
+                    <td className="text-right tabular-nums">{fmtPrice(c.av)}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {checks.map((c) => (
-                    <tr key={`${c.provider}-${c.checked_at}`}>
-                      <td className="whitespace-nowrap text-muted">{fmtDateTime(c.checked_at)}</td>
-                      <td>{provider(c.provider).label}</td>
-                      <td className="text-right tabular-nums">{c.n}</td>
-                      <td className="text-right font-semibold tabular-nums">{fmtPrice(c.mn)}</td>
-                      <td className="text-right tabular-nums">{fmtPrice(c.av)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </TableWrap>
-          ) : <p className="text-sm text-muted">Sin comprobaciones todavía.</p>}
-        </Card>
-        <Card aria-labelledby="avisos">
-          <CardHeader id="avisos" title="Avisos enviados" />
-          {alerts.length ? <AlertsTable alerts={alerts} showWatch={false} />
-            : <p className="text-sm text-muted">Aún no se ha enviado ningún aviso de esta vigilancia.</p>}
-        </Card>
-      </div>
+                ))}
+              </tbody>
+            </table>
+          </TableWrap>
+        ) : <p className="text-sm text-muted">Sin comprobaciones todavía.</p>}
+      </Card>
     </>
   )
 }
