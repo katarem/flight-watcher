@@ -71,6 +71,8 @@ class DayPrice:
     #: `clock()` las deja como `datetime` (sin segundos ni zona).
     departure: datetime | dtime | str | None = None
     arrival: datetime | dtime | str | None = None
+    #: Precio estimado (lo pone el checker): la web no admite varios viajeros y es el de un adulto × plazas.
+    estimated: bool = False
 
     def clock(self) -> None:
         """Normaliza `departure` y `arrival` a `datetime`. Lanza ValueError/TypeError si no son una hora."""
@@ -131,6 +133,9 @@ class Provider(ABC):
     max_routes: int | None = None
     #: True si `fetch_prices` acepta `max_stops` y filtra él mismo por escalas.
     stops_filter: bool = False
+    #: True si `fetch_prices` acepta `passengers` (los viajeros del viaje, `app/party.py`) y da el precio de todos;
+    #: si no, el precio es el de un adulto y el checker lo multiplica por las plazas.
+    party_aware: bool = False
     #: Segundos mínimos entre dos peticiones (más un poco al azar) y una sola petición a la vez.
     min_interval: float = 1.5
     jitter: float = 1.0
@@ -188,12 +193,15 @@ class Provider(ABC):
                 _last_request[self.key] = time.monotonic()
                 self.pulse()
 
-    def build_link(self, template: str, origin: str, destination: str, day: date) -> str:
+    def build_link(self, template: str, origin: str, destination: str, day: date, **extra) -> str:
+        """Enlace con la plantilla. En el alojamiento, `extra` añade {checkout} {nights} {adults} {children}
+        {rooms} (y `destination` llega ya codificado para una URL)."""
         tpl = (template or "").strip() or self.default_link_template
         values = {
             "origin": origin, "destination": destination,
             "date": day.isoformat(), "date_dmy": day.strftime("%d/%m/%Y"),
             "year": day.year, "month": f"{day.month:02d}", "day": f"{day.day:02d}",
+            "checkout": "", "nights": "", "adults": 1, "children": 0, "rooms": 1, **extra,
         }
         try:
             return tpl.format(**values)

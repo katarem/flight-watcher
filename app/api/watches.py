@@ -3,14 +3,14 @@ comprobación de rutas, y los avisos y ejecuciones del usuario."""
 from __future__ import annotations
 
 import statistics
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from .. import checker, coverage, db, fmt, kinds, places
-from ..providers import PROVIDERS, link_for, ordered
+from .. import checker, coverage, db, fmt, kinds, party, places, stays, trips
+from ..providers import PROVIDERS, link_for, ordered, stay_link_for
 from .deps import Invalid, current_user, own_watch
 
 router = APIRouter()
@@ -29,31 +29,52 @@ def _today(settings) -> str:
 
 def _route(w, row) -> str | None:
     """Aeropuertos reales del precio si difieren de la vigilancia (p. ej. TCI → TFS)."""
+    if w.get("kind") == kinds.STAY:
+        return None
     o, d = row["origin"] or w["origin"], row["destination"] or w["destination"]
     return f"{o}→{d}" if (o, d) != (w["origin"], w["destination"]) else None
 
 
-def _link(pk, w, row) -> str:
+def _link(pk, w, row, trip: dict | None = None) -> str:
+    if w.get("kind") == kinds.STAY:
+        group = party.load((trip or {}).get("party"))
+        return (row.get("offer") or {}).get("url") or stay_link_for(
+            pk, w["destination"], fmt.to_date(row["flight_date"]), row.get("nights") or 1, group,
+            stays.load(w.get("filters")).rooms)
     return link_for(pk, row["origin"] or w["origin"], row["destination"] or w["destination"],
                     fmt.to_date(row["flight_date"]))
 
 
 def watch_view(w: dict) -> dict:
+    stay = w.get("kind") == kinds.STAY  # el destino de una estancia es texto, no un lugar del catálogo
     return {k: w[k] for k in ("id", "name", "origin", "destination", "max_price", "discount_pct", "date_from",
                               "date_to", "max_stops", "channel_ids", "created_at")} | {
         "kind": w.get("kind") or kinds.DEFAULT,
         "enabled": bool(w["enabled"]), "providers": ordered(w["providers"]),
-        "origin_place": places.view(w["origin"]), "destination_place": places.view(w["destination"]),
+        "origin_place": None if stay else places.view(w["origin"]),
+        "destination_place": None if stay else places.view(w["destination"]),
+        "filters": stays.load(w.get("filters")).view() if stay else None,
         "coverage": [{"key": k, "routes": [db.pair_key(p) for p in w["coverage"][k]["routes"]],
                       "active": w["coverage"][k]["active"], "checked_at": w["coverage"][k]["checked_at"]}
                      for k in ordered(w["providers"])],
     }
 
 
-def _money(row) -> dict:
-    """Moneda original, escalas y horas de un precio guardado."""
+def price_extras(row) -> dict:
+    """Moneda original, escalas, horas, si es estimado y, en una estancia, las noches y el alojamiento."""
     return {"currency": row.get("currency") or "EUR", "orig_price": row.get("orig_price"), "stops": row.get("stops"),
-            "departs_at": row.get("departs_at"), "arrives_at": row.get("arrives_at")}
+            "departs_at": row.get("departs_at"), "arrives_at": row.get("arrives_at"),
+            "estimated": bool(row.get("estimated")), "nights": row.get("nights"), "offer": row.get("offer")}
+
+
+
+def _snapshot(con, settings, w, pk) -> list[dict]:
+    """Los precios actuales de un tramo en una web: la última comprobación (transporte) o lo último de cada
+    combinación de entrada y noches de los últimos días (estancia)."""
+    if w.get("kind") != kinds.STAY:
+        return db.latest_snapshot(con, w["id"], pk)
+    since = (trips.local_now(settings) - timedelta(days=trips.STALE_DAYS))
+    return db.latest_stays(con, w["id"], pk, since.isoformat(timespec="seconds"))
 
 
 def _run_view(run: dict | None) -> dict | None:
@@ -65,17 +86,18 @@ def _run_view(run: dict | None) -> dict | None:
 def _provider_stats(con, settings, w, detail: bool = False) -> tuple[list[dict], list[dict]]:
     """Resumen por web (mejor precio, habitual, último error) y, si `detail`, todas las filas de la última comprobación."""
     today = _today(settings)
+    trip = db.get_trip(con, w["trip_id"])
     stats, rows = [], []
     for pk in ordered(w["providers"]):
         prov = PROVIDERS[pk]
         cov = w["coverage"][pk]
-        snap = db.latest_snapshot(con, w["id"], pk)
+        snap = _snapshot(con, settings, w, pk)
         base = db.baseline(con, w["id"], pk, f"{today}T00:00:00", int(settings["min_samples"]))
         best = dict(snap[0]) if snap else None
         item = {
             "key": pk, "label": prov.label, "color": prov.color, "base": base,
             "active": cov["active"], "routes": [db.pair_key(p) for p in cov["routes"]], "checked_at": cov["checked_at"],
-            "best": best and {**best, **_money(best), "route": _route(w, best), "link": _link(pk, w, best),
+            "best": best and {**best, **price_extras(best), "route": _route(w, best), "link": _link(pk, w, best, trip),
                               "deal": checker.deal_reason(w, best["price"], base)},
             "run": _run_view(db.last_run(con, w["id"], pk)),
         }
@@ -83,10 +105,10 @@ def _provider_stats(con, settings, w, detail: bool = False) -> tuple[list[dict],
             item["median"] = statistics.median(r["price"] for r in snap) if snap else None
             item["count"] = len(snap)
             rows += [{"provider": pk, "flight_date": r["flight_date"], "price": r["price"], "route": _route(w, r),
-                      "link": _link(pk, w, r), "deal": checker.deal_reason(w, r["price"], base), **_money(r)}
+                      "link": _link(pk, w, r, trip), "deal": checker.deal_reason(w, r["price"], base), **price_extras(r)}
                      for r in snap]
         stats.append(item)
-    rows.sort(key=lambda r: (r["price"], r["flight_date"]))
+    rows.sort(key=lambda r: (r["price"], r["flight_date"], r["nights"] or 0))
     return stats, rows
 
 
@@ -265,6 +287,7 @@ def _align(points: dict[str, dict[str, float]]) -> dict:
 
 @router.get("/watches/{wid}/charts")
 def charts(wid: int, user: dict = Depends(current_user)):
+    s = db.get_settings()
     with db.connect() as con:
         w = own_watch(con, wid, user)
         keys = ordered(w["providers"])
@@ -272,7 +295,10 @@ def charts(wid: int, user: dict = Depends(current_user)):
         for r in db.chart_min_over_time(con, wid):
             if r["provider"] in over_time:
                 over_time[r["provider"]][r["d"]] = r["p"]
-        by_date = {pk: {r["flight_date"]: r["price"] for r in db.latest_snapshot(con, wid, pk)} for pk in keys}
+        by_date = {pk: {} for pk in keys}
+        for pk in keys:  # el más barato de cada día (en una estancia, entre todas sus noches)
+            for r in _snapshot(con, s, w, pk):
+                by_date[pk].setdefault(r["flight_date"], r["price"])
     return {"min_over_time": _align(over_time), "by_flight_date": _align(by_date)}
 
 

@@ -1,22 +1,35 @@
-"""Viajes: la entidad principal. CRUD con sus tramos inline (ida obligatoria, vuelta opcional = solo ida),
-combinaciones actuales, histórico y avisos. Un viaje posee sus tramos (vigilancias internas)."""
+"""Viajes: la entidad principal. CRUD con sus tramos inline (ida; vuelta, solo con ida; y estancia: al menos la ida
+o la estancia), sus viajeros, combinaciones actuales, histórico y avisos. Un viaje posee sus tramos (vigilancias
+internas)."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, Field
 
-from .. import db, places, scheduler, trips
+from .. import db, kinds, party, places, scheduler, stays, trips
+from ..providers import PROVIDERS, ordered
 from .deps import Invalid, current_user, own_channel_ids, own_trip
-from .watches import LegIn, parse_dates, parse_leg, parse_number, watch_view, with_coverage
+from .watches import LegIn, parse_dates, parse_leg, parse_number, price_extras, watch_view, with_coverage
 
 router = APIRouter()
 
 
-def _leg_view(w: dict) -> dict:
+def _leg_view(w: dict | None) -> dict | None:
     """El tramo con todo lo que el panel necesita para pintarlo y para editarlo dentro del viaje."""
+    if w is None:
+        return None
     v = watch_view(w)
     return {k: v[k] for k in ("id", "name", "kind", "origin", "destination", "origin_place",
                               "destination_place", "providers", "coverage", "max_stops", "enabled")}
+
+
+def _stay_view(w: dict | None) -> dict | None:
+    """La estancia: destino (texto), webs y filtros."""
+    if w is None:
+        return None
+    f = stays.load(w.get("filters"))
+    return {"id": w["id"], "name": w["name"], "kind": w["kind"], "destination": w["destination"],
+            "providers": ordered(w["providers"]), "enabled": bool(w["enabled"]), "filters": f.view(), "filters_label": f.describe()}
 
 
 def _warnings(out_w: dict, ret_w: dict) -> list[str]:
@@ -35,24 +48,31 @@ def _warnings(out_w: dict, ret_w: dict) -> list[str]:
     return out
 
 
-def trip_view(t: dict, out_w: dict, ret_w: dict | None) -> dict:
-    """El viaje con sus tramos. El transporte (`kind`) se deriva del tramo de ida; `return` es None en solo ida."""
+def trip_view(t: dict, out_w: dict | None, ret_w: dict | None, stay_w: dict | None = None) -> dict:
+    """El viaje con sus tramos (None el que no tenga) y sus viajeros. El transporte (`kind`) se deriva del tramo de
+    ida (en uno de solo estancia, el del alojamiento)."""
     return {k: t[k] for k in ("id", "name", "min_nights", "max_nights", "date_from", "date_to", "max_total",
                               "discount_pct", "channel_ids", "created_at")} | {
-        "enabled": bool(t["enabled"]), "kind": out_w["kind"], "outbound": _leg_view(out_w),
-        "return": _leg_view(ret_w) if ret_w else None, "warnings": _warnings(out_w, ret_w) if ret_w else [],
+        "enabled": bool(t["enabled"]), "kind": out_w["kind"] if out_w else kinds.STAY,
+        "outbound": _leg_view(out_w), "return": _leg_view(ret_w), "stay": _stay_view(stay_w),
+        "party": party.load(t.get("party")).view(), "max_per_person": t.get("max_per_person"),
+        "warnings": _warnings(out_w, ret_w) if out_w and ret_w else [],
     }
 
 
-def _price_view(r: dict) -> dict:
-    return {k: r.get(k) for k in ("flight_date", "price", "provider", "route", "link", "orig_price", "stops",
-                                  "checked_at", "departs_at", "arrives_at")} | {"currency": r.get("currency") or "EUR"}
+def _price_view(r: dict | None) -> dict | None:
+    if r is None:
+        return None
+    return {k: r.get(k) for k in ("flight_date", "price", "provider", "route", "link", "checked_at", "nights",
+                                  "offer")} | price_extras(r)
 
 
 def combo_view(c: dict, trip: dict, base: float | None) -> dict:
+    size = party.load(trip.get("party")).size
     return {k: c[k] for k in ("out_date", "ret_date", "nights", "total")} | {
-        "deal": trips.deal_reason(trip, c["total"], base), "out": _price_view(c["out"]),
-        "ret": _price_view(c["ret"]) if c["ret"] else None,  # None en los viajes de solo ida
+        "deal": trips.deal_reason(trip, c["total"], base), "per_person": round(c["total"] / size, 2),
+        "out": _price_view(c["out"]), "ret": _price_view(c["ret"]),  # None si el viaje no tiene ese tramo
+        "stay": _price_view(c.get("stay")),
     }
 
 
@@ -71,21 +91,32 @@ def list_trips(user: dict = Depends(current_user)):
     with db.connect() as con:
         names = {c["id"]: c["name"] for c in db.list_channels(con, user["id"], only_enabled=True)}
         for t in db.list_trips(con, user["id"]):
-            out_w, ret_w = trips.legs(con, t)
             combos, base = _current(con, s, t)
             best = min(combos, key=lambda c: (c["total"], c["out_date"], c["nights"] or 0), default=None)
-            out.append({**trip_view(t, out_w, ret_w), "base": base, "best": best and combo_view(best, t, base),
+            out.append({**trip_view(t, *trips.legs(con, t)), "base": base, "best": best and combo_view(best, t, base),
                         "n_dates": len({c["out_date"] for c in combos}), "trend": db.trip_trend(con, t["id"])[-30:],
                         "channels": [names[i] for i in t["channel_ids"] if i in names]})
     return {"trips": out}
 
 
 # ------------------------------------------------------------------------- CRUD
+class StayIn(BaseModel):
+    """La estancia de un viaje: destino en texto libre, webs de alojamiento y filtros (ver app/stays.py)."""
+    name: str = ""
+    destination: str = ""
+    providers: list[str] = []
+    filters: dict | None = None
+
+
 class TripIn(BaseModel):
     model_config = {"populate_by_name": True}
     name: str = ""
-    outbound: LegIn | None = None               # tramo de ida (obligatorio)
+    outbound: LegIn | None = None               # tramo de ida (sin ida = solo estancia)
     inbound: LegIn | None = Field(default=None, alias="return")  # tramo de vuelta (opcional = solo ida)
+    stay: StayIn | None = None                  # estancia (opcional)
+    #: Viajeros: {"travelers": [{"age": None | 0–17, "resident": "" | "canarias"…}], "large_family": ""}.
+    party: dict | None = None
+    max_per_person: float | str | None = None
     min_nights: int | str | None = None
     max_nights: int | str | None = None
     date_from: str | None = None
@@ -116,24 +147,62 @@ def parse_trip(body: TripIn, current_legs: dict | None = None) -> dict:
     if lo > hi:
         errors.append("Las noches mínimas no pueden ser más que las máximas.")
     max_total = parse_number(body.max_total, "El precio total máximo", errors)
+    per_person = parse_number(body.max_per_person, "El precio máximo por persona", errors)
     disc = parse_number(body.discount_pct, "El descuento", errors, default=30.0, lo=-1.0, hi=95.0)
     d_from, d_to = parse_dates(body.date_from, body.date_to, errors)
-    if body.outbound is None:
-        errors.append("Un viaje necesita al menos el tramo de ida.")
+    group = party.parse(body.party, errors)
+    if body.outbound is None and body.stay is None:
+        errors.append("Un viaje necesita el tramo de ida, la estancia o los dos.")
         raise Invalid(errors)
-    out_data = parse_leg(body.outbound, errors, body.enabled)
+    if body.outbound is None and body.inbound is not None:
+        errors.append("Un viaje con vuelta necesita también la ida.")
+    out_data = parse_leg(body.outbound, errors, body.enabled) if body.outbound is not None else None
     ret_data = parse_leg(body.inbound, errors, body.enabled) if body.inbound is not None else None
+    stay_data = parse_stay(body.stay, errors, body.enabled) if body.stay is not None else None
     if errors:
         raise Invalid(errors)
     current_legs = current_legs or {}
-    out_cov = with_coverage(out_data, current_legs.get("outbound"))
+    out_cov = with_coverage(out_data, current_legs.get("outbound")) if out_data else None
     ret_cov = with_coverage(ret_data, current_legs.get("return")) if ret_data else None
-    arrow = "⇄" if ret_data else "→"
+    if stay_data:
+        # Como en los transportes: las webs que ahora no están cargadas (desactivadas o rotas) se conservan.
+        keep = (current_legs.get("stay") or {}).get("coverage", {})
+        stay_data["coverage"] = {k: {"routes": [], "active": True, "checked_at": None} for k in stay_data["providers"]}
+        stay_data["coverage"] |= {k: c for k, c in keep.items() if k not in PROVIDERS}
+    if out_data:
+        name = f"{out_data['origin']} {'⇄' if ret_data else '→'} {out_data['destination']}"
+        name += f" · {stay_data['destination']}" if stay_data else ""
+    else:
+        name = f"Estancia en {stay_data['destination']}"
     return {
-        "name": body.name.strip()[:200] or f"{out_data['origin']} {arrow} {out_data['destination']}",
+        "name": body.name.strip()[:200] or name[:200],
         "min_nights": lo, "max_nights": hi, "date_from": d_from, "date_to": d_to, "max_total": max_total,
+        "max_per_person": per_person, "party": group.to_json(),
         "discount_pct": disc if disc is not None else 30.0, "enabled": body.enabled,
-        "outbound": out_cov, "return": ret_cov,
+        "outbound": out_cov, "return": ret_cov, "stay": stay_data,
+    }
+
+
+def parse_stay(body: StayIn, errors: list[str], enabled: bool) -> dict:
+    """Valida la estancia y devuelve los datos para `db.create_watch` (los errores se acumulan en `errors`)."""
+    destination = " ".join(body.destination.split())
+    if len(destination) < 2:
+        errors.append("Indica el destino del alojamiento (una ciudad, una isla, una zona…).")
+    elif len(destination) > stays.PLACE_MAX:
+        errors.append(f"El destino del alojamiento es demasiado largo (como mucho {stays.PLACE_MAX} caracteres).")
+        destination = destination[:stays.PLACE_MAX]
+    chosen = [k for k in dict.fromkeys(body.providers) if k in PROVIDERS]
+    providers = [k for k in chosen if PROVIDERS[k].kind == kinds.STAY]
+    if len(providers) < len(chosen):
+        errors.append("Para el alojamiento solo se pueden elegir webs de alojamiento.")
+    elif not providers:
+        errors.append("Elige al menos una web de alojamiento.")
+    filters = stays.parse(body.filters, errors)
+    return {
+        "name": body.name.strip()[:200] or f"Alojamiento en {destination}"[:200], "kind": kinds.STAY,
+        "origin": "", "destination": destination, "providers": providers, "filters": filters.to_json(),
+        "max_price": None, "discount_pct": 30.0, "date_from": None, "date_to": None, "max_stops": None,
+        "enabled": enabled,
     }
 
 

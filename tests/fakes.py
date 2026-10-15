@@ -86,13 +86,15 @@ FAKE_KEYS = {"vueling", "ryanair", "wizzair", "buscador", "mockweb"}
 
 
 def make_fetch(key):
-    def fetch(self, page, origin, destination, max_months, debug_dir=None, **_kw):
+    def fetch(self, page, origin, destination, max_months, debug_dir=None, **kw):
         if key in FETCH:
             return FETCH[key](self, page, origin, destination, max_months, debug_dir)
         _blocked(key)
         if not operates(key, origin, destination):
             return []
-        return [DayPrice(TODAY + timedelta(days=10 + i), p, currency=CURRENCY.get(key, "EUR"), origin=origin,
+        # Una web que admite viajeros (el Buscador) da el precio de todos: aquí, el de uno por las plazas.
+        seats = kw["passengers"].seats if kw.get("passengers") else 1
+        return [DayPrice(TODAY + timedelta(days=10 + i), p * seats, currency=CURRENCY.get(key, "EUR"), origin=origin,
                          destination=destination, stops=1 if key == "buscador" and i == 1 else 0)
                 for i, p in enumerate(PRICES.get(key, [100, 90, 110]))]
     return fetch
@@ -141,15 +143,40 @@ BUSCADOR = bundle.dumps([{
     "key": "buscador", "label": "Buscador", "color": "#1a73e8", "coverage": "universal", "max_routes": 12,
     "health_origin": "SVQ", "health_destination": "TFN", "link_template": "https://buscador.test/{origin}/{destination}/{date}",
     "notes": "Solo para los tests.", "min_interval": 0, "stealth": 0,
-    "code": "def fetch_route(api, origin, destination, start, max_months, max_stops=None):\n    return {}\n",
+    "code": "def fetch_route(api, origin, destination, start, max_months, max_stops=None, passengers=None):\n"
+            "    return {}\n",
+}])
+
+#: Alojamiento de pruebas: un script de verdad (se ejecuta tal cual, sin red) con tres ofertas por búsqueda, para
+#: probar los filtros. Por noche y viajero: el hostal, 20 €; el apartamento (nota 7,5), 25 €; el hotel (nota 8,6,
+#: desayuno), 30 € + 1 € por cada día que falte desde dentro de 5 días.
+CASAS = bundle.dumps([{
+    "key": "casas", "kind": "hotel", "label": "Casas de prueba", "color": "#0f766e", "coverage": "universal",
+    "health_origin": "Puerto de la Cruz", "health_destination": "",
+    "link_template": "https://casas.test/buscar?q={destination}&entrada={date}&salida={checkout}&adultos={adults}",
+    "notes": "Solo para los tests.", "min_interval": 0, "stealth": 0,
+    "code": '''def fetch_stay(api, destination, checkin, nights, guests, filters):
+    api.log("busco", destination, checkin.isoformat(), nights, "noches")
+    if destination == "Ningún sitio":
+        return []
+    people = guests.adults + len(guests.child_ages)
+    extra = max(0, (checkin - date.today()).days - 5)
+    return [
+        StayOffer(20 * nights * people, name="Hostal Centro", type="hostal", rating=9.0),
+        StayOffer(25 * nights * people, name="Apartamento Sol", type="apartment", rating=7.5, entire=True),
+        StayOffer((30 + extra) * nights * people, name="Hotel Playa", type="hotel", rating=8.6, stars=4,
+                  board="breakfast", free_cancel=True, url="https://casas.test/hotel-playa"),
+    ]
+''',
 }])
 
 
 def import_extra():
-    """Wizz Air (del catálogo) y el Buscador directamente en la BD, como si se hubieran importado."""
+    """Wizz Air (del catálogo), el Buscador y las Casas de prueba directamente en la BD, como si se hubieran
+    importado."""
     catalog = [p for p in bundle.loads(bundle.CATALOG.read_text("utf-8")) if p["key"] == "wizzair"]
     with db.connect() as con:
-        for p in catalog + bundle.loads(BUSCADOR):
+        for p in catalog + bundle.loads(BUSCADOR) + bundle.loads(CASAS):
             if not db.get_provider_script(con, p["key"]):
                 db.save_provider_script(con, p["key"], bundle.values(p) | {"enabled": 1}, "admin")
     scripted.reload()

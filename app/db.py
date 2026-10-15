@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import URL, Engine
 
-from . import config, kinds, places
+from . import config, kinds, places, stays
 
 DEFAULT_SETTINGS = {
     "schedule_hours": "8",
@@ -92,8 +92,10 @@ channels = Table(
 )
 
 # Vigilancias = tramos internos de un viaje (ya no se gestionan sueltas desde el panel). Cada una pertenece a un
-# único viaje (`trip_id`) con un papel (`role`: ida, vuelta y, en la 2.1, estancia). El viaje es el dueño: borrarlo
-# borra sus tramos. Guardan la cobertura, el histórico de precios y la configuración de proveedores del tramo.
+# único viaje (`trip_id`) con un papel (`role`: ida, vuelta o estancia). El viaje es el dueño: borrarlo borra sus
+# tramos. Guardan la cobertura, el histórico de precios y la configuración de proveedores del tramo.
+# Una estancia (`role = "stay"`, transporte `hotel`, ver app/stays.py) no tiene origen ("") y su destino es texto
+# libre («Puerto de la Cruz»); sus filtros van en `filters` (JSON).
 watches = Table(
     "watches", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
@@ -102,10 +104,10 @@ watches = Table(
     # Viaje al que pertenece el tramo. Nullable solo durante la migración 0009; después, NOT NULL.
     Column("trip_id", Integer, ForeignKey("trips.id", ondelete="CASCADE", name="fk_watches_trip_id"),
            nullable=False),
-    Column("role", String(10), nullable=False, server_default="outbound"),  # outbound | return (| stay en la 2.1)
+    Column("role", String(10), nullable=False, server_default="outbound"),  # outbound | return | stay
     Column("name", String(200), nullable=False),
     Column("origin", PLACE, nullable=False),
-    Column("destination", PLACE, nullable=False),
+    Column("destination", String(stays.PLACE_MAX), nullable=False),  # código de lugar o, en una estancia, texto
     # max_price/discount_pct/date_from/date_to se conservan por el tramo, pero la lógica de chollo vive en el viaje.
     Column("max_price", Double),
     Column("discount_pct", Double, nullable=False, server_default="30"),
@@ -115,6 +117,7 @@ watches = Table(
     Column("enabled", Integer, nullable=False, server_default="1"),
     Column("created_at", ISO, nullable=False),
     Column("kind", KIND, nullable=False, server_default=kinds.DEFAULT),  # transporte: flight (ver app/kinds.py)
+    Column("filters", Text),  # filtros de una estancia (JSON, ver stays.StayFilters); NULL en los transportes
     Index("idx_watches_user", "user_id"),
     Index("idx_watches_trip", "trip_id"),
     **_TABLE_OPTS,
@@ -164,7 +167,8 @@ provider_scripts = Table(
     Column("color", String(7), nullable=False),
     Column("coverage", String(20), nullable=False),  # network | probe | universal
     Column("max_routes", Integer),
-    Column("health_origin", NODE, nullable=False),
+    # Ruta de prueba; en uno de alojamiento, el destino de prueba (texto) y `health_destination` vacío.
+    Column("health_origin", String(stays.PLACE_MAX), nullable=False),
     Column("health_destination", NODE, nullable=False),
     Column("link_template", Text, nullable=False),
     Column("notes", Text, nullable=False),
@@ -205,8 +209,26 @@ prices = Table(
     # Salida y llegada (hora local de cada lugar, «AAAA-MM-DDTHH:MM») si la web las da; NULL = no se sabe.
     Column("departs_at", String(16)),
     Column("arrives_at", String(16)),
+    # Estancias: `flight_date` es la fecha de entrada, `nights` las noches y `offer` el alojamiento (JSON con nombre,
+    # tipo, nota, régimen y enlace, ver stays.StayOffer.details). NULL en los transportes.
+    Column("nights", Integer),
+    Column("offer", Text),
+    # 1 = precio estimado: la web no admite varios viajeros y es el de un adulto × plazas, sin descuentos.
+    Column("estimated", Integer),
     Index("idx_prices_snap", "watch_id", "provider", "checked_at"),
     Index("idx_prices_date", "watch_id", "provider", "flight_date"),
+    **_TABLE_OPTS,
+)
+
+# Última consulta de cada combinación (entrada, noches) de una estancia en cada web, haya o no alojamiento libre:
+# decide qué se consulta en la siguiente ronda (primero lo nunca consultado y lo más antiguo, ver stays.plan).
+stay_queries = Table(
+    "stay_queries", metadata,
+    Column("watch_id", Integer, ForeignKey("watches.id", ondelete="CASCADE"), primary_key=True),
+    Column("provider", String(50), primary_key=True),
+    Column("checkin", String(10), primary_key=True),
+    Column("nights", Integer, primary_key=True),
+    Column("checked_at", ISO, nullable=False),
     **_TABLE_OPTS,
 )
 
@@ -226,9 +248,9 @@ alerts = Table(
 )
 
 # Viajes: la entidad principal. El usuario crea un viaje y este posee sus tramos (vigilancias internas, ver
-# `watches`): un tramo de ida obligatorio, uno de vuelta opcional (solo ida = sin tramo de vuelta) y, en la 2.1,
-# una estancia. El precio de un viaje es la suma del más barato de cada tramo para cada fecha de ida y cada
-# número de noches permitido. El transporte (kind) se deriva del tramo de ida.
+# `watches`): ida, vuelta (opcional, solo con ida) y estancia (opcional); al menos la ida o la estancia (un viaje de
+# solo estancia no tiene transporte). El precio de un viaje es la suma del más barato de cada tramo para cada fecha
+# de ida (o de entrada) y cada número de noches permitido. El transporte (kind) se deriva del tramo de ida.
 trips = Table(
     "trips", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
@@ -240,10 +262,12 @@ trips = Table(
     Column("max_nights", Integer, nullable=False),
     Column("date_from", String(10)),  # ventana de fechas de ida (NULL = sin límite)
     Column("date_to", String(10)),
-    Column("max_total", Double),      # precio total máximo (ida + vuelta, en euros)
+    Column("max_total", Double),      # precio total máximo (de todos los tramos y viajeros, en euros)
     Column("discount_pct", Double, nullable=False, server_default="30"),
     Column("enabled", Integer, nullable=False, server_default="1"),
     Column("created_at", ISO, nullable=False),
+    Column("party", Text),            # viajeros (JSON, ver app/party.py); NULL = un adulto sin descuentos
+    Column("max_per_person", Double),  # o, si no, precio máximo por viajero (total / viajeros)
     Index("idx_trips_user", "user_id"),
     **_TABLE_OPTS,
 )
@@ -256,7 +280,8 @@ trip_channels = Table(
 )
 
 # Histórico de un viaje: en cada comprobación, la combinación más barata de cada fecha de ida (en euros).
-# ret_date/ret_price son NULL en los viajes de solo ida (sin tramo de vuelta).
+# ret_date es la vuelta (o la salida del alojamiento) y NULL en los viajes de solo ida; ret_price, NULL sin tramo de
+# vuelta; out_price, NULL en los de solo estancia; stay_price, NULL sin estancia.
 trip_quotes = Table(
     "trip_quotes", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
@@ -265,8 +290,9 @@ trip_quotes = Table(
     Column("out_date", String(10), nullable=False),
     Column("ret_date", String(10)),  # NULL = viaje de solo ida
     Column("total", Double, nullable=False),
-    Column("out_price", Double, nullable=False),
-    Column("ret_price", Double),     # NULL = viaje de solo ida
+    Column("out_price", Double),     # NULL = viaje de solo estancia
+    Column("ret_price", Double),     # NULL = sin tramo de vuelta
+    Column("stay_price", Double),    # NULL = sin estancia
     Index("idx_trip_quotes", "trip_id", "checked_at"),
     **_TABLE_OPTS,
 )
@@ -565,7 +591,7 @@ def _watch_values(data: dict) -> dict:
         "name": data["name"], "origin": data["origin"], "destination": data["destination"],
         "max_price": data["max_price"], "discount_pct": data["discount_pct"], "date_from": data["date_from"],
         "date_to": data["date_to"], "max_stops": data.get("max_stops"), "enabled": int(data["enabled"]),
-        "kind": data.get("kind") or kinds.DEFAULT,
+        "kind": data.get("kind") or kinds.DEFAULT, "filters": data.get("filters"),
     }
 
 
@@ -635,6 +661,8 @@ def update_watch_provider(con, watch_id: int, provider: str, routes, active: boo
 
 
 def _coverage_of(data: dict) -> dict[str, dict]:
+    if data.get("kind") == kinds.STAY and "coverage" not in data:  # el alojamiento no tiene rutas
+        return {k: {"routes": [], "active": True, "checked_at": None} for k in data.get("providers", [])}
     return data.get("coverage") or default_coverage(data["origin"], data["destination"], data.get("providers", []),
                                                     data.get("kind") or kinds.DEFAULT)
 
@@ -672,8 +700,22 @@ def insert_prices(con, watch_id, provider, checked_at, rows):
          "price": getattr(r, "price_eur", None) or r.price, "currency": r.currency, "checked_at": checked_at,
          "orig_price": r.price if r.currency != "EUR" else None, "stops": getattr(r, "stops", 0),
          "origin": r.origin or None, "destination": r.destination or None,
-         "departs_at": minutes(getattr(r, "departure", None)), "arrives_at": minutes(getattr(r, "arrival", None))}
+         "departs_at": minutes(getattr(r, "departure", None)), "arrives_at": minutes(getattr(r, "arrival", None)),
+         "estimated": 1 if getattr(r, "estimated", False) else None}
         for r in rows
+    ])
+
+
+def insert_stay_prices(con, watch_id, provider, checked_at, offers):
+    """La oferta más barata de cada combinación consultada (`stays.StayOffer` con `day`, `nights` y `price_eur`)."""
+    if not offers:
+        return
+    con.execute(insert(prices), [
+        {"watch_id": watch_id, "provider": provider, "flight_date": o.day.isoformat(), "nights": o.nights,
+         "price": o.price_eur if o.price_eur is not None else o.price, "currency": o.currency,
+         "orig_price": o.price if o.currency != "EUR" else None, "stops": None, "checked_at": checked_at,
+         "offer": json.dumps(o.details(), ensure_ascii=False)}
+        for o in offers
     ])
 
 
@@ -685,10 +727,57 @@ def minutes(value) -> str | None:
 def latest_snapshot(con, watch_id, provider) -> list[dict]:
     p = prices.c
     last = select(func.max(p.checked_at)).where(p.watch_id == watch_id, p.provider == provider).scalar_subquery()
-    return _all(con, select(p.flight_date, p.price, p.checked_at, p.origin, p.destination, p.currency, p.orig_price,
-                            p.stops, p.departs_at, p.arrives_at)
+    return [_price_row(r) for r in _all(con, select(*_PRICE_COLS)
                 .where(p.watch_id == watch_id, p.provider == provider, p.checked_at == last)
-                .order_by(p.price, p.flight_date))
+                .order_by(p.price, p.flight_date))]
+
+
+_PRICE_COLS = (prices.c.flight_date, prices.c.price, prices.c.checked_at, prices.c.origin, prices.c.destination,
+               prices.c.currency, prices.c.orig_price, prices.c.stops, prices.c.departs_at, prices.c.arrives_at,
+               prices.c.nights, prices.c.offer, prices.c.estimated)
+
+
+def _price_row(r: dict) -> dict:
+    r["offer"] = json.loads(r["offer"]) if r.get("offer") else None
+    r["estimated"] = bool(r.get("estimated"))
+    return r
+
+
+def latest_stays(con, watch_id, provider, since_iso: str) -> list[dict]:
+    """Precios de una estancia: el último de cada combinación (entrada, noches) consultada desde `since_iso`.
+
+    A diferencia de los transportes, cada ronda solo consulta algunas combinaciones (ver stays.plan): no hay una
+    «última comprobación» completa."""
+    p = prices.c
+    rows = _all(con, select(*_PRICE_COLS).where(p.watch_id == watch_id, p.provider == provider,
+                                                p.checked_at >= since_iso).order_by(p.checked_at.desc(), p.id.desc()))
+    seen, out = set(), []
+    for r in rows:
+        k = (r["flight_date"], r["nights"])
+        if k not in seen:
+            seen.add(k)
+            out.append(_price_row(r))
+    return sorted(out, key=lambda r: (r["price"], r["flight_date"], r["nights"] or 0))
+
+
+def stay_checked(con, watch_id, provider) -> dict[tuple[str, int], str]:
+    """Última consulta de cada combinación (entrada ISO, noches) de una estancia en una web (con o sin precio)."""
+    q = stay_queries.c
+    rows = con.execute(select(q.checkin, q.nights, q.checked_at)
+                       .where(q.watch_id == watch_id, q.provider == provider)).all()
+    return {(d, n): c for d, n, c in rows}
+
+
+def mark_stay_queries(con, watch_id, provider, combos, checked_at: str):
+    """Apunta que se han consultado esas combinaciones [(entrada, noches)] (con o sin alojamiento libre)."""
+    if not combos:
+        return
+    q = stay_queries.c
+    for day, nights in combos:
+        con.execute(delete(stay_queries).where(q.watch_id == watch_id, q.provider == provider,
+                                               q.checkin == day.isoformat(), q.nights == nights))
+    con.execute(insert(stay_queries), [{"watch_id": watch_id, "provider": provider, "checkin": d.isoformat(),
+                                        "nights": n, "checked_at": checked_at} for d, n in combos])
 
 
 def baseline(con, watch_id, provider, before_iso, min_samples):
@@ -728,12 +817,17 @@ def checks_summary(con, watch_id, limit=60):
 
 # ------------------------------------------------------------------------ viajes
 def _trip_values(data: dict) -> dict:
-    return {k: data[k] for k in ("name", "min_nights", "max_nights", "date_from", "date_to", "max_total",
-                                 "discount_pct")} | {"enabled": int(data["enabled"])}
+    return {k: data.get(k) for k in ("name", "min_nights", "max_nights", "date_from", "date_to", "max_total",
+                                     "discount_pct", "party", "max_per_person")} | {"enabled": int(data["enabled"])}
+
+
+#: Papeles de los tramos de un viaje, en el orden en que se comprueban (la estancia, después del transporte).
+ROLES = ("outbound", "return", "stay")
 
 
 def trip_legs(con, trip_id: int) -> dict[str, dict]:
-    """Tramos del viaje por su papel: {"outbound": vigilancia, "return": vigilancia?} (solo ida = sin "return")."""
+    """Tramos del viaje por su papel: {"outbound"?, "return"?, "stay"?} (solo ida = sin "return"; solo estancia =
+    solo "stay")."""
     ws = _with_extras(con, _all(con, select(watches).where(watches.c.trip_id == trip_id).order_by(watches.c.id)))
     return {w["role"]: w for w in ws}
 
@@ -764,31 +858,31 @@ def get_trip(con, trip_id: int) -> dict | None:
 
 
 def create_trip(con, user_id: int, data: dict) -> int:
-    """Crea el viaje y sus tramos: `data["outbound"]` (obligatorio) y `data["return"]` (opcional = solo ida).
-    Cada tramo es una vigilancia con los datos de `create_watch`."""
+    """Crea el viaje y sus tramos: `data["outbound"]`, `data["return"]` (solo con ida) y `data["stay"]`, cada uno
+    opcional (al menos la ida o la estancia; lo valida la API). Cada tramo es una vigilancia (`create_watch`)."""
     tid = con.execute(insert(trips).values(
         **_trip_values(data), user_id=user_id, created_at=datetime.now().isoformat(timespec="seconds"),
     )).inserted_primary_key[0]
-    create_watch(con, user_id, data["outbound"], tid, "outbound")
-    if data.get("return"):
-        create_watch(con, user_id, data["return"], tid, "return")
+    for role in ROLES:
+        if data.get(role):
+            create_watch(con, user_id, data[role], tid, role)
     return tid
 
 
 def update_trip(con, trip_id: int, data: dict):
-    """Actualiza el viaje y reconcilia sus tramos: el de ida siempre se actualiza; el de vuelta se crea si se
-    añade, se actualiza si sigue y se borra (con su histórico) si el viaje pasa a solo ida."""
+    """Actualiza el viaje y reconcilia sus tramos: cada uno se crea si se añade, se actualiza si sigue y se borra
+    (con su histórico) si se quita (pasar a solo ida, quitar el alojamiento o el transporte)."""
     con.execute(update(trips).where(trips.c.id == trip_id).values(**_trip_values(data)))
     legs = trip_legs(con, trip_id)
-    user_id = legs["outbound"]["user_id"]
-    update_watch(con, legs["outbound"]["id"], data["outbound"])
-    if data.get("return"):
-        if "return" in legs:
-            update_watch(con, legs["return"]["id"], data["return"])
-        else:
-            create_watch(con, user_id, data["return"], trip_id, "return")
-    elif "return" in legs:
-        delete_watch(con, legs["return"]["id"])
+    user_id = con.execute(select(trips.c.user_id).where(trips.c.id == trip_id)).scalar()
+    for role in ROLES:
+        if data.get(role):
+            if role in legs:
+                update_watch(con, legs[role]["id"], data[role])
+            else:
+                create_watch(con, user_id, data[role], trip_id, role)
+        elif role in legs:
+            delete_watch(con, legs[role]["id"])
 
 
 def delete_trip(con, trip_id: int):
@@ -813,8 +907,9 @@ def insert_trip_quotes(con, trip_id: int, checked_at: str, quotes: list[dict]):
     if quotes:
         con.execute(insert(trip_quotes), [
             {"trip_id": trip_id, "checked_at": checked_at, "out_date": q["out_date"], "ret_date": q["ret_date"],
-             "total": q["total"], "out_price": q["out"]["price"],
-             "ret_price": q["ret"]["price"] if q["ret"] else None}  # None en los viajes de solo ida
+             "total": q["total"], "out_price": q["out"]["price"] if q.get("out") else None,  # None: solo estancia
+             "ret_price": q["ret"]["price"] if q.get("ret") else None,  # None en los viajes de solo ida
+             "stay_price": q["stay"]["price"] if q.get("stay") else None}
             for q in quotes
         ])
 
@@ -897,6 +992,7 @@ def purge(con, retention_days: int):
     con.execute(delete(alerts).where(alerts.c.sent_at < cutoff))
     con.execute(delete(trip_quotes).where(trip_quotes.c.checked_at < cutoff))
     con.execute(delete(trip_alerts).where(trip_alerts.c.sent_at < cutoff))
+    con.execute(delete(stay_queries).where(stay_queries.c.checked_at < cutoff))
 
 
 # ------------------------------------------------------------ cobertura de rutas

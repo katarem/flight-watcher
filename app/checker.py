@@ -1,5 +1,8 @@
-"""Orquesta una ronda de comprobaciones: por cada vigilancia y proveedor consulta precios,
-los guarda, aplica las reglas de aviso y notifica. Al final evalúa los viajes cuyos tramos se han comprobado."""
+"""Orquesta una ronda de comprobaciones: por cada tramo y proveedor consulta precios y los guarda. Al final evalúa los
+viajes cuyos tramos se han comprobado (reglas de aviso y avisos, en `trips.evaluate`).
+
+Los transportes se consultan primero y las estancias después: qué combinaciones de entrada y noches se consultan de
+una estancia depende de los precios del transporte de su viaje (ver `stays.plan`)."""
 from __future__ import annotations
 
 import logging
@@ -9,7 +12,7 @@ from contextlib import contextmanager, nullcontext
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from . import db, fx, notify, places, trips
+from . import db, fx, kinds, notify, party, places, stays, trips
 from .config import DEBUG_DIR
 from .providers import PROVIDERS, DayPrice, ProviderBlocked, ordered
 
@@ -84,10 +87,13 @@ def _cleanup_debug(days: int = 7):
             pass
 
 
-def _fetch_one(browser, settings, watch, prov, origin, destination, debug_dir) -> list[DayPrice]:
+def _fetch_one(browser, settings, watch, prov, origin, destination, debug_dir,
+               group: party.Party = party.DEFAULT) -> list[DayPrice]:
     """Consulta una ruta concreta (hasta 2 intentos). Lanza la última excepción si fallan ambos."""
     months = int(settings["max_months"])
     kw = {"max_stops": watch.get("max_stops")} if prov.stops_filter else {}
+    if prov.party_aware:
+        kw["passengers"] = group
     for attempt in (1, 2):
         if not prov.needs_browser:
             try:
@@ -117,14 +123,23 @@ def _usable(watch, p: DayPrice) -> bool:
     return limit is None or p.stops is None or p.stops <= limit
 
 
-def _fetch_all_routes(browser, settings, watch, prov, pairs, debug_dir) -> tuple[list[DayPrice], list[str]]:
+def _for_group(p: DayPrice, prov, group: party.Party) -> DayPrice:
+    """El precio para todos los viajeros: el de la web si los admite; si no, el de un adulto × plazas (estimado)."""
+    if not prov.party_aware and not group.simple:
+        p.price *= group.seats
+        p.estimated = True
+    return p
+
+
+def _fetch_all_routes(browser, settings, watch, prov, pairs, debug_dir,
+                      group: party.Party = party.DEFAULT) -> tuple[list[DayPrice], list[str]]:
     """Precio mínimo (en euros) por día entre los pares de aeropuertos que el proveedor cubre (TCI = TFN + TFS)."""
     best: dict = {}
     errors = []
     for origin, destination in pairs:
         try:
-            found = _fetch_one(browser, settings, watch, prov, origin, destination, debug_dir)
-            found = [p for p in found if _usable(watch, p)]
+            found = _fetch_one(browser, settings, watch, prov, origin, destination, debug_dir, group)
+            found = [p for p in (_for_group(x, prov, group) for x in found) if _usable(watch, p)]
         except fx.FxError as exc:
             errors.append(f"{origin}-{destination}: sin cambio de divisa ({exc})")
             continue
@@ -137,14 +152,14 @@ def _fetch_all_routes(browser, settings, watch, prov, pairs, debug_dir) -> tuple
     return [best[d] for d in sorted(best)], errors
 
 
-def _check_one(browser, settings, tz, watch, prov, pairs, trigger) -> dict:
+def _check_one(browser, settings, tz, watch, prov, pairs, trigger, group: party.Party = party.DEFAULT) -> dict:
     now = datetime.now(tz).replace(tzinfo=None)
     started = now.isoformat(timespec="seconds")
     with db.connect() as con:
         run_id = db.start_run(con, watch["id"], prov.key, trigger, started)
 
     debug_dir = DEBUG_DIR if settings["debug"] == "1" else None
-    prices, errors = _fetch_all_routes(browser, settings, watch, prov, pairs, debug_dir)
+    prices, errors = _fetch_all_routes(browser, settings, watch, prov, pairs, debug_dir, group)
     # Solo es un fallo si no se pudo consultar ninguna ruta (p. ej. TCI: Vueling no vuela a TFS).
     error = "; ".join(errors) if errors and not prices else None
     if errors and prices:
@@ -166,6 +181,54 @@ def _check_one(browser, settings, tz, watch, prov, pairs, trigger) -> dict:
     return {"error": error, "started": started}
 
 
+def _check_stay(settings, tz, watch, prov, trip: dict, trigger) -> dict:
+    """Consulta una estancia en una web: las combinaciones (entrada, noches) que tocan en esta ronda (`stays.plan`),
+    y guarda la oferta más barata que cumple los filtros de cada una."""
+    now = datetime.now(tz).replace(tzinfo=None)
+    started = now.isoformat(timespec="seconds")
+    group, filters = party.load(trip.get("party")), stays.load(watch.get("filters"))
+    with db.connect() as con:
+        legs = db.trip_legs(con, trip["id"])
+        out_by_day = trips.legs_by_day(con, settings, legs["outbound"], now) if "outbound" in legs else None
+        ret_by_day = trips.legs_by_day(con, settings, legs["return"], now) if "return" in legs else None
+        combos = stays.plan(trip, now.date(), out_by_day, ret_by_day, db.stay_checked(con, watch["id"], prov.key))
+        run_id = db.start_run(con, watch["id"], prov.key, trigger, started)
+    debug_dir = DEBUG_DIR if settings["debug"] == "1" else None
+    found, errors, queried = [], [], []
+    for checkin, nights in combos:
+        try:
+            offers = [o for o in prov.fetch_stays(watch["destination"], checkin, nights, group, filters, debug_dir)
+                      if filters.accepts(o)]
+            for o in offers:
+                o.price_eur = fx.to_eur(o.price, o.currency)
+        except fx.FxError as exc:
+            errors.append(f"{checkin:%d/%m} ({nights} n.): sin cambio de divisa ({exc})")
+            continue
+        except ProviderBlocked as exc:
+            errors.append(str(exc))
+            break  # si nos bloquea, insistir con el resto solo empeora las cosas
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{checkin:%d/%m} ({nights} n.): {type(exc).__name__}: {exc}".splitlines()[0][:300])
+            continue
+        queried.append((checkin, nights))
+        if offers:
+            best = min(offers, key=lambda o: o.price_eur)
+            best.day, best.nights = checkin, nights
+            found.append(best)
+    # Una combinación sin alojamiento disponible no es un error (queda como consultada para la rotación).
+    error = "; ".join(errors[:3]) if errors and not found else None
+    if errors and found:
+        log.warning("%s/%s: combinaciones con error ignoradas: %s", watch["name"], prov.key, "; ".join(errors))
+    if not combos:
+        error = None
+    with db.connect() as con:
+        db.insert_stay_prices(con, watch["id"], prov.key, started, found)
+        db.mark_stay_queries(con, watch["id"], prov.key, queried, started)
+        db.finish_run(con, run_id, datetime.now(tz).replace(tzinfo=None).isoformat(timespec="seconds"),
+                      error is None, len(found), 0, error)
+    return {"error": error, "started": started, "queried": len(combos)}
+
+
 def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int | None = None,
                trip_id: int | None = None) -> str:
     """Ejecuta una ronda (de todos los usuarios, o solo de `user_id`; de una vigilancia o de los dos tramos
@@ -179,6 +242,7 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
         tz = _tz(settings)
         with db.connect() as con:
             users = {u["id"]: u for u in db.list_users(con)}
+            all_trips = {t["id"]: t for t in db.list_trips(con, user_id)}
             user_channels = {uid: db.list_channels(con, uid, only_enabled=True) for uid in users}
             trip = db.get_trip(con, trip_id) if trip_id else None
             if trip_id and not trip:
@@ -189,6 +253,8 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
             watches = [w for w in db.list_watches(con, user_id)
                        if users.get(w["user_id"], {}).get("enabled")
                        and (w["id"] in only if only else w["enabled"])]
+            # Las estancias, al final: su plan depende de los precios recién traídos del transporte.
+            watches.sort(key=lambda w: (w["role"] == "stay", w["id"]))
             # Viajes: el pedido o los activos con algún tramo en esta ronda (los tramos llevan su trip_id).
             checked_trips = {w["trip_id"] for w in watches}
             trip_list = [trip] if trip else [t for t in db.list_trips(con, user_id)
@@ -204,13 +270,20 @@ def run_checks(watch_id: int | None = None, trigger: str = "cron", user_id: int 
             for w in watches:
                 mine = problems.setdefault(w["user_id"], [])
                 # Solo se consultan y guardan precios de cada tramo; los chollos se evalúan por viaje más abajo.
+                owner_trip = trip if trip and trip["id"] == w["trip_id"] else all_trips.get(w["trip_id"])
+                if owner_trip is None:
+                    continue
                 for key in ordered(w["providers"]):
                     prov, cov = PROVIDERS[key], w["coverage"][key]
                     if not cov["active"]:  # no opera la ruta ahora (p. ej. de temporada): ni se consulta
                         continue
-                    pairs = cov["routes"] or places.routes(w["origin"], w["destination"], w["kind"])
                     STATE["current"] = f"{w['name']} · {prov.label}"
-                    res = _check_one(browser, settings, tz, w, prov, pairs, trigger)
+                    if w["kind"] == kinds.STAY:
+                        res = _check_stay(settings, tz, w, prov, owner_trip, trigger)
+                    else:
+                        pairs = cov["routes"] or places.routes(w["origin"], w["destination"], w["kind"])
+                        res = _check_one(browser, settings, tz, w, prov, pairs, trigger,
+                                         party.load(owner_trip.get("party")))
                     if res["error"]:
                         mine.append(f"{w['name']} · {prov.label}: {res['error']}")
 

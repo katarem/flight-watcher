@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
-from . import db, fx
+from . import db, fx, kinds, party, stays
 from .providers import PROVIDERS, ProviderBlocked, ProviderError, ProviderTimeout, ordered
 
 #: Segundos sin ninguna señal de vida del proveedor (turno, petición, traza o `api.log`) para dar la prueba por
@@ -163,16 +163,57 @@ def _prices_step(prov, origin, destination, browser_factory=None, sink: list | N
     return _step("Precios (1 mes)", run, say, progress)
 
 
+#: Búsqueda de la prueba de un proveedor de alojamiento: dentro de un mes, 2 noches, 2 adultos.
+STAY_TEST = {"days": 30, "nights": 2, "guests": party.Party((party.Traveler(), party.Traveler()))}
+
+
+def _stay_step(prov, destination, sink: list | None = None, say=None, progress: Progress | None = None) -> dict:
+    """Alojamientos de una búsqueda (ver `STAY_TEST`). Si se pasa `sink`, deja ahí las ofertas."""
+    checkin = date.today() + timedelta(days=STAY_TEST["days"])
+    nights, guests = STAY_TEST["nights"], STAY_TEST["guests"]
+
+    def run():
+        if say:
+            say("info", f"Llamo a fetch_stay(api, {destination!r}, {checkin.isoformat()}, {nights}, 2 adultos, "
+                "filtros por defecto)")
+        found = prov.fetch_stays(destination, checkin, nights, guests, stays.DEFAULT)
+        for o in found:
+            o.day, o.nights = checkin, nights
+        if sink is not None:
+            sink.extend(found)
+        if not found:
+            return "empty", f"Sin alojamientos en «{destination}» para el {checkin:%d/%m} ({nights} noches)."
+        cheapest = min(found, key=lambda o: o.price)
+        return "ok", (f"{len(found)} alojamientos en «{destination}» para el {checkin:%d/%m} ({nights} noches); el más "
+                      f"barato, {cheapest.price:g} {cheapest.currency}" + (f" ({cheapest.name})" if cheapest.name else "")
+                      + ".")
+    return _step("Alojamientos (una búsqueda)", run, say, progress)
+
+
+def _route_text(prov, o: str, d: str) -> str:
+    return o if prov is not None and prov.kind == kinds.STAY else f"{o}→{d}"
+
+
+def _test_route(prov, origin: str | None, destination: str | None) -> tuple[str, str]:
+    """La ruta de la prueba: la pedida o la del proveedor (uno de alojamiento, siempre su destino de prueba)."""
+    if prov.kind == kinds.STAY:
+        return prov.health_route[0], ""
+    return origin or prov.health_route[0], destination or prov.health_route[1]
+
+
 def check_provider(key: str, origin: str | None = None, destination: str | None = None,
                    browser_factory=None, progress: Progress | None = None) -> dict:
     prov = PROVIDERS[key]
-    o, d = origin or prov.health_route[0], destination or prov.health_route[1]
+    o, d = _test_route(prov, origin, destination)
     started = time.monotonic()
-    steps = [_coverage_step(prov, o, d, progress=progress)]
-    if steps[0]["status"] != "blocked":  # si ya nos bloquea, no insistir
-        steps.append(_prices_step(prov, o, d, browser_factory, progress=progress))
+    if prov.kind == kinds.STAY:
+        steps = [_stay_step(prov, o, progress=progress)]
+    else:
+        steps = [_coverage_step(prov, o, d, progress=progress)]
+        if steps[0]["status"] != "blocked":  # si ya nos bloquea, no insistir
+            steps.append(_prices_step(prov, o, d, browser_factory, progress=progress))
     status = worst(steps)
-    result = {"key": key, "status": status, "route": f"{o}→{d}", "steps": steps,
+    result = {"key": key, "status": status, "route": _route_text(prov, o, d), "steps": steps,
               "latency_ms": int((time.monotonic() - started) * 1000), "checked_at": _now()}
     with db.connect() as con:
         db.save_health(con, key, status, [{**s, "route": result["route"]} for s in steps], result["latency_ms"],
@@ -199,7 +240,7 @@ def run(keys=None, origin: str | None = None, destination: str | None = None, br
             out.append(fut.result())
             continue
         # Sigue en segundo plano: si acaba, su resultado sustituye a este en `provider_health`.
-        route = f"{origin or prov.health_route[0]}→{destination or prov.health_route[1]}"
+        route = _route_text(prov, *_test_route(prov, origin, destination))
         steps = [{**s, "route": route} for s in [*list(progress.steps), stopped[k]]]
         res = {"key": k, "status": worst(steps), "route": route, "steps": steps, "latency_ms": stopped[k]["ms"],
                "checked_at": _now()}
@@ -232,14 +273,20 @@ def check_draft(build, origin: str, destination: str, say=None, idle_timeout: fl
         def load():
             prov = build(say)
             made.append(prov)
+            if prov.kind == kinds.STAY:
+                return "ok", "Define fetch_stay."
             extra = {"network": "network", "probe": "probe"}.get(prov.coverage)
-            fns = ["fetch_route" + (" (con max_stops)" if prov.stops_filter else "")] + ([extra] if extra else [])
+            accepts = [a for a, on in (("max_stops", prov.stops_filter), ("passengers", prov.party_aware)) if on]
+            fns = ["fetch_route" + (f" (con {' y '.join(accepts)})" if accepts else "")] + ([extra] if extra else [])
             return "ok", f"Define {' y '.join(fns)}."
         out = [_step("Carga del script", load, say, progress)]
         if not made:
             return out
         prov = made[0]
         key = prov.key
+        if prov.kind == kinds.STAY:
+            out.append(_stay_step(prov, origin, sink=found, say=say, progress=progress))
+            return out
         out.append(_coverage_step(prov, origin, destination, say, progress))
         if out[-1]["status"] != "blocked":  # si ya nos bloquea, no insistir
             out.append(_prices_step(prov, origin, destination, sink=found, say=say, progress=progress))
@@ -258,15 +305,24 @@ def check_draft(build, origin: str, destination: str, say=None, idle_timeout: fl
         result = [*list(progress.steps), cut]
         if say:
             say("error", f"{cut['name']}: {cut['detail']}")
-    route = f"{origin}→{destination}"
+    route = origin if not destination else f"{origin}→{destination}"
     return {
         "key": key, "status": worst(result), "route": route, "steps": [{**s, "route": route} for s in result],
         "latency_ms": int((time.monotonic() - started) * 1000), "checked_at": _now(),
-        "sample": [{"day": p.day.isoformat(), "price": p.price, "currency": p.currency, "origin": p.origin,
-                    "destination": p.destination, "stops": p.stops, "departs_at": db.minutes(p.departure),
-                    "arrives_at": db.minutes(p.arrival)} for p in sorted(found, key=lambda p: p.day)[:62]],
+        "sample": [_sample(p, origin) for p in sorted(found, key=lambda p: (p.day, p.price))[:62]],
         "n_prices": len(found),
     }
+
+
+def _sample(p, origin: str) -> dict:
+    """Un precio de la muestra de la prueba del editor (un día de transporte o una oferta de alojamiento)."""
+    if isinstance(p, stays.StayOffer):
+        return {"day": p.day.isoformat(), "price": p.price, "currency": p.currency, "origin": "",
+                "destination": origin, "stops": None, "departs_at": None, "arrives_at": None, "nights": p.nights,
+                "offer": p.details()}
+    return {"day": p.day.isoformat(), "price": p.price, "currency": p.currency, "origin": p.origin,
+            "destination": p.destination, "stops": p.stops, "departs_at": db.minutes(p.departure),
+            "arrives_at": db.minutes(p.arrival), "nights": None, "offer": None}
 
 
 def check_fx() -> dict:
