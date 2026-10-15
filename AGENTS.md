@@ -93,7 +93,7 @@ tests/
 
 ## Versiones y CI/CD
 
-`__version__` en `app/__init__.py` + entrada en `CHANGELOG.md` en cada versión. `.github/workflows/docker.yml`: tests (smoke + migraciones con datos + `alembic check`), panel (lint, `tsc`, Vitest, build y Playwright + axe) y, si pasan, imagen `linux/amd64` a `ghcr.io/<repositorio>` (= `ghcr.io/katarem/trip-watch`) (`latest`+sha en `main`; `X.Y.Z`/`X.Y`/`latest` con la etiqueta `vX.Y.Z`, que debe coincidir con `__version__`). El `docker-compose.yml` usa esa imagen (`FW_VERSION`) y conserva `build: .`.
+`__version__` en `app/__init__.py` + entrada en `CHANGELOG.md` en cada versión. `.github/workflows/docker.yml`: tests (smoke + migraciones con datos + `alembic check`), panel (lint, `tsc`, Vitest, build y Playwright + axe) y, si pasan, imagen `linux/amd64` a `ghcr.io/<repositorio>` (= `ghcr.io/katarem/trip-watch`) (`latest`+sha en `main`; `X.Y.Z`/`X.Y`/`latest` con la etiqueta `vX.Y.Z`, que debe coincidir con `__version__`). **Versión automática (decisión del usuario, 2026-10-15):** en un push a `main` (al fusionar) cuya `__version__` no tenga aún etiqueta, el job `docker` publica también `X.Y.Z`/`X.Y` y crea la etiqueta y la versión de GitHub (`gh release create`, notas = la sección `## X.Y.Z` del CHANGELOG). Va en la misma ejecución porque una etiqueta creada con el `GITHUB_TOKEN` no dispara otro workflow. En `main` no se cancelan ejecuciones en curso (solo en PR), y las PR no escriben la caché de buildx (`cache-to` vacío) para no expulsar la de `main`. El `docker-compose.yml` usa esa imagen (`FW_VERSION`) y conserva `build: .`.
 
 ## Cómo ejecutar
 

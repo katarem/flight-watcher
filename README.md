@@ -71,17 +71,17 @@ Para añadir otro tipo de canal (Slack, correo…), añade una entrada a `KINDS`
 
 ## Versiones e imagen Docker
 
-La versión vive en `app/__init__.py` (`__version__`, hoy **1.9.0**; se ve en el pie del panel) y los cambios se anotan en [CHANGELOG.md](CHANGELOG.md).
+La versión vive en `app/__init__.py` (`__version__`, hoy **2.0.0**; se ve en el pie del panel) y los cambios se anotan en [CHANGELOG.md](CHANGELOG.md).
 
 El CI (`.github/workflows/docker.yml`) ejecuta el test de humo, comprueba que las migraciones están al día, pasa el lint, los tests y las pruebas en navegador del panel, y publica la imagen en **ghcr.io/katarem/trip-watch** (`linux/amd64`):
 
 | Evento | Etiquetas publicadas |
 |---|---|
-| Push a `main` | `latest` y `sha-<commit>` |
-| Etiqueta `vX.Y.Z` | `X.Y.Z`, `X.Y` y `latest` |
+| Push a `main` (también al fusionar una PR) | `latest` y `sha-<commit>`; si `__version__` es nueva, también `X.Y.Z` y `X.Y` |
+| Etiqueta `vX.Y.Z` subida a mano | `X.Y.Z`, `X.Y` y `latest` |
 | Pull request | solo construye (no publica) |
 
-Para sacar una versión: sube `__version__`, actualiza el CHANGELOG, haz merge a `main` y crea la etiqueta (`git tag v1.1.0 && git push origin v1.1.0`); el CI falla si la etiqueta no coincide con `__version__`. En el servidor, fija `FW_VERSION=1.1.0` en `.env` (o deja `latest`) y ejecuta `docker compose pull && docker compose up -d`. Con el paquete **público** no hace falta `docker login` para descargarlo. La imagen lleva la etiqueta `org.opencontainers.image.source`, que la enlaza con el repositorio: si el repositorio es público, el paquete nace público; si no, ponlo público una vez en GitHub → Packages → *trip-watch* → Package settings → Change visibility (y comprueba que ahí el repositorio aparece conectado). Si lo dejas privado, `docker login ghcr.io` con un token `read:packages`.
+Para sacar una versión: sube `__version__`, añade su entrada al CHANGELOG (`## X.Y.Z — fecha`) y fusiona en `main`. Si esa versión aún no tiene etiqueta, el CI publica la imagen con su número y crea en GitHub la etiqueta `vX.Y.Z` y su versión, con las notas de esa entrada del CHANGELOG. Las fusiones siguientes con la misma versión solo actualizan `latest`. Si subes una etiqueta a mano, el CI falla si no coincide con `__version__`. En el servidor, fija `FW_VERSION=1.1.0` en `.env` (o deja `latest`) y ejecuta `docker compose pull && docker compose up -d`. Con el paquete **público** no hace falta `docker login` para descargarlo. La imagen lleva la etiqueta `org.opencontainers.image.source`, que la enlaza con el repositorio: si el repositorio es público, el paquete nace público; si no, ponlo público una vez en GitHub → Packages → *trip-watch* → Package settings → Change visibility (y comprueba que ahí el repositorio aparece conectado). Si lo dejas privado, `docker login ghcr.io` con un token `read:packages`.
 
 ### Si vienes de Flight Watcher
 
