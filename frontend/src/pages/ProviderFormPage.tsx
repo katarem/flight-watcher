@@ -79,7 +79,7 @@ function Contract({ coverage, kind }: { coverage: Coverage; kind?: KindMeta }) {
           {' '}<code>DayPrice(día, precio, currency=&quot;GBP&quot;, stops=1)</code>; con la hora de salida y de llegada, si la web
           las da: <code>DayPrice(día, precio, departure=&quot;06:35&quot;, arrival=&quot;08:10&quot;)</code> (también
           {' '}<code>datetime</code>; una llegada anterior a la salida es del día siguiente). Si además acepta
-          {' '}<code>max_stops=None</code>, recibe el máximo de escalas de la vigilancia y filtra él mismo.
+          {' '}<code>max_stops=None</code>, recibe el máximo de escalas del tramo y filtra él mismo.
         </p>
         {fn ? (
           <p>
@@ -189,7 +189,7 @@ function ProviderForm({ initial, existing, editable, kinds }: {
       refresh()
       qc.setQueryData(keys.provider(provider.key), provider)
       toast.success(isNew ? `Proveedor «${provider.label}» creado` : 'Cambios guardados', {
-        description: provider.enabled ? 'Ya se puede elegir en las vigilancias.' : 'Está desactivado: ninguna vigilancia lo consulta.',
+        description: provider.enabled ? 'Ya se puede elegir en los viajes.' : 'Está desactivado: ningún viaje lo consulta.',
       })
       if (isNew) navigate(`/admin/providers/${provider.key}/edit`, { replace: true })
     },
@@ -272,14 +272,14 @@ function ProviderForm({ initial, existing, editable, kinds }: {
           </Field>
           <Field label="Tipo"
             hint={existing?.n_watches
-              ? 'No se puede cambiar mientras lo use alguna vigilancia.'
+              ? 'No se puede cambiar mientras lo use algún viaje.'
               : kind && !kind.available
-                ? `Aún no hay vigilancias de ${kind.plural} (llegan en la ${kind.since}), pero ya se puede escribir y probar.`
-                : 'Qué transporte vende: solo sale en las vigilancias de ese transporte.'}>
+                ? `Aún no hay viajes en ${kind.noun} (llegan en la ${kind.since}), pero ya se puede escribir y probar.`
+                : 'Qué transporte vende: solo sale en los viajes de ese transporte.'}>
             {(id, hint) => (
               <Select id={id} aria-describedby={hint} value={f.kind} disabled={!!existing?.n_watches}
                 onChange={(e) => set('kind', e.target.value as KindKey)}>
-                {kinds.map((k) => <option key={k.key} value={k.key}>{k.label}{k.available ? '' : ` (vigilancias en la ${k.since})`}</option>)}
+                {kinds.map((k) => <option key={k.key} value={k.key}>{k.label}{k.available ? '' : ` (viajes en la ${k.since})`}</option>)}
               </Select>
             )}
           </Field>
@@ -301,7 +301,7 @@ function ProviderForm({ initial, existing, editable, kinds }: {
             )}
           </Field>
           {f.coverage === 'universal' && (
-            <Field label="Máximo de combinaciones de origen y destino (opcional)" hint="Por vigilancia. Vacío = el límite general.">
+            <Field label="Máximo de combinaciones de origen y destino (opcional)" hint="Por tramo de viaje. Vacío = el límite general.">
               {(id, hint) => <Input id={id} aria-describedby={hint} inputMode="numeric" value={f.max_routes}
                 onChange={(e) => set('max_routes', e.target.value.replace(/\D/g, ''))} />}
             </Field>
@@ -397,7 +397,7 @@ function ProviderForm({ initial, existing, editable, kinds }: {
             className="font-mono text-xs leading-5 whitespace-pre" />}
         </Field>
         <Switch checked={f.enabled} onChange={(v) => set('enabled', v)} label="Proveedor activo"
-          description="Desactivado no se carga: no sale en las vigilancias ni se consulta en las rondas." />
+          description="Desactivado no se carga: no sale en los viajes ni se consulta en las rondas." />
       </FormSection>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -412,8 +412,8 @@ function ProviderForm({ initial, existing, editable, kinds }: {
               trigger={<Button type="button" variant="ghost" className="text-danger"><Trash2 /> Eliminar</Button>}
               title={`¿Eliminar «${existing.label}»?`}
               description={existing.n_watches
-                ? `Se quitará de ${existing.n_watches === 1 ? 'la vigilancia que lo usa' : `las ${existing.n_watches} vigilancias que lo usan`}. Sus precios y avisos guardados se conservan como histórico.`
-                : 'Ninguna vigilancia lo usa. Los precios que hubiera guardado se conservan como histórico.'}
+                ? `Se quitará de ${existing.n_watches === 1 ? 'el tramo de viaje que lo usa' : `los ${existing.n_watches} tramos de viaje que lo usan`}. Sus precios guardados se conservan como histórico.`
+                : 'Ningún viaje lo usa. Los precios que hubiera guardado se conservan como histórico.'}
               onConfirm={() => remove.mutate()}
               loading={remove.isPending}
             />

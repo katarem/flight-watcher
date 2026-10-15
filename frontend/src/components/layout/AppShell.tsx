@@ -17,7 +17,6 @@ import { Menu, MenuContent, MenuItem, MenuLabel, MenuRadio, MenuSeparator, MenuT
 import { cn } from '@/lib/cn'
 import { fmtDateTime } from '@/lib/format'
 import { useRunNow } from '@/lib/hooks'
-import { KIND_ICONS } from '@/lib/kinds'
 import { useThemePref } from '@/lib/theme-context'
 
 interface NavItem {
@@ -29,14 +28,9 @@ interface NavItem {
 
 function useNavItems(): NavItem[] {
   const me = useMe().data
-  const kinds = useMeta().data?.kinds ?? []
   const items: NavItem[] = [
     { to: '/', label: 'Panel', icon: <LayoutDashboard />, end: true },
-    // Un apartado por transporte disponible (hoy, «Vuelos»).
-    ...kinds.filter((k) => k.transport && k.available && k.section).map((k) => {
-      const Icon = KIND_ICONS[k.key]
-      return { to: k.section, label: k.label, icon: <Icon /> }
-    }),
+    // Todo cuelga de los viajes (de cualquier transporte); los tramos se ven dentro de cada uno.
     { to: '/trips', label: 'Viajes', icon: <Luggage /> },
     { to: '/runs', label: 'Ejecuciones', icon: <History /> },
   ]
@@ -242,7 +236,7 @@ export function AppShell() {
               onClick={() => run.mutate(undefined)}
               disabled={status?.running}
               loading={run.isPending}
-              title="Comprobar ahora todas tus vigilancias"
+              title="Comprobar ahora todos tus viajes"
             >
               {!run.isPending && <Play />}
               <span className="hidden sm:inline">Comprobar todo</span>

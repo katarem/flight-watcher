@@ -3,7 +3,7 @@
 Cada aviso se arma primero como un **mensaje estructurado** (`Message`: título, secciones con un elemento por fecha y
 su enlace directo, enlaces generales e imagen) y cada tipo de canal lo pinta a su manera:
 
-- **Discord**: `embeds` (uno de cabecera y uno por proveedor, con su color), un campo por fecha con el enlace y el
+- **Discord**: `embeds` (uno de cabecera y uno por sección, con su color), un campo por fecha con el enlace y el
   calendario resumen como imagen adjunta.
 - **Telegram**: texto en HTML con botones de enlace (inline keyboard) en lugar de enlaces en el texto, y el
   calendario como foto.
@@ -22,13 +22,12 @@ from datetime import date, timedelta
 
 import requests
 
-from . import images, kinds
-from .fmt import fmt_clock, fmt_day, fmt_money, fmt_nights, fmt_nights_range, fmt_price, fmt_short_day, fmt_stops
-from .providers import PROVIDERS, ordered
+from . import images
+from .fmt import fmt_clock, fmt_day, fmt_nights, fmt_nights_range, fmt_price, fmt_short_day
+from .providers import PROVIDERS
 
 log = logging.getLogger("notify")
 
-MAX_DEALS_PER_PROVIDER = 8
 #: Color de los avisos que no son de un proveedor (el acento del panel) y de los de problemas.
 ACCENT, WARN, DEAL = "#3b5bdb", "#8f5207", "#036b48"
 IMAGE_NAME = "calendario.png"
@@ -335,62 +334,8 @@ def _panel(panel_url: str, path: str) -> str:
     return f"{panel}{path}" if panel else ""
 
 
-def watch_path(watch: dict) -> str:
-    """Página de la vigilancia en el panel, en el apartado de su transporte (/flights/{id})."""
-    section = kinds.get(watch.get("kind")).section or "/watches"
-    return f"{section}/{watch['id']}"
-
-
 def _times(d: dict) -> str:
     return fmt_clock(d.get("departs_at"), d.get("arrives_at"))
-
-
-def deals_message(watch: dict, deals: list[dict], baselines: dict, panel_url: str = "",
-                  day_prices: dict | None = None) -> Message:
-    """Un mensaje por vigilancia: una sección por proveedor (con su color) y un elemento por fecha con su enlace.
-    `day_prices` ({fecha: precio mínimo}) da el calendario resumen de la imagen."""
-    kind = kinds.get(watch.get("kind"))
-    route = f"{watch['origin']}→{watch['destination']}"
-    url = _panel(panel_url, watch_path(watch))
-    n = len(deals)
-    msg = Message(f"✈️ {watch['name']}" if kind.key == "flight" else watch["name"], url=url, color=DEAL,
-                  summary=f"{route} · {n} {'fecha' if n == 1 else 'fechas'} con precio de chollo")
-    for key in ordered(watch["providers"]):
-        mine = sorted((d for d in deals if d["provider"] == key), key=lambda d: d["price"])
-        if not mine:
-            continue
-        prov = PROVIDERS[key]
-        base = baselines.get(key)
-        sec = Section(prov.label, prov.color, f"habitual ≈ {fmt_price(base)}" if base else "")
-        for d in mine[:MAX_DEALS_PER_PROVIDER]:
-            title = fmt_day(d["day"])
-            if d.get("origin") and (d["origin"], d["destination"]) != (watch["origin"], watch["destination"]):
-                title += f" ({d['origin']}→{d['destination']})"
-            extra = []
-            if d.get("orig_price") and d.get("currency", "EUR") != "EUR":
-                extra.append(fmt_money(d["orig_price"], d["currency"]))
-            if d.get("stops"):
-                extra.append(fmt_stops(d["stops"]))
-            if _times(d):
-                extra.append(_times(d))
-            price = fmt_price(d["price"])
-            sec.items.append(Item(title, price, " · ".join(extra), [(title, d["link"])] if d.get("link") else [],
-                                  [f"{fmt_short_day(d['day'])} · {price} · {prov.label}"]))
-        if len(mine) > MAX_DEALS_PER_PROVIDER:
-            sec.more = f"… y {len(mine) - MAX_DEALS_PER_PROVIDER} fecha(s) más en el panel"
-        msg.sections.append(sec)
-    if url:
-        msg.links.append(("📊 Historial y gráficas", url))
-    if day_prices:
-        msg.image = images.calendar_png(day_prices, {d["day"] for d in deals}, f"{watch['name']} ({route})",
-                                        f"Precio más bajo de cada día ({kind.plural}, todas las webs) · "
-                                        "con borde, los del aviso")
-    return msg
-
-
-def send_deals(channels: list[dict], watch: dict, deals: list[dict], baselines: dict, panel_url: str = "",
-               day_prices: dict | None = None) -> tuple[list[str], list[str]]:
-    return send(channels, deals_message(watch, deals, baselines, panel_url, day_prices))
 
 
 def _leg_text(leg: dict) -> str:

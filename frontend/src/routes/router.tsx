@@ -7,8 +7,6 @@ import { NotFoundPage } from '@/pages/NotFoundPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { TripFormPage } from '@/pages/TripFormPage'
 import { TripsPage } from '@/pages/TripsPage'
-import { WatchFormPage } from '@/pages/WatchFormPage'
-import { WatchesPage } from '@/pages/WatchesPage'
 import { RequireAdmin, RequireAuth } from './guards'
 import { LegacyWatch } from './legacy'
 
@@ -22,8 +20,11 @@ const page = (load: () => Promise<Record<string, React.ComponentType>>, name: st
 
 const admin = (el: React.ReactNode) => <RequireAdmin>{el}</RequireAdmin>
 
-// Cada transporte tiene su apartado (/flights para los vuelos). Las URL de antes de la 1.9 (/watches/{id}, que sale en
-// los avisos ya enviados) llevan al apartado de la vigilancia.
+// Todo vive en los viajes: cada tramo (una vigilancia interna) tiene su detalle dentro de su viaje. Las URL de antes de
+// la 2.0 (/watches/…, que sale en los avisos ya enviados, y /flights/… de la 1.9) llevan a su viaje o a su tramo.
+const legacy = ['watches', 'flights'].flatMap((base) =>
+  ['', '/new', '/:id', '/:id/edit'].map((rest) => ({ path: `${base}${rest}`, element: <LegacyWatch /> })))
+
 export const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
   {
@@ -37,18 +38,12 @@ export const router = createBrowserRouter([
     hydrateFallbackElement: <div className="min-h-dvh" />,
     children: [
       { index: true, element: <DashboardPage /> },
-      { path: 'flights', element: <WatchesPage kind="flight" /> },
-      { path: 'flights/new', element: <WatchFormPage kind="flight" /> },
-      { path: 'flights/:id', ...page(() => import('@/pages/WatchDetailPage'), 'WatchDetailPage') },
-      { path: 'flights/:id/edit', element: <WatchFormPage kind="flight" /> },
-      { path: 'watches', element: <LegacyWatch /> },
-      { path: 'watches/new', element: <LegacyWatch /> },
-      { path: 'watches/:id', element: <LegacyWatch /> },
-      { path: 'watches/:id/edit', element: <LegacyWatch /> },
       { path: 'trips', element: <TripsPage /> },
       { path: 'trips/new', element: <TripFormPage /> },
       { path: 'trips/:id', ...page(() => import('@/pages/TripDetailPage'), 'TripDetailPage') },
       { path: 'trips/:id/edit', element: <TripFormPage /> },
+      { path: 'trips/:id/legs/:legId', ...page(() => import('@/pages/LegDetailPage'), 'LegDetailPage') },
+      ...legacy,
       { path: 'runs', ...page(() => import('@/pages/RunsPage'), 'RunsPage') },
       { path: 'profile', element: <ProfilePage /> },
       { path: 'profile/channels/new', element: <ChannelFormPage /> },

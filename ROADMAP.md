@@ -54,14 +54,14 @@ Es la versión que decide cuánto cuestan las siguientes: generaliza lo que hoy 
 
 ---
 
-## 2.0 — Fundación: el viaje como entidad principal (en curso, rama `feat/2.0-alojamiento`)
+## 2.0 — Fundación: el viaje como entidad principal (hecha, sin publicar hasta que llegue el alojamiento)
 
 Antes de los hoteles se reorganiza el modelo para que el **viaje** sea la entidad que el usuario crea y
 gestiona, y las vigilancias pasen a ser **tramos internos** que el viaje posee (visión de la 4.0 traída
 hacia adelante). Un «solo ida» es un viaje con solo tramo de ida. Así la estancia entra como un tramo más
 sin refactorizar dos veces.
 
-### Backend (hecho y con los tests en verde)
+### Backend
 - [x] Modelo: `watches.trip_id` (FK → `trips` ON DELETE CASCADE) y `watches.role` (ida/vuelta); `trips` pierde `outbound_id`/`return_id` (migración `0009`)
 - [x] La migración envuelve las vigilancias sueltas en viajes de solo ida y duplica los tramos compartidos entre viajes sin perder histórico
 - [x] `create_trip`/`update_trip` crean y poseen sus tramos; borrar el viaje borra sus tramos; `toggle` pausa también los tramos
@@ -69,17 +69,17 @@ sin refactorizar dos veces.
 - [x] Canales consolidados en el viaje (`watch.max_price` → `trip.max_total`, `watch_channels` → `trip_channels` al migrar)
 - [x] API: `/trips` con tramos inline (ida obligatoria, vuelta opcional); fuera el CRUD suelto de `/watches` (queda el detalle del tramo, `/places` y `/route-check`)
 - [x] Tests (smoke, migración y `alembic check`) reescritos al modelo viaje-céntrico, en verde
+- [x] Las BD anteriores a los usuarios también migran: sus vigilancias sin dueño pasan a viajes que `bootstrap_admin()` asigna al administrador
+- [x] `/alerts` da los avisos de los viajes; las ejecuciones llevan su viaje; la lista de usuarios cuenta viajes
 
-### Frontend (en curso)
+### Frontend
 - [x] Tipos (`types.ts`), piezas de viaje (`parts.tsx`) y detalle de viaje adaptados (tramo de vuelta opcional)
 - [x] Formulario de viaje con tramos inline (sub-formulario por tramo con su comprobación de ruta) y casilla «solo ida»
-- [x] `WatchDetailPage` pasa a ser el detalle de un tramo (solo lectura; se edita desde el viaje)
-- [ ] Quitar del panel el CRUD suelto de vigilancias (`WatchesPage`/`WatchFormPage`) y rehacer rutas y navegación (todo bajo `/trips`, sin la sección `/flights`)
-- [ ] Panel de inicio (dashboard), `queries.ts` y `legacy.tsx` al modelo viaje-céntrico
-- [ ] Tests del panel (Vitest/Playwright + axe) y `CHANGELOG` + versión
-
-> Estado al cerrar la sesión: el backend está completo y commiteado; el frontend tiene hechas las piezas de
-> viaje pero **aún no compila** (falta borrar `WatchFormPage`/`WatchesPage` y rehacer `router.tsx`/navegación).
+- [x] El detalle de vigilancia pasa a ser el de un tramo (`LegDetailPage`, solo lectura; se edita desde el viaje)
+- [x] Quitar del panel el CRUD suelto de vigilancias (`WatchesPage`/`WatchFormPage`) y rehacer rutas y navegación (todo bajo `/trips`, sin la sección `/flights`; el tramo en `/trips/{viaje}/legs/{tramo}`)
+- [x] Panel de inicio (dashboard), `queries.ts` y `legacy.tsx` al modelo viaje-céntrico (`/watches/…` y `/flights/…` llevan al tramo dentro de su viaje)
+- [x] Formulario de viaje: «Al revés que la ida», precarga con `?origin=…&destination=…` y campos con nombre propio por tramo
+- [x] Tests del panel (Vitest/Playwright + axe) y `CHANGELOG` (entrada «2.0.0 — sin publicar»; `__version__` se sube al publicar la 2.0 con el alojamiento)
 
 ---
 

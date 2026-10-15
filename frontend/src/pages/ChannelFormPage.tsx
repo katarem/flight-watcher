@@ -76,7 +76,7 @@ function ChannelForm({ kind, kindLabel, fields, channel, apiBase, back }: {
       qc.invalidateQueries({ queryKey: ['channels'] })
       qc.invalidateQueries({ queryKey: keys.watches })
       toast.success(channel ? `Canal «${name || kindLabel}» guardado` : `Canal «${name || kindLabel}» añadido`, {
-        description: channel ? undefined : 'Asígnalo a tus vigilancias para recibir avisos.',
+        description: channel ? undefined : 'Asígnalo a tus viajes para recibir avisos.',
       })
       navigate(back)
     },

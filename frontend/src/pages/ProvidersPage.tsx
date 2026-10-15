@@ -46,7 +46,7 @@ function ProviderCard({ p, onTest, testing, disabled, selected, onSelect }: {
               <span>Cobertura: {p.coverage_label}{p.max_routes ? ` (máx. ${p.max_routes} pares)` : ''}</span>
               {p.stops_filter && <span>Filtra por escalas</span>}
               <span>Pausa ≥ {p.min_interval} s entre peticiones</span>
-              <span>{p.n_watches} {p.n_watches === 1 ? 'vigilancia' : 'vigilancias'}</span>
+              <span>{p.n_watches} {p.n_watches === 1 ? 'tramo de viaje' : 'tramos de viaje'}</span>
               <span>Guardado {fmtAgo(p.updated_at)} por @{p.updated_by}</span>
             </p>
             {p.error && <p className="break-words text-sm text-danger">{p.error}</p>}
@@ -109,7 +109,7 @@ export function ProvidersPage() {
 
   const revalidate = useMutation({
     mutationFn: () => post<{ started: boolean }>('/providers/revalidate'),
-    onSuccess: () => toast('Revalidación lanzada', { description: 'Si una ruta se abre o se cierra, se avisa a los canales de esa vigilancia.' }),
+    onSuccess: () => toast('Revalidación lanzada', { description: 'Si una ruta se abre o se cierra, se avisa a los canales del viaje.' }),
     onError: (e) => toast.error(errorList(e)[0]),
   })
 
@@ -232,7 +232,7 @@ export function ProvidersPage() {
                   <Icon className="size-4.5 text-muted" aria-hidden="true" /> {kind.label}
                   <span className="text-sm font-normal text-muted">
                     {items.length} {items.length === 1 ? 'proveedor' : 'proveedores'}
-                    {!kind.available && ` · vigilancias de ${kind.plural} en la ${kind.since}`}
+                    {!kind.available && ` · viajes en ${kind.noun} en la ${kind.since}`}
                   </span>
                 </h2>
                 <div className="grid gap-4 lg:grid-cols-2">

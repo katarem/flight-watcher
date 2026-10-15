@@ -404,6 +404,9 @@ def trips_flow(admin: Api, admin_chan: int):
     admin.post(f"/trips/{tid}/toggle")
     detail = admin.get(f"/trips/{tid}").json()
     check(detail["trend"] and detail["alerts"][0]["total"] == 100, "evolución del total y avisos enviados")
+    recent = admin.get("/alerts").json()["alerts"]
+    check(recent and recent[0]["trip_id"] == tid and recent[0]["trip_name"] == detail["trip"]["name"]
+          and recent[0]["total"] == 100, "/alerts: los últimos avisos de los viajes del usuario")
 
     # --- viaje de solo ida: una combinación por fecha, sin vuelta
     SENT.clear()
@@ -437,6 +440,10 @@ def trips_flow(admin: Api, admin_chan: int):
                          ("DELETE", f"/trips/{tid}"), ("POST", f"/trips/{tid}/toggle"), ("POST", f"/trips/{tid}/run")):
         check(berta.req(method, path, json=form if method == "PUT" else None).status_code == 404, f"{method} {path} ajeno → 404")
     check(berta.get(f"/watches/{ret_leg}").status_code == 404, "ni el tramo de un viaje ajeno")
+    check(not berta.get("/alerts").json()["alerts"] and not berta.get("/runs").json()["runs"],
+          "ni los avisos ni las ejecuciones de viajes ajenos")
+    users = {u["username"]: u for u in admin.get("/users").json()["users"]}
+    check(users["berta"]["n_trips"] == 0 and users["admin"]["n_trips"] >= 2, "la lista de usuarios cuenta sus viajes")
     with db.connect() as con:
         db.delete_user(con, db.get_user_by_username(con, "berta")["id"])
     return tid
@@ -1161,7 +1168,7 @@ def kinds_flow(admin: Api):
     """Tipos de transporte y de proveedor (1.9) y lugares genéricos (estaciones, puertos y la ciudad que los agrupa)."""
     meta = admin.get("/meta").json()
     by_kind = {k["key"]: k for k in meta["kinds"]}
-    check(by_kind["flight"]["available"] and by_kind["flight"]["section"] == "/flights" and not by_kind["train"]["available"]
+    check(by_kind["flight"]["available"] and "section" not in by_kind["flight"] and not by_kind["train"]["available"]
           and by_kind["train"]["since"] == "3.1" and {p["kind"] for p in meta["providers"]} == {"flight"},
           "/meta: transportes (solo vuelos disponibles) y el tipo de cada proveedor")
     bad = oneway(admin, ["vueling"], origin="SVQ", destination="MAD", kind="train")
@@ -1303,7 +1310,7 @@ def main():
         r = raw.get("/")
         check(r.status_code == 200 and 'id="root"' in r.text and r.headers["cache-control"] == "no-cache", "GET / entrega el panel")
         check('id="root"' in raw.get("/watches/12").text and 'id="root"' in raw.get("/admin/users").text
-              and 'id="root"' in raw.get("/flights/12").text,
+              and 'id="root"' in raw.get("/trips/3/legs/12").text,
               "cualquier ruta del panel entrega index.html (enrutado del lado cliente)")
         r = raw.get("/assets/app-1234.js")
         check(r.status_code == 200 and "immutable" in r.headers["cache-control"], "estáticos con huella y caché larga")
@@ -1362,6 +1369,8 @@ def main():
         runs = client.get("/runs").json()["runs"]
         check(all(r["ok"] for r in runs) and not any("La web no devolvió" in (r["error"] or "") for r in runs),
               "una ruta no operada dentro de TCI no cuenta como error")
+        check({(r["trip_id"], r["trip_name"]) for r in runs} == {(cards[0]["id"], "Sevilla ⇄ Tenerife")},
+              "cada ejecución lleva el viaje de su tramo")
 
         # --- detalle de un tramo (lo pinta el detalle de su viaje), calendario y gráficas
         detail = client.get(f"/watches/{out_leg}").json()

@@ -42,7 +42,7 @@ function PreviewItem({ item, checked, onChange }: { item: ImportItem; checked: b
       </div>
       <p className="text-xs text-muted">
         {kind?.label ?? item.kind} · Cobertura: {item.coverage_label}
-        {item.status !== 'new' && ` · lo usan ${item.n_watches} ${item.n_watches === 1 ? 'vigilancia' : 'vigilancias'}`}
+        {item.status !== 'new' && ` · lo usan ${item.n_watches} ${item.n_watches === 1 ? 'tramo de viaje' : 'tramos de viaje'}`}
       </p>
       {item.notes && <p className="text-sm text-muted">{item.notes}</p>}
       {bad && <ErrorBox errors={item.errors} />}
@@ -212,12 +212,12 @@ export function ProviderImportPage() {
               </h2>
               <p className="text-sm">
                 Los scripts se ejecutan en el servidor con todos sus permisos: importa solo paquetes de quien te fíes y
-                revisa su código. Un proveedor con la misma clave que uno guardado lo sustituye (sus vigilancias y su
+                revisa su código. Un proveedor con la misma clave que uno guardado lo sustituye (sus viajes y su
                 histórico se conservan).
               </p>
               <ErrorBox errors={importErrors} />
               <Switch checked={enabled} onChange={setEnabled} label="Dejarlos activos"
-                description="Activos, se pueden elegir en las vigilancias en cuanto se importan." />
+                description="Activos, se pueden elegir en los viajes en cuanto se importan." />
               <Field label="Tu contraseña" className="max-w-sm">
                 {(id) => <Input id={id} type="password" autoComplete="current-password" value={password}
                   onChange={(e) => setPassword(e.target.value)} />}

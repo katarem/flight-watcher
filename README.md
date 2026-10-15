@@ -16,7 +16,7 @@ docker compose up -d
 
 Para construir la imagen en local en lugar de descargarla: `docker compose up -d --build`.
 
-Abre `http://localhost:8000`. En el primer arranque se crean dos vigilancias: **Sevilla → Tenerife** (`SVQ → TCI`) y **Tenerife → Sevilla**, con Vueling y Ryanair y un aviso a partir de 40 €.
+Abre `http://localhost:8000`. En el primer arranque se crea un viaje de ida y vuelta, **Sevilla ⇄ Tenerife** (ida `SVQ → TCI` y vuelta `TCI → SVQ`, de 5 a 10 noches), con Vueling y Ryanair y un aviso si el total baja de 80 €.
 
 `TCI` es el código de ciudad de Tenerife: el bot consulta **Tenerife Norte (TFN)** y **Tenerife Sur (TFS)** y se queda con el precio más bajo de cada día, indicando el aeropuerto (p. ej. `SVQ→TFS`). Puedes usar `TFN` o `TFS` si solo te interesa uno.
 
@@ -27,7 +27,7 @@ El formulario autocompleta el origen y el destino (escribe «sevilla», «malaga
 - **Aeropuertos**: los de [OurAirports](https://ourairports.com/data/) (dominio público) con vuelos regulares y código IATA, en `app/data/airports.csv`. Se regeneran con `pip install pycountry && python scripts/build_places.py`.
 - **Ciudades** con varios aeropuertos (código IATA de ciudad: `TCI`, `LON`, `PAR`, `MIL`…), **países** (código ISO: `ES`, `PT`…) y **grupos** propios (`canarias`, `baleares`, `andalucia`…), definidos en `app/places.py`.
 
-Una ciudad, un país o un grupo se expanden a todos los pares de aeropuertos reales (como mucho 60 combinaciones por vigilancia).
+Una ciudad, un país o un grupo se expanden a todos los pares de aeropuertos reales (como mucho 60 combinaciones por tramo).
 
 Al elegir origen y destino, el panel **comprueba la ruta** en todos los proveedores a la vez (con un tiempo límite por proveedor) y muestra cuáles la operan y por qué los demás no. Solo se pueden elegir los que la operan; si uno no se ha podido comprobar, se puede elegir igualmente y se comprobará más adelante.
 
@@ -46,26 +46,26 @@ Todo se configura en `.env`:
 | `DB_NAME` | `flight_watcher` | La base de datos debe existir; las tablas se crean solas |
 | `DB_USER`, `DB_PASSWORD` | vacíos | Credenciales |
 
-Con MySQL/MariaDB las tablas se crean en `utf8mb4`. Cambiar de motor no migra los datos: el nuevo arranca vacío con las vigilancias iniciales.
+Con MySQL/MariaDB las tablas se crean en `utf8mb4`. Cambiar de motor no migra los datos: el nuevo arranca vacío con el viaje inicial.
 
 El esquema se gestiona con **Alembic**: al arrancar, la app aplica sola las migraciones pendientes (`app/migrations/`), también sobre bases de datos SQLite creadas con versiones anteriores.
 
 Después, en el panel:
 
 1. Entra con el administrador (`PANEL_USER` / `PANEL_PASSWORD`). Si no los definiste, se crea `admin` con una contraseña aleatoria que sale **una sola vez en el log** del contenedor (`docker compose logs trip-watch`).
-2. **Perfil → Canales de aviso:** añade tus canales (Discord con webhook, Telegram con token de bot y chat ID) y pulsa *Probar*. Después marca, en cada vigilancia, a qué canales debe avisar.
+2. **Perfil → Canales de aviso:** añade tus canales (Discord con webhook, Telegram con token de bot y chat ID) y pulsa *Probar*. Después marca, en cada viaje, a qué canales debe avisar.
 3. **Ajustes → Programación** (solo admin): elige a qué hora(s) se comprueba (p. ej. `8` o `8,20`) y la zona horaria.
 4. Pulsa **Comprobar todo** para traer los primeros precios.
 
 ### Usuarios
 
-Cada usuario tiene **sus propias vigilancias, su histórico, sus avisos y una lista de canales de aviso** (hoy de tipo Discord o Telegram; puede crear los que quiera, también varios del mismo tipo), y un **avatar** (PNG, JPG, GIF o WebP de hasta 2 MB; si no hay, se muestran las iniciales). Nadie ve las vigilancias de otro, tampoco el administrador.
+Cada usuario tiene **sus propios viajes, su histórico, sus avisos y una lista de canales de aviso** (hoy de tipo Discord o Telegram; puede crear los que quiera, también varios del mismo tipo), y un **avatar** (PNG, JPG, GIF o WebP de hasta 2 MB; si no hay, se muestran las iniciales). Nadie ve los viajes de otro, tampoco el administrador.
 
-Cada vigilancia avisa **solo a los canales que tenga marcados** (formulario de la vigilancia); un canal puede pausarse sin borrarlo. Si una vigilancia no tiene canales no avisa, y los chollos se enviarán cuando le asignes alguno.
+Cada viaje avisa **solo a los canales que tenga marcados** (formulario del viaje); un canal puede pausarse sin borrarlo. Si un viaje no tiene canales no avisa, y los chollos se enviarán cuando le asignes alguno.
 
-El administrador tiene además el apartado **Usuarios** (crear, editar, desactivar y eliminar usuarios, asignar rol y restablecer contraseñas; y **crear, editar, probar y borrar los canales de aviso de cualquier usuario**, útil si alguien no sabe configurarlos; los secretos ya guardados no se muestran a nadie) y los **Ajustes** y el **Diagnóstico** globales. Un usuario desactivado no puede entrar y sus vigilancias no se comprueban; eliminarlo borra también sus vigilancias y su histórico. Cada usuario cambia su contraseña, nombre y avatar en **Perfil**.
+El administrador tiene además el apartado **Usuarios** (crear, editar, desactivar y eliminar usuarios, asignar rol y restablecer contraseñas; y **crear, editar, probar y borrar los canales de aviso de cualquier usuario**, útil si alguien no sabe configurarlos; los secretos ya guardados no se muestran a nadie) y los **Ajustes** y el **Diagnóstico** globales. Un usuario desactivado no puede entrar y sus viajes no se comprueban; eliminarlo borra también sus viajes y su histórico. Cada usuario cambia su contraseña, nombre y avatar en **Perfil**.
 
-Si actualizas desde una versión sin usuarios, el administrador inicial hereda las vigilancias existentes y los canales de aviso que había en Ajustes (como canales «Discord» / «Telegram» asignados a todas ellas).
+Si actualizas desde una versión sin usuarios, el administrador inicial hereda las vigilancias existentes (cada una pasa a ser un viaje de solo ida, ver «Viajes») y los canales de aviso que había en Ajustes (como canales «Discord» / «Telegram» asignados a todos ellos).
 
 Para añadir otro tipo de canal (Slack, correo…), añade una entrada a `KINDS` en `app/notify.py`: campos del formulario, validación y función de envío. Aparece sola en las pantallas.
 
@@ -103,9 +103,9 @@ Cada proveedor declara cómo se sabe qué rutas cubre:
 
 - **Red de rutas** (Ryanair, Wizz Air, Iberia Express): publica su red; se descarga y se mira si incluye el par de aeropuertos.
 - **Pregunta por cada ruta** (Vueling, Binter): se le pregunta directamente (un 404 significa que no la opera).
-- **Cualquier ruta** (un buscador que mire todas las aerolíneas): cubre cualquier ruta, directa o con escalas, con un máximo de pares de aeropuertos por vigilancia. Ninguno del catálogo lo usa ahora mismo.
+- **Cualquier ruta** (un buscador que mire todas las aerolíneas): cubre cualquier ruta, directa o con escalas, con un máximo de pares de aeropuertos por tramo. Ninguno del catálogo lo usa ahora mismo.
 
-La cobertura se guarda (`provider_routes`) y cada vigilancia sabe qué pares opera cada proveedor. **Cada lunes** se revalida: si una ruta de temporada se abre o se cierra, se avisa a los canales de la vigilancia, y mientras está cerrada ese proveedor no se consulta.
+La cobertura se guarda (`provider_routes`) y cada tramo sabe qué pares opera cada proveedor. **Cada lunes** se revalida: si una ruta de temporada se abre o se cierra, se avisa a los canales del viaje, y mientras está cerrada ese proveedor no se consulta.
 
 Todos los proveedores son **scripts de Python** que se ven, se editan, se prueban, se exportan y se importan desde **Proveedores** (ver «Añadir otra aerolínea»). Todos los que tenemos están en un solo paquete, [`app/providers/catalog/providers.fwp`](https://raw.githubusercontent.com/katarem/trip-watch/main/app/providers/catalog/providers.fwp), que se importa desde **Proveedores → Importar** (sale como «Catálogo de Flight Watcher»; eliges cuáles) o pegando ese enlace en cualquier panel. Vueling y Ryanair se crean solos en el primer arranque y puedes cambiarlos o borrarlos como cualquier otro.
 
@@ -115,7 +115,7 @@ Todos los proveedores son **scripts de Python** que se ven, se editan, se prueba
 | Ryanair | API `ryanair.com/api/farfnd/v4/.../cheapestPerDay` + red de rutas del buscador | ✅ tarifas verificadas el 2026-09-30 (una petición por mes) |
 | Wizz Air | API de wizzair.com (`/Api/asset/map` y `/Api/search/timetable`; la versión de la API sale de la portada) | ✅ verificado el 2026-10-12; necesita «Huella de Chrome» |
 | Iberia Express | API del buscador de iberiaexpress.com (`/api/searchbar/calendarrealtime`, dos meses por petición, y su red de rutas) | ✅ verificado el 2026-10-12; necesita «Siempre Chrome». Trabaja por ciudades: en Tenerife (vuela a TFN y TFS) el precio se guarda como TCI |
-| Binter | GraphQL de su web (`services.bintercanarias.com/main/graphql`: horarios, días operativos y calendario mensual) | ✅ verificado el 2026-10-12 sin medidas anti-bot; lento (de 3 a 15 s por consulta). Directos y, si la vigilancia admite escalas, conexiones |
+| Binter | GraphQL de su web (`services.bintercanarias.com/main/graphql`: horarios, días operativos y calendario mensual) | ✅ verificado el 2026-10-12 sin medidas anti-bot; lento (de 3 a 15 s por consulta). Directos y, si el tramo admite escalas, conexiones |
 | Air Europa | API de Amadeus de su motor de reservas (`api-des.aireuropa.com`, calendario de 31 días) | ⚠️ sin verificar desde el servidor; necesita «Siempre Chrome» y que pongas sus credenciales de cliente web (la cabecera del script explica de dónde salen) |
 
 Rutas Sevilla ↔ Tenerife:
@@ -152,17 +152,17 @@ No resuelve CAPTCHA que pidan intervención ni arregla una IP ya bloqueada. En D
 
 Para depurar: **Ajustes → Navegador y diagnóstico → Guardar capturas, HTML y JSON**, pulsa **Comprobar ahora** y abre **Diagnóstico** (en los proveedores por API se guarda la respuesta JSON de cada petición).
 
-Si alguna vigilancia antigua tenía `iberia` marcada, se ignora al comprobar; al editarla y guardarla desaparece.
+Si algún tramo antiguo tenía `iberia` marcada, se ignora al comprobar; al editarla y guardarla desaparece.
 
 > Ejecútalo desde una IP residencial: las aerolíneas suelen bloquear IPs de centros de datos.
 
 ### Prueba de acceso (Proveedores)
 
-Los administradores tienen el apartado **Proveedores**, una especie de *healthcheck*: por cada proveedor, desde la IP del servidor, comprueba la cobertura (red de rutas o pregunta directa) y los precios de un mes de una ruta (la suya de prueba o la que indiques), y dice si es **accesible**, si **nos bloquea** (403/429/anti-bot), si **falla** o si **no responde**, con el código HTTP y el tiempo de cada paso. Un proveedor lento no se da por perdido mientras siga avanzando: la prueba solo se corta si pasa minuto y medio sin ninguna petición ni mensaje (más su pausa entre peticiones) o, en cualquier caso, a los 10 minutos. Guarda el último resultado de cada uno. También prueba el cambio de divisas del BCE y permite **revalidar las rutas** de todas las vigilancias en el momento.
+Los administradores tienen el apartado **Proveedores**, una especie de *healthcheck*: por cada proveedor, desde la IP del servidor, comprueba la cobertura (red de rutas o pregunta directa) y los precios de un mes de una ruta (la suya de prueba o la que indiques), y dice si es **accesible**, si **nos bloquea** (403/429/anti-bot), si **falla** o si **no responde**, con el código HTTP y el tiempo de cada paso. Un proveedor lento no se da por perdido mientras siga avanzando: la prueba solo se corta si pasa minuto y medio sin ninguna petición ni mensaje (más su pausa entre peticiones) o, en cualquier caso, a los 10 minutos. Guarda el último resultado de cada uno. También prueba el cambio de divisas del BCE y permite **revalidar las rutas** de todos los tramos en el momento.
 
 ### Escalas y monedas
 
-Cada vigilancia tiene un **máximo de escalas** (solo directos por defecto). Vueling, Ryanair, Wizz Air e Iberia Express solo venden sus vuelos directos; Air Europa (casi siempre vía Madrid) y Binter (vía sus aeropuertos de Canarias) también los que tienen escala. Cada precio guarda sus escalas.
+Cada tramo tiene un **máximo de escalas** (solo directos por defecto). Vueling, Ryanair, Wizz Air e Iberia Express solo venden sus vuelos directos; Air Europa (casi siempre vía Madrid) y Binter (vía sus aeropuertos de Canarias) también los que tienen escala. Cada precio guarda sus escalas.
 
 Los precios se guardan en su **moneda original** y con su **equivalente en euros** según el tipo de referencia diario del **BCE** (Wizz Air cobra en la moneda del aeropuerto de salida). Las reglas de aviso, las gráficas y el calendario usan los euros; los avisos muestran también la moneda original.
 
@@ -179,44 +179,43 @@ Cada precio del panel y cada aviso lleva un enlace a esa fecha concreta, con la 
 
 ## Reglas de aviso
 
-Por cada vigilancia y web se avisa de una fecha si:
+Las reglas son de cada **viaje** (ver «Viajes» abajo): se avisa de una fecha de ida si el precio del viaje (ida + vuelta, o solo la ida en un viaje de solo ida)
 
-- su precio es **≤ el precio máximo** que definas, **o**
-- es un **X % inferior a lo habitual** (mediana de los precios guardados de esa ruta y web; se activa con las *muestras mínimas* de Ajustes, 30 por defecto).
+- es **≤ el precio máximo** que definas, **o**
+- es un **X % inferior a lo habitual** (mediana de los totales guardados de ese viaje; se activa con las *muestras mínimas* de Ajustes, 30 por defecto).
 
-No se repite el aviso de la misma fecha salvo que el precio baje aún más. Si no hay ningún canal configurado, los avisos no se marcan como enviados y se mandarán cuando lo configures.
+No se repite el aviso de la misma fecha salvo que el precio baje aún más. Si el viaje no tiene ningún canal, los avisos no se marcan como enviados y se mandarán cuando le asignes uno.
 
 ### Cómo se ven los avisos
 
 Cada aviso es un mensaje **enriquecido**, no un texto suelto:
 
-- **Discord:** un *embed* de cabecera con la vigilancia (enlazada al panel) y uno por web, **con el color de esa web**, con **un campo por fecha**: el precio enlaza directamente a esa fecha en la web, y al lado van las escalas, la moneda original y las horas de salida y llegada si la web las da.
-- **Telegram:** el resumen en el texto y **un botón por fecha** que abre esa fecha en la web (más uno para abrir el panel), en lugar de enlaces sueltos en el texto. Si Telegram no acepta algún enlace como botón (por ejemplo, la URL del panel en la red local), el aviso se repite con los enlaces en el texto.
-- **Calendario en PNG** en los dos: los meses del aviso con el precio más bajo de cada día, del más barato (verde) al más caro (rojo), y con borde los días de los que avisa. En los viajes, el total más barato de cada fecha de ida.
+- **Discord:** un *embed* de cabecera con el viaje (enlazado al panel) y **un campo por fecha de ida** con el total, las noches y el precio de cada tramo, que enlaza directamente a esa fecha en su web (con las horas de salida y llegada si la web las da).
+- **Telegram:** el resumen en el texto y **un botón por tramo** que abre esa fecha en la web (más uno para abrir el panel), en lugar de enlaces sueltos en el texto. Si Telegram no acepta algún enlace como botón (por ejemplo, la URL del panel en la red local), el aviso se repite con los enlaces en el texto.
+- **Calendario en PNG** en los dos: los meses del aviso con el total más barato de cada fecha de ida, del más barato (verde) al más caro (rojo), y con borde las fechas de las que avisa.
 
 **Perfil → Canales de aviso → Probar** manda un aviso de ejemplo con este mismo formato (precios inventados).
 
-Puedes limitar cada vigilancia a un rango de fechas; sin límites se comprueban todas las que tengan precio desde hoy.
+## Viajes
 
-## Viajes de ida y vuelta
+Desde la 2.0 todo se organiza en **viajes**. Un viaje tiene su **tramo de ida** y, si quieres, el de **vuelta** (sin vuelta es un viaje de *solo ida*). Cada tramo tiene su ruta, sus webs (con la comprobación de la ruta) y su máximo de escalas, y se crea, edita y borra desde el formulario del viaje (**Al revés que la ida** rellena la vuelta). El viaje lleva el rango de noches (p. ej. de 3 a 5), una ventana opcional de fechas de ida, las reglas de aviso y los canales.
 
-Un **viaje** junta dos de tus vigilancias (la de ida y la de vuelta) con un rango de noches (p. ej. de 3 a 5) y, opcionalmente, una ventana de fechas de ida. No consulta ninguna web por su cuenta: usa los precios de la última comprobación de cada tramo, así que se recalcula solo cuando se comprueba alguna de sus vigilancias.
+En cada ronda se consultan las webs de los tramos y, con esos precios, se recalcula el viaje: para cada fecha de ida y cada número de noches permitido, el total es el vuelo de ida más barato de ese día más el de vuelta más barato del día de regreso (entre todas las webs de cada tramo, en euros); en un solo ida, el de la ida. Para no llenarte de mensajes, cada ronda avisa solo de las **5 fechas de ida más baratas** que cumplen una regla, con las fechas, las noches y un enlace por tramo, y de cada fecha una sola vez (salvo que baje más).
 
-Para cada fecha de ida y cada número de noches permitido, el total es el vuelo de ida más barato de ese día más el de vuelta más barato del día de regreso (entre todas las webs de cada vigilancia, en euros). Se avisa si el **total ≤ el máximo** que marques **o** si es un **X % inferior a lo habitual** (mediana de los totales guardados de ese viaje). Para no llenarte de mensajes, cada ronda avisa solo de las **5 fechas de ida más baratas** que cumplen una regla, con las fechas, las noches y un enlace por tramo, y de cada fecha una sola vez (salvo que baje más).
+Los precios de un tramo con más de 3 días no cuentan (p. ej. si la web ha dejado de responder). Pausar un viaje pausa sus tramos; borrarlo borra sus tramos y su histórico.
 
-Los precios de un tramo con más de 3 días no cuentan (p. ej. si su vigilancia está en pausa o la web ha dejado de responder). Borrar una vigilancia borra los viajes que la usan.
+Al actualizar desde la 1.x, cada vigilancia suelta pasa a ser un viaje de solo ida (con su precio máximo y sus canales), los viajes que ya tenías conservan sus dos vigilancias como tramos, y los enlaces antiguos (`/watches/…`, los de los avisos ya enviados, y `/flights/…`) llevan al tramo dentro de su viaje.
 
 ## Panel
 
 Aplicación React (carpeta `frontend/`) que habla con la API JSON del servidor (`/api/v1`). Tema claro u oscuro (sigue al sistema o se elige en el menú de usuario), pensado para móvil y accesible (navegable con teclado, revisado con axe contra WCAG 2.1 AA).
 
-- **Panel:** el resumen de cada apartado (cuántas vigilancias y viajes, cuántos con chollo y desde cuánto), los **chollos de ahora mismo** y los últimos avisos y ejecuciones.
-- **Vuelos** (`/flights`): cada vigilancia de vuelos con el mejor precio actual por web, enlace a esa fecha, etiqueta *chollo*, errores y minigráfica de tendencia. Cada transporte tendrá su apartado (barcos, trenes y buses llegarán en la 3.x); los enlaces antiguos (`/watches/…`, los de los avisos ya enviados) llevan al apartado de su vigilancia.
-- **Detalle de una vigilancia:**
+- **Panel:** el resumen de tus viajes (cuántos hay, cuántos tienen chollo y el más barato ahora), los **chollos de ahora mismo** (la mejor combinación de cada viaje que cumple sus reglas) y los últimos avisos y ejecuciones.
+- **Viajes** (`/trips`): cada viaje con su combinación más barata ahora y el enlace de cada tramo, minigráfica de tendencia y canales. En su detalle, las combinaciones más baratas, todas las noches de una fecha de ida, la evolución del total y los avisos enviados.
+- **Detalle de un tramo** (`/trips/{viaje}/legs/{tramo}`, de solo lectura; se edita desde el viaje):
+  - El mejor precio actual por web, con enlace a esa fecha, etiqueta *chollo* y errores.
   - **Calendario de precios** de la última comprobación: color según lo barato que sale cada día, borde para los chollos, filtro por web. Pulsar un precio abre esa fecha en la web; pulsar el día muestra su historial. Si la web da la hora de salida y de llegada, salen con el precio.
-  - Gráficas de la **evolución del precio mínimo** por web, del **precio actual por fecha de vuelo** y del **historial de una fecha concreta**.
-  - Historial de comprobaciones y avisos enviados.
-- **Viajes:** el viaje más barato ahora con el enlace de cada tramo, las combinaciones más baratas, todas las noches de una fecha de ida y la evolución del total. Desde el formulario de un viaje se puede crear la vigilancia de vuelta que falte.
+  - Gráficas de la **evolución del precio mínimo** por web, del **precio actual por fecha de vuelo** y del **historial de una fecha concreta**, y el historial de comprobaciones.
 - **Ejecuciones** y **Diagnóstico** para ver qué pasó en cada comprobación.
 - **Proveedores** (administradores): la lista de proveedores, **agrupada y filtrable por tipo** (vuelos, y más adelante barcos, trenes…), con su prueba de acceso (ver «Prueba de acceso» arriba), su editor con consola, importar y exportar (ver «Añadir otra aerolínea»).
 
@@ -259,20 +258,20 @@ def fetch_route(api, origin, destination, start, max_months):
     return out
 ```
 
-- Cada proveedor es de un **tipo** (hoy, *Vuelos*): solo sale en las vigilancias de ese transporte. Barcos, trenes y buses comparten este mismo contrato (con estaciones, puertos o paradas en vez de aeropuertos), así que ya se pueden escribir y probar aunque sus vigilancias lleguen en la 3.x. El tipo viaja en el `.fwp`; los paquetes antiguos se importan como vuelos.
+- Cada proveedor es de un **tipo** (hoy, *Vuelos*): solo sale en los viajes de ese transporte. Barcos, trenes y buses comparten este mismo contrato (con estaciones, puertos o paradas en vez de aeropuertos), así que ya se pueden escribir y probar aunque sus viajes lleguen en la 3.x. El tipo viaja en el `.fwp`; los paquetes antiguos se importan como vuelos.
 - `DayPrice` admite la **hora de salida y de llegada** (`departure=`, `arrival=`: `"06:35"`, un `time` o un `datetime`; una llegada anterior a la salida es del día siguiente). Se guardan con el precio y salen en el panel y en los avisos. Ryanair las da siempre y Wizz Air la de salida cuando ese día hay un solo vuelo.
 - Opcional: `BROWSER_PAGE = "https://…"`, la página que abre Chrome cuando sus peticiones van por él (ver «Medidas anti-bot»).
-- `fetch_route` devuelve `{fecha: precio}`, `{fecha: DayPrice}` o una lista de `DayPrice` (`{}` si no opera la ruta). Si además acepta `max_stops=None`, recibe el máximo de escalas de la vigilancia y filtra él mismo (como Air Europa). Con la cobertura «Pregunta por cada ruta» hay que definir `probe(api, origin, destination)` → `True`/`False`; con «Cualquier ruta», nada más.
+- `fetch_route` devuelve `{fecha: precio}`, `{fecha: DayPrice}` o una lista de `DayPrice` (`{}` si no opera la ruta). Si además acepta `max_stops=None`, recibe el máximo de escalas del tramo y filtra él mismo (como Air Europa). Con la cobertura «Pregunta por cada ruta» hay que definir `probe(api, origin, destination)` → `True`/`False`; con «Cualquier ruta», nada más.
 - `api.get_json`, `api.post_json` y `api.request` respetan el turno y las pausas del proveedor, convierten 403/429/anti-bot en «bloqueado» y un 404 en `None`, y guardan la respuesta en Diagnóstico si está activo. Una petición que no responde en 30 s se repite una vez; para una web lenta, pasa `timeout=` en segundos (`api.post_json(url, cuerpo, timeout=60)`). `api.get_json` y `api.post_json` aceptan también `headers=` (cabeceras de esa petición).
 - `api.cookie("NOMBRE")` da el valor de una cookie de la sesión (o `None`), para las webs que exigen copiarla en una cabecera (el token XSRF de Iberia Express, por ejemplo). Con las peticiones por Chrome la lee de Chrome, en la misma página desde la que pide; con la huella de Chrome, tras visitar la portada de `url=` si se indica. `api.log(...)` y `print(...)` escriben en el log del servidor y en la consola de la prueba.
 - **Probar el script** lo carga y hace la prueba de acceso sin guardar nada. Encima del código se abre una **consola** que cuenta en directo cada paso, cada petición (URL, estado, tiempo, tamaño y forma del JSON recibido), los mensajes del script y, si falla, la línea del script con su código. Debajo, una muestra de los precios.
-- Al guardarlo activo aparece en todo el panel. Desactivado no se carga; al eliminarlo se quita de las vigilancias y sus precios se conservan como histórico.
+- Al guardarlo activo aparece en todo el panel. Desactivado no se carga; al eliminarlo se quita de los tramos que lo usan y sus precios se conservan como histórico.
 - Los scripts de Vueling y Ryanair (en **Editar**) son buenos ejemplos de verdad.
 
 ### Importar y exportar
 
 - **Exportar**: en **Proveedores** elige los que quieras (o todos) y descarga un archivo `.fwp`; también desde el editor de cada uno.
-- **Importar** (**Proveedores → Importar**): desde un **enlace** (por ejemplo, un `.fwp` en GitHub; un enlace `…/blob/…` se cambia solo por el del archivo en bruto) o desde un **archivo**. Antes de importar se ve qué trae cada proveedor (nuevo, igual que el guardado o qué cambia), su código y si algo no se podría importar. Uno con la misma clave que uno guardado lo sustituye (se conservan sus vigilancias e histórico). Se guarda de qué enlace vino, para volver a usarlo.
+- **Importar** (**Proveedores → Importar**): desde un **enlace** (por ejemplo, un `.fwp` en GitHub; un enlace `…/blob/…` se cambia solo por el del archivo en bruto) o desde un **archivo**. Antes de importar se ve qué trae cada proveedor (nuevo, igual que el guardado o qué cambia), su código y si algo no se podría importar. Uno con la misma clave que uno guardado lo sustituye (se conservan sus tramos e histórico). Se guarda de qué enlace vino, para volver a usarlo.
 - El formato `.fwp` es texto: una línea de cabecera y, por proveedor, una línea con sus datos en JSON seguida del script **tal cual**. Ocupa lo mismo que un JSON (lo grande es el código), pero el script se puede leer y comparar antes de importarlo. Todos los proveedores que tenemos están en [`app/providers/catalog/providers.fwp`](https://raw.githubusercontent.com/katarem/trip-watch/main/app/providers/catalog/providers.fwp) (los antiguos `incluidos.fwp` y `sin-verificar.fwp` llevan ahora a ese archivo).
 
 **Ojo:** el script se ejecuta dentro del servidor con todos sus permisos (puede leer la base de datos y los secretos de los canales). Por eso solo lo escriben o importan administradores, hay que confirmar la contraseña para probarlo, importarlo y para guardarlo si cambia el código o se activa, y se anota quién lo guardó. Con `PROVIDER_SCRIPTS=0` los proveedores que hay siguen funcionando, pero desde el panel no se puede crear, importar, cambiar el código ni probar ninguno.
@@ -293,11 +292,11 @@ Para añadir otra ciudad (como `TCI`) o un grupo (como `canarias`), añádelo a 
 app/
   __init__.py     versión (__version__)
   main.py         servidor: API, avatares, protección CSRF y el panel compilado (app/web)
-  api/            API JSON /api/v1: sesión, vigilancias, viajes, perfil y canales, administración, proveedores
+  api/            API JSON /api/v1: sesión, viajes y sus tramos, perfil y canales, administración, proveedores
   auth.py         contraseñas (scrypt), validación de usuarios y freno de intentos de login
   avatars.py      guardado y validación de avatares
-  checker.py      ronda de comprobaciones + reglas de aviso
-  trips.py        viajes de ida y vuelta: combinaciones, histórico y avisos
+  checker.py      ronda de comprobaciones (precios de cada tramo)
+  trips.py        viajes: combinaciones de sus tramos, histórico, reglas y avisos
   coverage.py     cobertura de rutas por proveedor, comprobación al crear y revalidación semanal
   health.py       prueba de acceso a los proveedores (zona Proveedores)
   places.py       catálogo de lugares: aeropuertos, estaciones, puertos y paradas; ciudades, países y grupos (app/data)
@@ -324,7 +323,7 @@ Pruebas de Python (necesitan además `pip install httpx`): `python -m tests.smok
 
 ## Limitaciones conocidas
 
-- Solo ida por vigilancia: para ida y vuelta, crea dos vigilancias y júntalas en un viaje.
+- Un viaje tiene como mucho dos tramos (ida y vuelta) del mismo transporte; el alojamiento como tercer tramo llega en la 2.0.
 - Los viajes no tienen en cuenta horarios: cuentan noches por fecha de vuelo (las horas se guardan cuando la web las da, para poder usarlas más adelante).
 - Los precios del calendario son «desde» y no incluyen equipaje facturado.
 - La regla «habitual» compara con la mediana de la ruta, no con la de esa misma fecha.

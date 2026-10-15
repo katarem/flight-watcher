@@ -6,9 +6,14 @@ pierde nada (el ON DELETE CASCADE al recrear tablas en SQLite) y que los datos s
 Crea los proveedores incluidos como al arrancar (`bundle.seed`, con la plantilla de enlace que había en Ajustes y
 los del paquete sin verificar que ya usaba una vigilancia). Después crea un viaje (0005) y un proveedor (0006),
 comprueba los tipos y las horas (0008), baja a 0007, a 0006, a 0005, a 0004 y a 0003 y vuelve a subir.
+
+Aparte (en otro proceso, con su propia BD), una BD anterior a los usuarios (0001, vigilancias sin dueño): sube a
+head y `bootstrap_admin` le da al administrador el viaje en que la 0009 envuelve cada vigilancia.
 """
 import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="fw-mig-")
@@ -129,8 +134,29 @@ def main():
           == {1: "ryanair,vueling", 2: "vueling,wizzair"}, "downgrade a 0003 recupera el CSV sin perder filas")
     db.init()
     check(counts() == before, "y vuelta a head")
+    check(subprocess.run([sys.executable, "-m", "tests.migration_test", "--sin-usuarios"]).returncode == 0,
+          "BD anterior a los usuarios (en otro proceso)")
     print("\nTodo correcto.")
 
 
+def without_users():
+    """BD en 0001 (sin usuarios ni dueño en las vigilancias) → head → bootstrap_admin."""
+    migrate("0001")
+    c = sqlite3.connect(config.DB_PATH)
+    c.execute("INSERT INTO watches(id, name, origin, destination, providers, discount_pct, enabled, created_at) "
+              "VALUES (1, 'Sevilla → Tenerife', 'SVQ', 'TCI', 'vueling', 30, 1, '2026-01-01')")
+    c.commit()
+    db.init()
+    check(c.execute("SELECT user_id, role FROM watches").fetchall() == [(None, "outbound")]
+          and c.execute("SELECT user_id, name FROM trips").fetchall() == [(None, "Sevilla → Tenerife")],
+          "0001 → head: la vigilancia sin dueño pasa a un viaje de solo ida sin dueño")
+    uid, _ = db.bootstrap_admin("admin", "x")
+    with db.connect() as con:
+        trips = db.list_trips(con, uid)
+        check([t["name"] for t in trips] == ["Sevilla → Tenerife"]
+              and db.trip_legs(con, trips[0]["id"])["outbound"]["user_id"] == uid,
+              "bootstrap_admin da al administrador el viaje y su tramo")
+
+
 if __name__ == "__main__":
-    main()
+    without_users() if "--sin-usuarios" in sys.argv else main()

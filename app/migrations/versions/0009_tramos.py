@@ -202,10 +202,13 @@ def upgrade() -> None:
                 _add_trip_channel(bind, trip["id"], ch)
 
     # 4. Ya leídos los tramos: se quitan outbound_id/return_id del viaje (recrea la tabla en SQLite; las FK están
-    #    desactivadas, así que trip_channels/trip_quotes/trip_alerts sobreviven).
+    #    desactivadas, así que trip_channels/trip_quotes/trip_alerts sobreviven). `user_id` admite NULL, como
+    #    `watches.user_id`, solo por las BD anteriores a los usuarios: sus vigilancias (sin dueño) se envuelven en
+    #    viajes sin dueño que `db.bootstrap_admin()` asigna al administrador al arrancar.
     with op.batch_alter_table("trips") as batch:
         batch.drop_column("outbound_id")
         batch.drop_column("return_id")
+        batch.alter_column("user_id", existing_type=sa.Integer, nullable=True)
 
     # 5. Cada vigilancia huérfana (sin viaje) se envuelve en un viaje de solo ida. Se crea el viaje DESPUÉS de
     #    quitar las columnas de tramo (si no, chocaría con su NOT NULL). No se copian precios: el tramo los conserva.
@@ -271,6 +274,7 @@ def downgrade() -> None:
     with op.batch_alter_table("trips") as batch:
         batch.alter_column("outbound_id", existing_type=sa.Integer, nullable=False)
         batch.alter_column("return_id", existing_type=sa.Integer, nullable=False)
+        batch.alter_column("user_id", existing_type=sa.Integer, nullable=False)
     with op.batch_alter_table("watches") as batch:
         batch.drop_column("role")
         batch.drop_column("trip_id")

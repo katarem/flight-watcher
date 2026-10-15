@@ -5,7 +5,7 @@ import type { Trip, TripCombo, TripPrice } from '@/api/types'
 import { Badge } from '@/components/ui/card'
 import { cn } from '@/lib/cn'
 import { fmtDay, fmtNights, fmtNightsRange, fmtPrice, priceExtras } from '@/lib/format'
-import { watchPath } from '@/lib/kinds'
+import { legPath } from '@/lib/paths'
 
 /** «SVQ ⇄ TCI» (ida y vuelta) o «SVQ → TCI» (solo ida), con aspecto de billete. */
 export function TripPill({ trip }: { trip: Trip }) {
@@ -29,15 +29,15 @@ export function tripRulesText(t: Trip): string {
   return parts.join(' · ')
 }
 
-/** «Ida: Sevilla → Tenerife · Vuelta: Tenerife → Sevilla», con enlaces a cada tramo (solo ida = sin vuelta). */
+/** «Ida: Sevilla → Tenerife · Vuelta: Tenerife → Sevilla», con enlaces al detalle de cada tramo (solo ida = sin vuelta). */
 export function TripLegs({ trip, className }: { trip: Trip; className?: string }) {
   return (
     <p className={cn('text-sm text-muted', className)}>
-      Ida: <Link to={watchPath(trip.outbound.kind, trip.outbound.id)} className="text-fg underline underline-offset-2">{trip.outbound.name}</Link>
+      Ida: <Link to={legPath(trip.id, trip.outbound.id)} className="text-fg underline underline-offset-2">{trip.outbound.name}</Link>
       {trip.return && (
         <>
           {' · '}
-          Vuelta: <Link to={watchPath(trip.return.kind, trip.return.id)} className="text-fg underline underline-offset-2">{trip.return.name}</Link>
+          Vuelta: <Link to={legPath(trip.id, trip.return.id)} className="text-fg underline underline-offset-2">{trip.return.name}</Link>
         </>
       )}
     </p>
@@ -66,10 +66,12 @@ export const DealBadge = () => (
 )
 
 /** La combinación más barata ahora mismo: total, fechas y un enlace por tramo. */
-export function BestCombo({ combo, base, nDates, className }: {
+export function BestCombo({ combo, base, nDates, oneWay = false, className }: {
   combo: TripCombo | null
   base: number | null
   nDates?: number
+  /** Viaje de solo ida (cambia el texto cuando aún no hay precios). */
+  oneWay?: boolean
   className?: string
 }) {
   return (
@@ -99,7 +101,8 @@ export function BestCombo({ combo, base, nDates, className }: {
         </>
       ) : (
         <p className="mt-2 text-sm text-muted">
-          Sin combinaciones todavía: hacen falta precios recientes de la ida y de la vuelta con las noches elegidas.
+          {oneWay ? 'Sin precios todavía: pulsa «Comprobar» para traer los de la ida.'
+            : 'Sin combinaciones todavía: hacen falta precios recientes de la ida y de la vuelta con las noches elegidas.'}
         </p>
       )}
     </div>

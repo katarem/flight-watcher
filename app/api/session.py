@@ -81,5 +81,5 @@ def status(user: dict = Depends(current_user)):
 
 @router.post("/run")
 def run_all(user: dict = Depends(current_user)):
-    """Comprueba ahora todas las vigilancias del usuario."""
+    """Comprueba ahora todos los viajes (sus tramos) del usuario."""
     return {"started": scheduler.run_now(None, user["id"])}

@@ -34,7 +34,7 @@ export function ChannelList({ base, routeBase, title = 'Canales de aviso', descr
     mutationFn: (c: Channel) => del(`${base}/channels/${c.id}`),
     onSuccess: (_d, c) => {
       refresh()
-      toast.success(`Canal «${c.name}» eliminado (también de las vigilancias que lo usaban)`)
+      toast.success(`Canal «${c.name}» eliminado (también de los viajes que lo usaban)`)
     },
     onError: (e) => toast.error(errorList(e)[0]),
   })
@@ -44,11 +44,11 @@ export function ChannelList({ base, routeBase, title = 'Canales de aviso', descr
       <CardHeader
         id={`canales${base}`}
         title={title}
-        description={description ?? 'Cada vigilancia avisa solo a los canales que marques en su formulario. Puedes tener varios de cada tipo.'}
+        description={description ?? 'Cada viaje avisa solo a los canales que marques en su formulario. Puedes tener varios de cada tipo.'}
         actions={<Link to={`${routeBase}/channels/new`} className={buttonClass('primary', 'sm')}><Plus /> Añadir canal</Link>}
       />
       {channels.isPending ? <Skeleton className="h-16" /> : !channels.data?.length ? (
-        <p className="text-sm text-muted">Todavía no hay ningún canal. Añade uno (Discord o Telegram) y asígnalo a las vigilancias que quieras.</p>
+        <p className="text-sm text-muted">Todavía no hay ningún canal. Añade uno (Discord o Telegram) y asígnalo a los viajes que quieras.</p>
       ) : (
         <ul className="divide-y divide-line">
           <AnimatePresence initial={false}>
@@ -72,7 +72,7 @@ export function ChannelList({ base, routeBase, title = 'Canales de aviso', descr
                   <ConfirmDialog
                     trigger={<Button variant="ghost" size="sm" className="text-danger"><Trash2 /> Eliminar</Button>}
                     title={`¿Eliminar el canal «${c.name}»?`}
-                    description="Dejará de avisar en las vigilancias que lo usan."
+                    description="Dejará de avisar en los viajes que lo usan."
                     onConfirm={() => remove.mutate(c)}
                   />
                 </div>

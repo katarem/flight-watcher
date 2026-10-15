@@ -71,7 +71,7 @@ export function EmptyState({ icon, title, children, action }: {
   )
 }
 
-/** Error al cargar una página (p. ej. 404 de una vigilancia que no es tuya). */
+/** Error al cargar una página (p. ej. 404 de un viaje que no es tuyo). */
 export function LoadError({ error }: { error: unknown }) {
   const msg = error instanceof Error ? error.message : 'No se ha podido cargar.'
   return (

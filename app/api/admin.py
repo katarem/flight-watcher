@@ -58,8 +58,8 @@ def _target(con, uid: int) -> dict:
 @router.get("/users")
 def list_users():
     with db.connect() as con:
-        counts, ch_counts = db.watch_counts(con), db.channel_counts(con)
-        return {"users": [{**public(u), "n_watches": counts.get(u["id"], 0), "n_channels": ch_counts.get(u["id"], 0)}
+        counts, ch_counts = db.trip_counts(con), db.channel_counts(con)
+        return {"users": [{**public(u), "n_trips": counts.get(u["id"], 0), "n_channels": ch_counts.get(u["id"], 0)}
                           for u in db.list_users(con)]}
 
 

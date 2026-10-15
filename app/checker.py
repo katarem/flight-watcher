@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from contextlib import contextmanager, nullcontext
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from . import db, fx, notify, places, trips

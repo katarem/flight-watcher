@@ -1,5 +1,21 @@
 # Cambios
 
+## 2.0.0 — sin publicar
+
+Primera parte de la 2.0: el **viaje** pasa a ser lo que creas y gestionas, y las vigilancias, sus **tramos** internos. Así el alojamiento entrará como un tramo más (lo que queda de la 2.0 está en el [ROADMAP](ROADMAP.md)).
+
+### Cambiado
+- **Todo vive en los viajes.** Un viaje tiene su tramo de ida y, si quieres, el de vuelta: un «solo ida» es un viaje sin vuelta (una combinación por fecha, sin noches). Los tramos se crean, editan y borran desde el formulario del viaje, cada uno con su ruta, sus webs (con la comprobación de la ruta) y sus escalas; el botón **Al revés que la ida** rellena la vuelta. Borrar un viaje borra sus tramos y su histórico; pasarlo a solo ida borra la vuelta.
+- **Reglas y avisos por viaje**: el precio máximo, el descuento, la ventana de fechas y los canales son del viaje (sobre el total, o sobre la ida en un solo ida). Ya no hay avisos por tramo; los de cambios de rutas van a los canales del viaje.
+- **Panel**: el resumen de inicio es de tus viajes (cuántos hay, cuántos tienen chollo y el más barato ahora), con los chollos de ahora (la mejor combinación de cada viaje que cumple sus reglas) y los últimos avisos de tus viajes. Desaparece el apartado **Vuelos**: cada tramo tiene su detalle (calendario, gráficas e historial) dentro de su viaje, en `/trips/{viaje}/legs/{tramo}`.
+- Las ejecuciones dicen de qué viaje y de qué tramo son, y la lista de usuarios cuenta sus viajes.
+- Los enlaces antiguos siguen funcionando: `/watches/{id}` (los de los avisos ya enviados) y `/flights/{id}` llevan al tramo dentro de su viaje, sus `…/edit` al formulario del viaje, y `/watches/new?origin=…&destination=…` a un viaje nuevo con esa ida y la vuelta al revés.
+- Migración `0009`: `watches.trip_id` y `watches.role` (ida o vuelta); `trips` deja `outbound_id`/`return_id`. Las vigilancias sueltas pasan a ser viajes de solo ida (con su precio máximo y sus canales), y los tramos que compartían varios viajes se duplican sin perder su histórico.
+- Las bases de datos anteriores a los usuarios también se actualizan: sus vigilancias (sin dueño) pasan a viajes que el administrador recibe al arrancar.
+
+### Quitado
+- La API ya no tiene el CRUD suelto de `/watches` (se crean y editan dentro de `/trips`); queda el detalle de un tramo con sus gráficas. `/alerts` devuelve ahora los avisos de los viajes.
+
 ## 1.9.0 — 2026-10-13
 
 Primera versión como **Trip Watch** (antes Flight Watcher). Prepara el terreno para otros transportes y el alojamiento: lo que daba por hecho que todo eran vuelos ahora tiene tipo.

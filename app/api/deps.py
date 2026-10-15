@@ -68,7 +68,7 @@ def own_watch(con, wid: int, user: dict) -> dict:
     """La vigilancia solo existe para su dueño: para cualquier otro (admin incluido) es un 404."""
     w = db.get_watch(con, wid)
     if not w or w["user_id"] != user["id"]:
-        raise HTTPException(404, "No existe esa vigilancia")
+        raise HTTPException(404, "No existe ese tramo de viaje")
     return w
 
 

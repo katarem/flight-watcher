@@ -1,4 +1,4 @@
-"""Viajes de ida y vuelta: juntan dos vigilancias (ida y vuelta) en un precio total por fecha y noches.
+"""Viajes: poseen sus tramos (ida y, si la hay, vuelta) y los juntan en un precio total por fecha y noches.
 
 No consultan ninguna web: usan la última comprobación de cada tramo. Para cada fecha de ida `d` y cada
 número de noches `n` permitido, total = vuelo de ida más barato del día `d` + vuelo de vuelta más barato

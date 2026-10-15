@@ -1,4 +1,5 @@
-"""Vigilancias del usuario: CRUD, detalle con precios, gráficas, avisos y ejecuciones."""
+"""Tramos de los viajes (vigilancias internas): detalle con precios y gráficas, validación de un tramo, lugares,
+comprobación de rutas, y los avisos y ejecuciones del usuario."""
 from __future__ import annotations
 
 import statistics
@@ -102,8 +103,9 @@ def _trend(con, wid: int, points: int = 30) -> list[dict]:
 # viaje (lugares y comprobación de rutas), además de los avisos y ejecuciones del usuario.
 @router.get("/alerts")
 def list_alerts(limit: int = 10, user: dict = Depends(current_user)):
+    """Últimos avisos de los viajes del usuario (desde la 2.0 se avisa por viaje, no por tramo)."""
     with db.connect() as con:
-        return {"alerts": db.list_alerts(con, max(1, min(limit, 200)), user_id=user["id"])}
+        return {"alerts": db.list_user_trip_alerts(con, user["id"], max(1, min(limit, 200)))}
 
 
 @router.get("/runs")
@@ -131,8 +133,11 @@ def parse_kind(raw: str | None, errors: list[str]) -> str:
     if kind in kinds.KINDS and kinds.KINDS[kind].available and kinds.KINDS[kind].transport:
         return kind
     k = kinds.KINDS.get(kind)
-    errors.append(f"Las vigilancias de {k.label.lower()} llegan en la {k.since}." if k and k.since
-                  else "Tipo de transporte desconocido.")
+    if k and k.since:
+        errors.append(f"Los viajes en {k.noun} llegan en la {k.since}." if k.transport
+                      else f"El {k.label.lower()} llega en la {k.since}.")
+    else:
+        errors.append("Tipo de transporte desconocido.")
     return kinds.DEFAULT
 
 
@@ -238,16 +243,16 @@ def with_coverage(data: dict, current: dict | None = None) -> dict:
 
 @router.get("/watches/{wid}")
 def get_watch(wid: int, user: dict = Depends(current_user)):
-    """Detalle de un tramo (lo pinta el detalle de su viaje): resumen por web, precios de la última
-    comprobación, historial de comprobaciones y avisos. Las gráficas van aparte."""
+    """Detalle de un tramo (en el panel, dentro de su viaje): resumen por web, precios de la última comprobación e
+    historial de comprobaciones. Las gráficas van aparte; los avisos son del viaje."""
     s = db.get_settings()
     with db.connect() as con:
         w = own_watch(con, wid, user)
         stats, rows = _provider_stats(con, s, w, detail=True)
         trip = db.get_trip(con, w["trip_id"])
         return {
-            "watch": watch_view(w), "stats": stats, "prices": rows,
-            "checks": db.checks_summary(con, wid, 40), "alerts": db.list_alerts(con, 15, wid),
+            "watch": watch_view(w), "role": w["role"], "stats": stats, "prices": rows,
+            "checks": db.checks_summary(con, wid, 40),
             "trip": {"id": trip["id"], "name": trip["name"]},  # el viaje del que es tramo
         }
 

@@ -180,7 +180,8 @@ provider_scripts = Table(
     **_TABLE_OPTS,
 )
 
-# Qué canales avisan por cada vigilancia (solo del dueño de la vigilancia).
+# Canales de cada vigilancia antes de la 2.0: la 0009 los pasó a `trip_channels` (los avisos son del viaje). Ya no se
+# escriben; se conservan por si se baja de revisión.
 watch_channels = Table(
     "watch_channels", metadata,
     Column("watch_id", Integer, ForeignKey("watches.id", ondelete="CASCADE"), primary_key=True),
@@ -209,6 +210,8 @@ prices = Table(
     **_TABLE_OPTS,
 )
 
+# Avisos por vigilancia de antes de la 2.0 (desde la 0009 se avisa por viaje: `trip_alerts`). Solo histórico, que
+# se purga con `retention_days`.
 alerts = Table(
     "alerts", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
@@ -229,7 +232,9 @@ alerts = Table(
 trips = Table(
     "trips", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    # Nullable solo por las BD anteriores a los usuarios (la 0009 envuelve sus vigilancias sin dueño en viajes sin
+    # dueño): bootstrap_admin() los asigna al administrador.
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE")),
     Column("name", String(200), nullable=False),
     Column("min_nights", Integer, nullable=False),
     Column("max_nights", Integer, nullable=False),
@@ -442,8 +447,8 @@ def count_admins(con, exclude_id: int | None = None) -> int:
     return con.execute(stmt).scalar()
 
 
-def watch_counts(con) -> dict[int, int]:
-    rows = con.execute(select(watches.c.user_id, func.count()).group_by(watches.c.user_id)).all()
+def trip_counts(con) -> dict[int, int]:
+    rows = con.execute(select(trips.c.user_id, func.count()).group_by(trips.c.user_id)).all()
     return {uid: n for uid, n in rows}
 
 
@@ -460,6 +465,7 @@ def bootstrap_admin(username: str, password_hash: str) -> tuple[int, bool]:
             uid = create_user(con, username, username.capitalize(), password_hash, role="admin")
             admin = get_user(con, uid)
         con.execute(update(watches).where(watches.c.user_id.is_(None)).values(user_id=admin["id"]))
+        con.execute(update(trips).where(trips.c.user_id.is_(None)).values(user_id=admin["id"]))
         legacy = {r["key"]: r["value"] for r in _all(con, select(settings_t))}
         old_keys = ("discord_webhook", "telegram_token", "telegram_chat_id", "notify_errors")
         moved = {k: legacy[k] for k in old_keys if k in legacy}
@@ -515,13 +521,6 @@ def delete_channel(con, channel_id: int):
 
 def channel_counts(con) -> dict[int, int]:
     return {uid: n for uid, n in con.execute(select(channels.c.user_id, func.count()).group_by(channels.c.user_id)).all()}
-
-
-def set_watch_channels(con, watch_id: int, channel_ids: list[int]):
-    """Sustituye los canales de la vigilancia. El llamador garantiza que son del dueño."""
-    con.execute(delete(watch_channels).where(watch_channels.c.watch_id == watch_id))
-    if channel_ids:
-        con.execute(insert(watch_channels), [{"watch_id": watch_id, "channel_id": c} for c in sorted(set(channel_ids))])
 
 
 def _with_channel_ids(con, ws: list[dict]) -> list[dict]:
@@ -727,34 +726,6 @@ def checks_summary(con, watch_id, limit=60):
                 .order_by(p.checked_at.desc()).limit(limit))
 
 
-# ----------------------------------------------------------------------- alertas
-def already_alerted(con, watch_id, provider, flight_date, price) -> bool:
-    a = alerts.c
-    return con.execute(select(exists().where(
-        a.watch_id == watch_id, a.provider == provider, a.flight_date == flight_date, a.price <= price,
-    ))).scalar()
-
-
-def add_alerts(con, watch_id, deals, sent_at):
-    if not deals:
-        return
-    con.execute(insert(alerts), [
-        {"watch_id": watch_id, "provider": d["provider"], "flight_date": d["day"].isoformat(),
-         "price": d["price"], "link": d["link"], "sent_at": sent_at}
-        for d in deals
-    ])
-
-
-def list_alerts(con, limit=10, watch_id=None, user_id=None):
-    stmt = (select(alerts, watches.c.name.label("watch_name"), watches.c.kind.label("watch_kind"))
-            .join(watches, watches.c.id == alerts.c.watch_id))
-    if watch_id is not None:
-        stmt = stmt.where(alerts.c.watch_id == watch_id)
-    if user_id is not None:
-        stmt = stmt.where(watches.c.user_id == user_id)
-    return _all(con, stmt.order_by(alerts.c.sent_at.desc(), alerts.c.id.desc()).limit(limit))
-
-
 # ------------------------------------------------------------------------ viajes
 def _trip_values(data: dict) -> dict:
     return {k: data[k] for k in ("name", "min_nights", "max_nights", "date_from", "date_to", "max_total",
@@ -883,6 +854,14 @@ def list_trip_alerts(con, trip_id: int, limit: int = 15) -> list[dict]:
     return _all(con, select(trip_alerts).where(a.trip_id == trip_id).order_by(a.sent_at.desc(), a.id.desc()).limit(limit))
 
 
+def list_user_trip_alerts(con, user_id: int, limit: int = 10) -> list[dict]:
+    """Últimos avisos de todos los viajes del usuario, con el nombre del viaje."""
+    a = trip_alerts.c
+    stmt = (select(trip_alerts, trips.c.name.label("trip_name")).join(trips, trips.c.id == a.trip_id)
+            .where(trips.c.user_id == user_id).order_by(a.sent_at.desc(), a.id.desc()).limit(limit))
+    return _all(con, stmt)
+
+
 # ------------------------------------------------------------------ ejecuciones
 def start_run(con, watch_id, provider, trigger, started_at) -> int:
     return con.execute(insert(runs).values(
@@ -903,8 +882,9 @@ def last_run(con, watch_id, provider):
 
 
 def list_runs(con, limit=50, user_id=None):
-    stmt = (select(runs, watches.c.name.label("watch_name"), watches.c.kind.label("watch_kind"))
-            .join(watches, watches.c.id == runs.c.watch_id))
+    stmt = (select(runs, watches.c.name.label("watch_name"), watches.c.kind.label("watch_kind"),
+                   watches.c.trip_id, trips.c.name.label("trip_name"))
+            .join(watches, watches.c.id == runs.c.watch_id).join(trips, trips.c.id == watches.c.trip_id))
     if user_id is not None:
         stmt = stmt.where(watches.c.user_id == user_id)
     return _all(con, stmt.order_by(runs.c.id.desc()).limit(limit))

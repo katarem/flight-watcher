@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowLeftRight, CheckCircle2, Clock, RefreshCw, Trash2, XCircle } from 'lucide-react'
+import { AlertTriangle, ArrowLeftRight, CheckCircle2, Clock, RefreshCw, Repeat, Trash2, XCircle } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
-import { ApiError, del, errorList, post, put } from '@/api/client'
+import { ApiError, del, errorList, get, post, put } from '@/api/client'
 import { keys, useChannels, useMeta, useTrip } from '@/api/queries'
 import type { KindKey, Place, ProviderMeta, RouteCheck, RouteCheckProvider, Trip, TripLeg } from '@/api/types'
 import { Button, buttonClass } from '@/components/ui/button'
@@ -14,6 +14,7 @@ import { Checkbox, Field, FormSection, Input, Select, Switch } from '@/component
 import { PlaceCombobox } from '@/components/watch/PlaceCombobox'
 import { cn } from '@/lib/cn'
 import { useTitle } from '@/lib/hooks'
+import { tripPath } from '@/lib/paths'
 import { useKind } from '@/lib/kinds'
 
 /** Estado de un tramo del viaje (una vigilancia interna). */
@@ -61,6 +62,15 @@ const BLANK: FormState = {
   name: '', oneWay: false, outbound: { ...BLANK_LEG }, ret: { ...BLANK_LEG }, min_nights: '3', max_nights: '7',
   date_from: '', date_to: '', max_total: '', discount_pct: '30', enabled: true, channel_ids: [],
 }
+
+/** La vuelta de un tramo: la misma ruta al revés, con las mismas webs y escalas. */
+const reversed = (l: LegState): LegState => ({
+  ...l, origin: l.destination, destination: l.origin, originPlace: l.destinationPlace, destinationPlace: l.originPlace,
+})
+
+/** Lugar por código (para precargar el formulario); null si no existe. */
+const fetchPlace = (code: string) =>
+  code ? get<{ place: Place }>(`/places/${encodeURIComponent(code)}`).then((r) => r.place, () => null) : Promise.resolve(null)
 
 const toggle = <T,>(list: T[], v: T, on: boolean) => (on ? [...new Set([...list, v])] : list.filter((x) => x !== v))
 
@@ -115,8 +125,10 @@ function ProviderOption({ p, checked, onChange, result, checking, kept }: {
   )
 }
 
-/** Sub-formulario de un tramo: ruta, webs (con comprobación de la ruta) y escalas. */
-function LegFields({ kind, leg, onChange, isNew, keptProviders }: {
+/** Sub-formulario de un tramo: ruta, webs (con comprobación de la ruta) y escalas. `of` («de la ida») distingue los
+ *  campos de cada tramo. */
+function LegFields({ of, kind, leg, onChange, isNew, keptProviders }: {
+  of: string
   kind: KindKey
   leg: LegState
   onChange: (next: LegState) => void
@@ -156,20 +168,20 @@ function LegFields({ kind, leg, onChange, isNew, keptProviders }: {
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
-        <PlaceCombobox key={`o${swaps}`} kind={kind} label="Origen" code={leg.origin} place={leg.originPlace} placeholder="Sevilla, SVQ…"
+        <PlaceCombobox key={`o${swaps}`} kind={kind} label={`Origen ${of}`} code={leg.origin} place={leg.originPlace} placeholder="Sevilla, SVQ…"
           onChange={(code, place) => onChange({ ...leg, origin: code, originPlace: place })} />
-        <Button variant="ghost" size="icon" className="self-center sm:mt-7" aria-label="Intercambiar origen y destino"
+        <Button variant="ghost" size="icon" className="self-center sm:mt-7" aria-label={`Intercambiar origen y destino ${of}`}
           onClick={() => {
             onChange({ ...leg, origin: leg.destination, destination: leg.origin, originPlace: leg.destinationPlace, destinationPlace: leg.originPlace })
             setSwaps((n) => n + 1)
           }}>
           <ArrowLeftRight className="rotate-90 sm:rotate-0" />
         </Button>
-        <PlaceCombobox key={`d${swaps}`} kind={kind} label="Destino" code={leg.destination} place={leg.destinationPlace} placeholder="Tenerife, TCI…"
+        <PlaceCombobox key={`d${swaps}`} kind={kind} label={`Destino ${of}`} code={leg.destination} place={leg.destinationPlace} placeholder="Tenerife, TCI…"
           onChange={(code, place) => onChange({ ...leg, destination: code, destinationPlace: place })} />
       </div>
       <ErrorBox errors={checkError} />
-      <div className="grid gap-2 sm:grid-cols-2" role="group" aria-label="Webs a vigilar" aria-busy={check.isFetching || undefined}>
+      <div className="grid gap-2 sm:grid-cols-2" role="group" aria-label={`Webs ${of}`} aria-busy={check.isFetching || undefined}>
         {providers.map((p) => (
           <ProviderOption key={p.key} p={p} checked={leg.providers.includes(p.key)} result={check.isFetching ? undefined : results.get(p.key)}
             checking={check.isFetching} kept={kept.has(p.key)}
@@ -181,7 +193,7 @@ function LegFields({ kind, leg, onChange, isNew, keptProviders }: {
           <RefreshCw /> Volver a comprobar
         </Button>
       )}
-      <Field label="Escalas" hint={`La mayoría de las webs solo venden ${k.plural} directos; algunas también con escala.`}>
+      <Field label={`Escalas ${of}`} hint={`La mayoría de las webs solo venden ${k.plural} directos; algunas también con escala.`}>
         {(id, hint) => (
           <Select id={id} aria-describedby={hint} value={leg.max_stops} onChange={(e) => onChange({ ...leg, max_stops: e.target.value })}
             className="sm:max-w-64">
@@ -209,6 +221,8 @@ function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [f, setF] = useState(initial)
+  // Al rellenar la vuelta desde fuera, sus campos se vuelven a montar (los lugares toman su texto al montarse).
+  const [retKey, setRetKey] = useState(0)
   const [errors, setErrors] = useState<string[]>([])
   const errorRef = useRef<HTMLDivElement>(null)
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((s) => ({ ...s, [k]: v }))
@@ -241,7 +255,7 @@ function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
       toast.success(isNew ? 'Viaje creado' : 'Cambios guardados', {
         description: isNew ? 'Pulsa «Comprobar ahora» para traer los primeros precios.' : undefined,
       })
-      navigate(`/trips/${trip.id}`)
+      navigate(tripPath(trip.id))
     },
     onError: (e) => {
       setErrors(errorList(e))
@@ -278,12 +292,20 @@ function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
       </FormSection>
 
       <FormSection title="Tramo de ida" description="La ruta, las webs y las escalas de la ida. El viaje usa sus precios.">
-        <LegFields kind={kind} leg={f.outbound} onChange={(l) => set('outbound', l)} isNew={isNew} keptProviders={keptOut} />
+        <LegFields of="de la ida" kind={kind} leg={f.outbound} onChange={(l) => set('outbound', l)} isNew={isNew} keptProviders={keptOut} />
       </FormSection>
 
       {!f.oneWay && (
         <FormSection title="Tramo de vuelta" description="La ruta de vuelta (normalmente al revés que la ida).">
-          <LegFields kind={kind} leg={f.ret} onChange={(l) => set('ret', l)} isNew={isNew} keptProviders={keptRet} />
+          {f.outbound.origin && f.outbound.destination && (
+            <Button variant="secondary" size="sm" onClick={() => {
+              set('ret', reversed(f.outbound))
+              setRetKey((n) => n + 1)
+            }}>
+              <Repeat /> Al revés que la ida
+            </Button>
+          )}
+          <LegFields key={retKey} of="de la vuelta" kind={kind} leg={f.ret} onChange={(l) => set('ret', l)} isNew={isNew} keptProviders={keptRet} />
         </FormSection>
       )}
 
@@ -352,7 +374,7 @@ function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
 
       <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" loading={save.isPending}>{isNew ? 'Crear viaje' : 'Guardar cambios'}</Button>
-        <Link to={isNew ? '/trips' : `/trips/${tripId}`} className={buttonClass('ghost')}>Cancelar</Link>
+        <Link to={isNew ? '/trips' : tripPath(tripId)} className={buttonClass('ghost')}>Cancelar</Link>
         {!isNew && (
           <div className="ml-auto">
             <ConfirmDialog
@@ -371,14 +393,28 @@ function TripForm({ initial, tripId, kind, keptOut, keptRet }: {
 
 export function TripFormPage() {
   const params = useParams()
+  const [search] = useSearchParams()
   const id = params.id ? Number(params.id) : undefined
   const existing = useTrip(id ?? 0)
+  // ?origin=…&destination=… precargan la ida y, al revés, la vuelta (p. ej. desde las URL de antes de la 2.0).
+  const pre = { origin: search.get('origin') ?? '', destination: search.get('destination') ?? '' }
+  const prefill = useQuery({
+    queryKey: ['prefill', pre.origin, pre.destination],
+    queryFn: async () => ({ origin: await fetchPlace(pre.origin), destination: await fetchPlace(pre.destination) }),
+    enabled: id == null && !!(pre.origin || pre.destination),
+    staleTime: Infinity,
+  })
   useTitle(id ? 'Editar viaje' : 'Nuevo viaje')
 
   if (id != null && existing.isPending) return <PageLoading />
   if (id != null && existing.isError) return <LoadError error={existing.error} />
+  if (prefill.isLoading) return <PageLoading />
   const trip = id != null ? existing.data?.trip : undefined
-  const initial = trip ? fromTrip(trip) : BLANK
+  const preOut: LegState | null = prefill.data ? {
+    ...BLANK_LEG, origin: prefill.data.origin?.code ?? '', destination: prefill.data.destination?.code ?? '',
+    originPlace: prefill.data.origin, destinationPlace: prefill.data.destination,
+  } : null
+  const initial = trip ? fromTrip(trip) : preOut ? { ...BLANK, outbound: preOut, ret: reversed(preOut) } : BLANK
   const kind = trip?.kind ?? 'flight'
   // Al editar, los proveedores de temporada (inactivos) de cada tramo se conservan aunque la ruta no los opere.
   const keptOut = trip ? trip.outbound.providers : []

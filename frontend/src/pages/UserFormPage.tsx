@@ -80,7 +80,7 @@ function UserForm({ user }: { user?: User }) {
           </Field>
         </div>
         <Switch checked={f.enabled} onChange={(v) => set('enabled', v)} disabled={isSelf} label="Cuenta activa"
-          description={isSelf ? 'No puedes desactivarte a ti mismo.' : 'Desactivada no puede entrar y sus vigilancias no se comprueban.'} />
+          description={isSelf ? 'No puedes desactivarte a ti mismo.' : 'Desactivada no puede entrar y sus viajes no se comprueban.'} />
       </FormSection>
       <div className="flex gap-2">
         <Button type="submit" loading={save.isPending}>{user ? 'Guardar cambios' : 'Crear usuario'}</Button>
@@ -110,7 +110,7 @@ export function UserFormPage() {
           base={`/users/${user.data.id}`}
           routeBase={`/admin/users/${user.data.id}`}
           title={`Canales de aviso de @${user.data.username}`}
-          description="Puedes configurarlos por quien no sepa hacerlo: el usuario los verá en su perfil y los asignará a sus vigilancias. Los secretos guardados no se muestran."
+          description="Puedes configurarlos por quien no sepa hacerlo: el usuario los verá en su perfil y los asignará a sus viajes. Los secretos guardados no se muestran."
         />
       )}
     </div>

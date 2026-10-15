@@ -12,12 +12,12 @@ export function useTitle(title: string | undefined) {
   }, [title])
 }
 
-/** Lanza una comprobación (de una vigilancia o de todas las del usuario) y marca la ronda como en curso. */
+/** Lanza una comprobación de todos los viajes del usuario y marca la ronda como en curso. */
 export function useRunNow() {
-  return useRun((watchId?: number) => (watchId ? `/watches/${watchId}/run` : '/run'))
+  return useRun(() => '/run')
 }
 
-/** Comprueba los dos tramos de un viaje y después recalcula el viaje. */
+/** Comprueba los tramos de un viaje y después recalcula el viaje. */
 export function useRunTrip() {
   return useRun((tripId: number) => `/trips/${tripId}/run`)
 }

@@ -4,12 +4,12 @@ import { Badge } from '@/components/ui/card'
 import { cn } from '@/lib/cn'
 import { fmtAgo, fmtDay, fmtPrice, priceExtras } from '@/lib/format'
 
-/** Mejor precio actual de una web dentro de una vigilancia. */
+/** Mejor precio actual de una web dentro de un tramo de un viaje. */
 export function ProviderTile({ stat, detail, className, plural = 'vuelos' }: {
   stat: ProviderStat
   detail?: boolean
   className?: string
-  /** «vuelos», «barcos»… (el transporte de la vigilancia). */
+  /** «vuelos», «barcos»… (el transporte del tramo). */
   plural?: string
 }) {
   const best = stat.best

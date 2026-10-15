@@ -102,7 +102,7 @@ def _check(prov, pairs, max_age_days) -> Result:
     if prov.coverage == "universal":
         if len(pairs) > limit:
             return Result(prov.key, "too_many", reason=f"{prov.label} admite como mucho {limit} combinaciones de "
-                          f"origen y destino por vigilancia y esta ruta tiene {len(pairs)}: acota el origen o el "
+                          f"origen y destino por tramo y esta ruta tiene {len(pairs)}: acota el origen o el "
                           "destino.")
         return Result(prov.key, "ok", list(pairs), f"Busca en cualquier ruta: {_routes_text(pairs)}.")
 

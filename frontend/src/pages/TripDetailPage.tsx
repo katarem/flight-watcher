@@ -9,8 +9,10 @@ import { LoadError, PageLoading, Skeleton } from '@/components/ui/feedback'
 import { Field, Select } from '@/components/ui/form'
 import { BestCombo, DealBadge, LegLink, TripLegs, TripPill, TripWarnings, tripRulesText } from '@/components/trip/parts'
 import { PriceChart } from '@/components/watch/PriceChart'
-import { fmtDateTime, fmtDay, fmtPrice } from '@/lib/format'
+import { AlertsTable } from '@/components/watch/tables'
+import { fmtDay, fmtPrice } from '@/lib/format'
 import { useRunTrip, useTitle } from '@/lib/hooks'
+import { tripPath } from '@/lib/paths'
 
 const TOTAL = { total: { label: 'Total', color: 'var(--fw-accent)' } }
 const TOP = 15
@@ -97,7 +99,7 @@ export function TripDetailPage() {
             <Button onClick={() => run.mutate(t.id)} disabled={running} loading={run.isPending}>
               {!run.isPending && <Play />} Comprobar ahora
             </Button>
-            <Link to={`/trips/${t.id}/edit`} className={buttonClass('secondary')}><Pencil /> Editar</Link>
+            <Link to={tripPath(t.id, '/edit')} className={buttonClass('secondary')}><Pencil /> Editar</Link>
           </>
         }
       />
@@ -105,7 +107,7 @@ export function TripDetailPage() {
       <div className="mb-6 space-y-3">
         <TripLegs trip={t} />
         <TripWarnings warnings={t.warnings} />
-        <BestCombo combo={cheapest[0] ?? null} base={base} nDates={quotes.length} className="bg-surface shadow-card sm:max-w-md" />
+        <BestCombo combo={cheapest[0] ?? null} base={base} nDates={quotes.length} oneWay={oneWay} className="bg-surface shadow-card sm:max-w-md" />
       </div>
 
       <Card className="mb-6" aria-labelledby="combinaciones">
@@ -157,30 +159,8 @@ export function TripDetailPage() {
 
       <Card aria-labelledby="avisos">
         <CardHeader id="avisos" title="Avisos enviados" />
-        {alerts.length ? (
-          <TableWrap label="Avisos enviados">
-            <table className={tableClass}>
-              <thead>
-                <tr>
-                  <th scope="col">Enviado</th>
-                  <th scope="col">Ida</th>
-                  <th scope="col">Vuelta</th>
-                  <th scope="col" className="text-right!">Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {alerts.map((a) => (
-                  <tr key={a.id}>
-                    <td className="whitespace-nowrap text-muted">{fmtDateTime(a.sent_at)}</td>
-                    <td className="whitespace-nowrap">{fmtDay(a.out_date)}</td>
-                    <td className="whitespace-nowrap">{a.ret_date ? fmtDay(a.ret_date) : '—'}</td>
-                    <td className="text-right font-semibold tabular-nums">{fmtPrice(a.total)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </TableWrap>
-        ) : <p className="text-sm text-muted">Aún no se ha enviado ningún aviso de este viaje.</p>}
+        {alerts.length ? <AlertsTable alerts={alerts} showTrip={false} />
+          : <p className="text-sm text-muted">Aún no se ha enviado ningún aviso de este viaje.</p>}
       </Card>
     </>
   )

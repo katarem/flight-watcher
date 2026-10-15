@@ -4,8 +4,8 @@ import { useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 import { ApiError, get } from './client'
 import type {
-  AdminUser, Alert, Channel, ChannelDetail, Charts, DebugFile, KindKey, Me, Meta, Place, Provider, ProvidersData, Run, Series,
-  SettingsData, Status, TripCard, TripCombo, TripDetail, User, WatchCard, WatchDetail,
+  AdminUser, Channel, ChannelDetail, Charts, DebugFile, KindKey, Me, Meta, Place, Provider, ProvidersData, Run, Series,
+  SettingsData, Status, TripCard, TripCombo, TripDetail, User, UserAlert, WatchDetail,
 } from './types'
 
 export const keys = {
@@ -82,13 +82,7 @@ export function useStatus() {
   return query
 }
 
-/** Vigilancias del usuario (de un transporte, o todas). */
-export const useWatches = (kind?: KindKey) =>
-  useQuery({
-    queryKey: [...keys.watches, 'list', kind ?? ''],
-    queryFn: async () => (await get<{ watches: WatchCard[] }>(`/watches${kind ? `?kind=${kind}` : ''}`)).watches,
-  })
-
+/** Detalle de un tramo de un viaje (la API sigue llamándolos «watches»). */
 export const useWatch = (id: number) =>
   useQuery({ queryKey: keys.watch(id), queryFn: () => get<WatchDetail>(`/watches/${id}`), enabled: id > 0 })
 
@@ -118,8 +112,9 @@ export const useTripOptions = (id: number, date: string) =>
     placeholderData: keepPreviousData,
   })
 
+/** Últimos avisos de los viajes del usuario. */
 export const useAlerts = (limit = 8) =>
-  useQuery({ queryKey: [...keys.alerts, limit], queryFn: async () => (await get<{ alerts: Alert[] }>(`/alerts?limit=${limit}`)).alerts })
+  useQuery({ queryKey: [...keys.alerts, limit], queryFn: async () => (await get<{ alerts: UserAlert[] }>(`/alerts?limit=${limit}`)).alerts })
 
 export const useRuns = (limit = 50) =>
   useQuery({ queryKey: [...keys.runs, limit], queryFn: async () => (await get<{ runs: Run[] }>(`/runs?limit=${limit}`)).runs })

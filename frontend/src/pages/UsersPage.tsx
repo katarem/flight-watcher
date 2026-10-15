@@ -22,7 +22,7 @@ export function UsersPage() {
     mutationFn: (u: AdminUser) => del(`/users/${u.id}`),
     onSuccess: (_d, u) => {
       qc.invalidateQueries({ queryKey: keys.users })
-      toast.success(`Usuario «${u.username}» eliminado junto con sus vigilancias`)
+      toast.success(`Usuario «${u.username}» eliminado junto con sus viajes`)
     },
     onError: (e) => toast.error(errorList(e)[0]),
   })
@@ -34,7 +34,7 @@ export function UsersPage() {
     <>
       <PageHeader
         title="Usuarios"
-        description="Cada usuario ve y gestiona solo sus vigilancias y sus canales. Un usuario desactivado no puede entrar y sus vigilancias no se comprueban."
+        description="Cada usuario ve y gestiona solo sus viajes y sus canales. Un usuario desactivado no puede entrar y sus viajes no se comprueban."
         actions={<Link to="/admin/users/new" className={buttonClass()}><UserPlus /> Nuevo usuario</Link>}
       />
       <Card>
@@ -45,7 +45,7 @@ export function UsersPage() {
                 <th scope="col">Usuario</th>
                 <th scope="col">Rol</th>
                 <th scope="col">Estado</th>
-                <th scope="col" className="text-right!">Vigilancias</th>
+                <th scope="col" className="text-right!">Viajes</th>
                 <th scope="col" className="text-right!">Canales</th>
                 <th scope="col">Alta</th>
                 <th scope="col"><span className="sr-only">Acciones</span></th>
@@ -65,7 +65,7 @@ export function UsersPage() {
                   </td>
                   <td>{u.role === 'admin' ? <Badge tone="accent">admin</Badge> : <span className="text-muted">usuario</span>}</td>
                   <td>{u.enabled ? <Badge tone="deal">activo</Badge> : <Badge tone="warn">desactivado</Badge>}</td>
-                  <td className="text-right tabular-nums">{u.n_watches}</td>
+                  <td className="text-right tabular-nums">{u.n_trips}</td>
                   <td className="text-right tabular-nums">{u.n_channels}</td>
                   <td className="whitespace-nowrap text-muted">{fmtDateTime(u.created_at).slice(0, 10)}</td>
                   <td>
@@ -77,7 +77,7 @@ export function UsersPage() {
                         <ConfirmDialog
                           trigger={<Button variant="ghost" size="sm" className="text-danger" aria-label={`Eliminar a ${u.username}`}><Trash2 /></Button>}
                           title={`¿Eliminar a @${u.username}?`}
-                          description="Se borrarán también todas sus vigilancias con su histórico y sus canales de aviso."
+                          description="Se borrarán también todos sus viajes con su histórico y sus canales de aviso."
                           onConfirm={() => remove.mutate(u)}
                         />
                       )}
