@@ -1221,7 +1221,7 @@ def kinds_flow(admin: Api):
         check(bad.status_code == 422 and "Solo se pueden elegir webs de vuelos" in errors(bad), "un viaje de vuelos no usa un proveedor de trenes")
         bad = admin.post("/providers", {**body, "key": "otro", "health_origin": "TFN"})
         check(bad.status_code == 422 and "tipo estación" in errors(bad), "la ruta de prueba es de lugares de su transporte")
-        check("llegan en la 2.0" in errors(admin.post("/providers", {**body, "key": "hotel_x", "kind": "hotel"})),
+        check("llegan en la 2.1" in errors(admin.post("/providers", {**body, "key": "hotel_x", "kind": "hotel"})),
               "aún no hay proveedores de alojamiento")
         text_fwp = admin.get("/providers/export", params={"keys": "renfe_prueba"}).text
         check('"kind": "train"' in text_fwp and bundle.loads(text_fwp)[0]["kind"] == "train", "el .fwp guarda el tipo")

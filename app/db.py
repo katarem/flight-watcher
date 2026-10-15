@@ -92,7 +92,7 @@ channels = Table(
 )
 
 # Vigilancias = tramos internos de un viaje (ya no se gestionan sueltas desde el panel). Cada una pertenece a un
-# único viaje (`trip_id`) con un papel (`role`: ida, vuelta y, en la 2.0, estancia). El viaje es el dueño: borrarlo
+# único viaje (`trip_id`) con un papel (`role`: ida, vuelta y, en la 2.1, estancia). El viaje es el dueño: borrarlo
 # borra sus tramos. Guardan la cobertura, el histórico de precios y la configuración de proveedores del tramo.
 watches = Table(
     "watches", metadata,
@@ -102,7 +102,7 @@ watches = Table(
     # Viaje al que pertenece el tramo. Nullable solo durante la migración 0009; después, NOT NULL.
     Column("trip_id", Integer, ForeignKey("trips.id", ondelete="CASCADE", name="fk_watches_trip_id"),
            nullable=False),
-    Column("role", String(10), nullable=False, server_default="outbound"),  # outbound | return (| stay en la 2.0)
+    Column("role", String(10), nullable=False, server_default="outbound"),  # outbound | return (| stay en la 2.1)
     Column("name", String(200), nullable=False),
     Column("origin", PLACE, nullable=False),
     Column("destination", PLACE, nullable=False),
@@ -226,7 +226,7 @@ alerts = Table(
 )
 
 # Viajes: la entidad principal. El usuario crea un viaje y este posee sus tramos (vigilancias internas, ver
-# `watches`): un tramo de ida obligatorio, uno de vuelta opcional (solo ida = sin tramo de vuelta) y, en la 2.0,
+# `watches`): un tramo de ida obligatorio, uno de vuelta opcional (solo ida = sin tramo de vuelta) y, en la 2.1,
 # una estancia. El precio de un viaje es la suma del más barato de cada tramo para cada fecha de ida y cada
 # número de noches permitido. El transporte (kind) se deriva del tramo de ida.
 trips = Table(

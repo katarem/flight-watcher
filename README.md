@@ -323,7 +323,7 @@ Pruebas de Python (necesitan además `pip install httpx`): `python -m tests.smok
 
 ## Limitaciones conocidas
 
-- Un viaje tiene como mucho dos tramos (ida y vuelta) del mismo transporte; el alojamiento como tercer tramo llega en la 2.0.
+- Un viaje tiene como mucho dos tramos (ida y vuelta) del mismo transporte; el alojamiento como tercer tramo llega en la 2.1.
 - Los viajes no tienen en cuenta horarios: cuentan noches por fecha de vuelo (las horas se guardan cuando la web las da, para poder usarlas más adelante).
 - Los precios del calendario son «desde» y no incluyen equipaje facturado.
 - La regla «habitual» compara con la mediana de la ruta, no con la de esa misma fecha.

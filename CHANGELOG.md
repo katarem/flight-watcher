@@ -1,8 +1,8 @@
 # Cambios
 
-## 2.0.0 — sin publicar
+## 2.0.0 — 2026-10-15
 
-Primera parte de la 2.0: el **viaje** pasa a ser lo que creas y gestionas, y las vigilancias, sus **tramos** internos. Así el alojamiento entrará como un tramo más (lo que queda de la 2.0 está en el [ROADMAP](ROADMAP.md)).
+El **viaje** pasa a ser lo que creas y gestionas, y las vigilancias, sus **tramos** internos. Es un cambio de modelo (de ahí la versión mayor): la API ya no gestiona vigilancias sueltas y los avisos son por viaje. Así el alojamiento entrará en la 2.1 como un tramo más (ver el [ROADMAP](ROADMAP.md)).
 
 ### Cambiado
 - **Todo vive en los viajes.** Un viaje tiene su tramo de ida y, si quieres, el de vuelta: un «solo ida» es un viaje sin vuelta (una combinación por fecha, sin noches). Los tramos se crean, editan y borran desde el formulario del viaje, cada uno con su ruta, sus webs (con la comprobación de la ruta) y sus escalas; el botón **Al revés que la ida** rellena la vuelta. Borrar un viaje borra sus tramos y su histórico; pasarlo a solo ida borra la vuelta.

@@ -3,7 +3,7 @@
 Cambio de modelo (ver AGENTS.md): hasta ahora una vigilancia era una entidad suelta y un viaje juntaba dos
 vigilancias existentes (`trips.outbound_id` / `trips.return_id`, FK → `watches`, borrar una vigilancia borraba el
 viaje). A partir de aquí el **viaje posee sus tramos**: `watches.trip_id` (FK → `trips` ON DELETE CASCADE) y
-`watches.role` (`outbound` / `return`; en la 2.0 también `stay`). Un «solo ida» es un viaje con solo tramo de ida,
+`watches.role` (`outbound` / `return`; en la 2.1 también `stay`). Un «solo ida» es un viaje con solo tramo de ida,
 por eso `trip_quotes.ret_date`/`ret_price` y `trip_alerts.ret_date` pasan a NULL-ables.
 
 Migración de datos (todo o nada, con las FK desactivadas por db.init en SQLite):
