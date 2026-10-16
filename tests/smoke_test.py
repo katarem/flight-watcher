@@ -1264,6 +1264,9 @@ def notify_flow():
         def __init__(self, status, body=""):
             self.status_code, self.text = status, body
 
+        def json(self):
+            return json.loads(self.text)
+
         def raise_for_status(self):
             if self.status_code >= 400:
                 raise requests.HTTPError(str(self.status_code))
@@ -1288,14 +1291,31 @@ def notify_flow():
         notify._tg = real_tg
 
     posted = []
-    real_post = notify.requests.post
-    notify.requests.post = lambda url, **kw: posted.append((url, kw)) or Resp(204)
+    stored = {"drop": False}  # Discord «quita» los embeds del mensaje con la imagen
+
+    def fake_post(url, **kw):
+        posted.append((url, kw))
+        sent = json.loads(kw["files"]["payload_json"][1]) if "files" in kw else kw["json"]
+        return Resp(200, json.dumps({"id": "1", "embeds": [] if stored["drop"] else sent["embeds"]}))
+
+    real_post, notify.requests.post = notify.requests.post, fake_post
     try:
+        notify.KINDS["discord"]["send"]({"webhook": "https://discord.com/api/webhooks/1/x?thread_id=7"}, small)
+        first = posted[0][1]["files"]
+        body = json.loads(first["payload_json"][1])
+        check(len(posted) == 1 and "files[0]" in first and first["payload_json"][2] == "application/json"
+              and body["embeds"][0]["image"]["url"] == "attachment://calendario.png"
+              and body["attachments"] == [{"id": 0, "filename": "calendario.png", "description": "Calendario de precios"}]
+              and posted[0][0] == "https://discord.com/api/webhooks/1/x?thread_id=7&wait=true",
+              "Discord: la imagen va adjunta en el mismo mensaje que los embeds (JSON con su tipo, adjunto declarado y wait=true)")
+        posted.clear()
+        stored["drop"] = True  # Discord publica la imagen pero quita los embeds
         notify.KINDS["discord"]["send"]({"webhook": "https://discord.com/api/webhooks/1/x"}, small)
+        check(len(posted) == 2 and "files" in posted[0][1] and posted[1][1]["json"]["embeds"]
+              and "image" not in posted[1][1]["json"]["embeds"][0] and "**30 €**" in json.dumps(posted[1][1]["json"], ensure_ascii=False),
+              "Discord: si quita los embeds del mensaje con la imagen, se mandan aparte (no llega un «calendario.png» suelto)")
     finally:
         notify.requests.post = real_post
-    check(len(posted) == 1 and "files[0]" in posted[0][1]["files"] and json.loads(posted[0][1]["data"]["payload_json"])["embeds"],
-          "Discord: la imagen va adjunta en el mismo mensaje que los embeds")
     sample = notify.sample_message("https://panel.example.com")
     check(sample.image.startswith(b"\x89PNG") and sample.sections[0].items, "aviso de ejemplo para probar un canal")
     check(images.calendar_png({}, set(), "x") is None and images.levels({date(2026, 1, d): float(d) for d in range(1, 9)})[date(2026, 1, 1)] == 1,

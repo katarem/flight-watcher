@@ -19,6 +19,7 @@ import logging
 import re
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 
@@ -127,10 +128,11 @@ def discord_payloads(msg: Message) -> list[dict]:
         for it in s.items:
             if len(it.links) == 1:  # el precio lleva a la fecha en la web
                 main, rest = f"[**{it.price or it.title}**]({it.links[0][1]})", ""
-            else:  # un viaje: el total y un enlace por tramo
+            else:  # un viaje: el total y un enlace por tramo (con el mismo texto que el detalle, que no se repite)
                 main = f"**{it.price}**" if it.price else ""
                 rest = " · ".join(f"[{_md(t)}]({u})" for t, u in it.links)
-            value = " · ".join(p for p in (main, _md(it.detail) if it.detail else "", rest) if p) or "—"
+            detail = _md(it.detail) if it.detail and len(it.links) < 2 else ""
+            value = " · ".join(p for p in (main, detail, rest) if p) or "—"
             fields.append({"name": _cut(it.title, D_NAME), "value": _cut(value, D_VALUE), "inline": len(value) < 60})
         for i in range(0, max(len(fields), 1), D_FIELDS):
             e = {"title": _cut(f"{s.title} · {s.note}" if s.note else s.title, D_NAME), "color": _color(s.color),
@@ -151,14 +153,42 @@ def discord_payloads(msg: Message) -> list[dict]:
     return out
 
 
+def _wait_url(webhook: str) -> str:
+    """El webhook con `wait=true` (conservando `thread_id` u otros parámetros): así Discord devuelve el mensaje
+    guardado y se puede comprobar que lleva los embeds."""
+    parts = urlsplit(webhook)
+    query = [(k, v) for k, v in parse_qsl(parts.query) if k != "wait"] + [("wait", "true")]
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
+
+def _stored_embeds(r) -> int | None:
+    """Cuántos embeds guardó Discord en el mensaje (None si la respuesta no lo dice)."""
+    try:
+        return len(r.json().get("embeds") or [])
+    except Exception:  # noqa: BLE001 (respuesta sin JSON: no se puede comprobar)
+        return None
+
+
 def _post_discord(config: dict, msg: Message):
+    url = _wait_url(config["webhook"])
     for i, payload in enumerate(discord_payloads(msg)):
         if i == 0 and msg.image:
-            r = requests.post(config["webhook"], data={"payload_json": json.dumps(payload)},
-                              files={"files[0]": (IMAGE_NAME, msg.image, "image/png")}, timeout=30)
+            # El JSON va como parte `application/json` y el adjunto se declara en `attachments`, como pide Discord
+            # para usarlo en un embed (`attachment://calendario.png`).
+            body = {**payload, "attachments": [{"id": 0, "filename": IMAGE_NAME, "description": "Calendario de precios"}]}
+            r = requests.post(url, files={"payload_json": (None, json.dumps(body), "application/json"),
+                                          "files[0]": (IMAGE_NAME, msg.image, "image/png")}, timeout=30)
+            r.raise_for_status()
+            stored = _stored_embeds(r)
+            if stored is not None and stored < len(payload["embeds"]):
+                # Discord publicó la imagen pero quitó los embeds: el aviso llegaría como un «calendario.png» suelto.
+                # Se mandan los embeds aparte (sin la imagen, que ya está publicada).
+                log.warning("Discord guardó %s de %s embeds junto a la imagen; se envían aparte: %s",
+                            stored, len(payload["embeds"]), (r.text or "")[:300])
+                embeds = [{k: v for k, v in e.items() if k != "image"} for e in payload["embeds"]]
+                requests.post(url, json={"embeds": embeds}, timeout=20).raise_for_status()
         else:
-            r = requests.post(config["webhook"], json=payload, timeout=20)
-        r.raise_for_status()
+            requests.post(url, json=payload, timeout=20).raise_for_status()
 
 
 # ------------------------------------------------------------------------ Telegram
@@ -192,6 +222,7 @@ def telegram_parts(msg: Message, buttons: bool = True) -> tuple[list[str], list[
                     keyboard.append(row)
             else:
                 links = " · ".join(f'<a href="{e(u, quote=True)}">{e(t)}</a>' for t, u in it.links)
+                detail = detail if len(it.links) < 2 else ""  # los enlaces de cada tramo ya lo dicen
                 lines.append(f"• {e(it.title)}{price}{detail}" + (f" · {links}" if links else ""))
         if s.more:
             lines.append(e(s.more))
@@ -367,11 +398,12 @@ def trip_message(trip: dict, outbound: dict, ret: dict | None, deals: list[dict]
                                   _leg_text(o) + (f" ({times})" if times else ""), links, buttons))
             continue
         title = f"{fmt_day(q['out_date'])} → {fmt_day(q['ret_date'])} · {fmt_nights(q['nights'])}"
-        detail = []
+        detail, links = [], []
         for label, leg in (("ida", o), ("vuelta", r)):
             times = _times(leg)
-            detail.append(f"{label} {_leg_text(leg)}" + (f" ({times})" if times else ""))
-        links = [(f"Ida: {_leg_text(o)}", o["link"]), (f"Vuelta: {_leg_text(r)}", r["link"])]
+            text = _leg_text(leg) + (f" ({times})" if times else "")
+            detail.append(f"{label} {text}")
+            links.append((f"{label.capitalize()}: {text}", leg["link"]))
         buttons = [f"Ida {fmt_short_day(q['out_date'])} · {_leg_text(o)}",
                    f"Vuelta {fmt_short_day(q['ret_date'])} · {_leg_text(r)}"]
         keep = [(lk, b) for lk, b in zip(links, buttons) if lk[1]]

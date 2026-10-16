@@ -1,5 +1,11 @@
 # Cambios
 
+## 2.0.1 — 2026-10-16
+
+### Arreglado
+- **Discord: avisos que llegaban como un «calendario.png» suelto**, sin el texto. El mensaje con la imagen manda ahora el JSON con su tipo (`application/json`) y declara el adjunto en `attachments`, como pide Discord para usarlo dentro de un embed, y espera la respuesta (`wait=true`): si Discord publica la imagen pero quita los embeds, se mandan aparte, así el aviso llega siempre con sus fechas y enlaces.
+- En los avisos de ida y vuelta, cada combinación ya no repite los tramos dos veces («ida Vueling 30 € … · Ida: Vueling 30 € …»): en Discord quedan solo los enlaces de cada tramo (con sus horas) y en Telegram, el texto con los botones.
+
 ## 2.0.0 — 2026-10-15
 
 El **viaje** pasa a ser lo que creas y gestionas, y las vigilancias, sus **tramos** internos. Es un cambio de modelo (de ahí la versión mayor): la API ya no gestiona vigilancias sueltas y los avisos son por viaje. Así el alojamiento entrará en la 2.1 como un tramo más (ver el [ROADMAP](ROADMAP.md)).
